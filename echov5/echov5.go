@@ -1,7 +1,10 @@
-// Package echov5 mounts authkit on echo v5. ParseBearer and Guard sit around
-// the app's own connection middleware (ino-tasks: WorkspaceRLS between them);
-// RateLimit is the per-IP limiter for the auth routes. Refusals come back as
-// authkit's sentinels for the app's error handler to render.
+// Package echov5 mounts authkit on echo v5. In Bearer mode ParseBearer and
+// Guard sit around the app's own connection middleware (ino-tasks:
+// WorkspaceRLS between them). In Session mode SessionCookie loads the
+// session, RequireSession and RequireOrigin guard each route, and HashSlot
+// holds a hash slot before the app's transaction. RateLimit is the per-IP
+// limiter for the auth routes. Refusals come back as authkit's sentinels for
+// the app's error handler to render.
 package echov5
 
 import (
@@ -23,11 +26,15 @@ const (
 // ParseBearer admits a request carrying a strict, valid access token of aud
 // and puts its claims on the context. A valid token of another audience is
 // authkit.ErrWrongAudience; any other failure ErrMissingToken or
-// ErrInvalidToken. It reads no database.
+// ErrInvalidToken. It reads no database. A Session-mode Service has no codec:
+// every request is then a server error.
 func ParseBearer(s *authkit.Service, aud authkit.Audience) echo.MiddlewareFunc {
 	codec := s.Codec()
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
+			if codec == nil {
+				return errors.New("authkit: ParseBearer needs a Bearer-mode Service")
+			}
 			raw, err := bearer.FromHeader(c.Request().Header.Get("Authorization"))
 			if err != nil {
 				return err
