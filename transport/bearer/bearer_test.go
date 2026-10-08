@@ -115,6 +115,7 @@ func TestParseRefusesEveryNonStrictToken(t *testing.T) {
 		"sub in braces":       sign(t, jwt.SigningMethodHS256, []byte(secret), with("sub", "{"+sub.String()+"}")),
 		"expired":             sign(t, jwt.SigningMethodHS256, []byte(secret), with("exp", t0.Add(-time.Second).Unix())),
 		"issued in future":    sign(t, jwt.SigningMethodHS256, []byte(secret), with("iat", t0.Add(time.Minute).Unix())),
+		"issued past leeway":  sign(t, jwt.SigningMethodHS256, []byte(secret), with("iat", t0.Add(bearer.IssuedAtLeeway+time.Second).Unix())),
 		"not yet valid":       sign(t, jwt.SigningMethodHS256, []byte(secret), with("nbf", t0.Add(time.Minute).Unix())),
 		"exp as text":         sign(t, jwt.SigningMethodHS256, []byte(secret), with("exp", "soon")),
 		"garbage":             "a.b.c",
@@ -122,6 +123,24 @@ func TestParseRefusesEveryNonStrictToken(t *testing.T) {
 		if _, err := codec(t).Parse(token, "staff"); !errors.Is(err, bearer.ErrInvalid) {
 			t.Errorf("%s: Parse = %v, want ErrInvalid (spec §8.4)", name, err)
 		}
+	}
+}
+
+// TestParseAcceptsAnIatWithinTheLeeway: a token minted by a host whose clock
+// runs ahead, or parsed just after this host's clock was stepped back, is
+// accepted up to IssuedAtLeeway; its exp still has no leeway.
+func TestParseAcceptsAnIatWithinTheLeeway(t *testing.T) {
+	for _, ahead := range []time.Duration{time.Second, bearer.IssuedAtLeeway} {
+		claims := valid()
+		claims["iat"] = t0.Add(ahead).Unix()
+		if _, err := codec(t).Parse(sign(t, jwt.SigningMethodHS256, []byte(secret), claims), "staff"); err != nil {
+			t.Errorf("iat %v ahead: Parse = %v, want accepted", ahead, err)
+		}
+	}
+	claims := valid()
+	claims["iat"], claims["exp"] = t0.Add(bearer.IssuedAtLeeway).Unix(), t0.Unix()
+	if _, err := codec(t).Parse(sign(t, jwt.SigningMethodHS256, []byte(secret), claims), "staff"); !errors.Is(err, bearer.ErrInvalid) {
+		t.Errorf("exp at now with an iat ahead: Parse = %v, want ErrInvalid", err)
 	}
 }
 

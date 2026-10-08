@@ -86,11 +86,17 @@ func (c *Codec) MintAt(now time.Time, sub, sid uuid.UUID, audience string, app m
 	return token, exp.Time, nil
 }
 
+// IssuedAtLeeway is how far in the future a token's iat may be: the host that
+// minted it may run ahead of this one, or this host's clock may have been
+// stepped back. Expiry has no leeway.
+const IssuedAtLeeway = 30 * time.Second
+
 // Parse accepts only an HS256 token under the codec's secret and issuer with
 // exp, iat, aud, sub and sid present and well-formed, unexpired and not issued
-// in the future. Only an otherwise valid token of another audience of the
-// same issuer is ErrWrongAudience; every other failure is ErrInvalid. A
-// Codec that NewCodec did not build, such as the zero value, refuses every token.
+// more than IssuedAtLeeway in the future. Only an otherwise valid token of
+// another audience of the same issuer is ErrWrongAudience; every other failure
+// is ErrInvalid. A Codec that NewCodec did not build, such as the zero value,
+// refuses every token.
 func (c *Codec) Parse(token, audience string) (*Claims, error) {
 	if c.issuer == "" || len(c.secret) < 32 {
 		return nil, ErrInvalid
@@ -98,12 +104,12 @@ func (c *Codec) Parse(token, audience string) (*Claims, error) {
 	mc := jwt.MapClaims{}
 	if _, err := jwt.ParseWithClaims(token, mc, func(*jwt.Token) (any, error) { return c.secret, nil },
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
-		jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithIssuer(c.issuer),
+		jwt.WithExpirationRequired(), jwt.WithIssuer(c.issuer),
 		jwt.WithTimeFunc(c.now), jwt.WithStrictDecoding()); err != nil {
 		return nil, ErrInvalid
 	}
 	iat, err := mc.GetIssuedAt()
-	if err != nil || iat == nil {
+	if err != nil || iat == nil || iat.After(c.now().Add(IssuedAtLeeway)) {
 		return nil, ErrInvalid
 	}
 	exp, err := mc.GetExpirationTime()
