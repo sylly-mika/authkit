@@ -73,7 +73,9 @@ the library (`ErrSchemaBehind`).
 ## Configuration
 
 `authkit.New(cfg, principals)` takes a `Config`. The zero value means the
-default; a negative duration means off.
+default. A negative `Session.AbsoluteTTL`, `Session.RotateEvery` or
+`EventRetention` turns that limit off; `New` refuses a negative value
+anywhere else.
 
 | Option | Zero value | Other values |
 |---|---|---|
@@ -157,7 +159,7 @@ for plain-HTTP development only.
 
 | Sentinel | From | Status |
 |---|---|---|
-| `authkit.ErrSessionEnded` | `RequireSession`; `Logout`/`RevokeSession` refusals | 401 (`RevokeSession`: 404) |
+| `authkit.ErrSessionEnded` | `RequireSession`; `RevokeSession` refusals (`Logout` never refuses) | 401 (`RevokeSession`: 404) |
 | `authkit.ErrBusy` | `HashSlot`; the hashing methods' `Result.Refusal` | 503 |
 | `cookie.ErrForeignOrigin` | `RequireOrigin` | 403 |
 | `authkit.ErrLocked` | `Login` | 429 with `Retry-After` |
