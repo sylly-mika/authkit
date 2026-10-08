@@ -72,7 +72,7 @@ func (s *Service) reuseOrEnded(ctx context.Context, q db.Querier, old []byte, no
 	if err := session.Revoke(ctx, q, prev.ID, ReasonReuseDetected, now); err != nil {
 		return Result{}, err
 	}
-	if err := s.record(ctx, q, now, events.Event{PrincipalID: &prev.PrincipalID, SessionID: &prev.ID, ScopeID: prev.ScopeID,
+	if err := s.record(ctx, q, now, SourceRefresh, events.Event{PrincipalID: &prev.PrincipalID, SessionID: &prev.ID, ScopeID: prev.ScopeID,
 		Audience: prev.Audience, Result: ResultReuseDetected, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
 		return Result{}, err
 	}

@@ -58,6 +58,24 @@ const (
 	ResultRevoked       = "revoked"
 	ResultLocked        = "locked"
 	ResultReuseDetected = "reuse_detected"
+	// ResultPasswordChanged is ChangePassword's, unless Events.ChangeLogsReset.
+	ResultPasswordChanged = "password_changed"
+)
+
+// Event.Source values: the Service method that recorded the event (spec §3.7).
+const (
+	SourceLogin               = "login"
+	SourceOpenSession         = "open_session"
+	SourceCompleteReset       = "complete_reset"
+	SourceChangePassword      = "change_password"
+	SourceSetPassword         = "set_password"
+	SourceVerifyPassword      = "verify_password"
+	SourceLogout              = "logout"
+	SourceRevokeSession       = "revoke_session"
+	SourceRevokeAll           = "revoke_all"
+	SourceRefresh             = "refresh"
+	SourceAuthenticateSession = "authenticate_session"
+	SourceRequestReset        = "request_reset" // RequestReset records no event; reserved
 )
 
 // Revoke reasons, as auth_sessions_revoke_reason lists them.

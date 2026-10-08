@@ -103,7 +103,7 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if had {
 		result = ResultPasswordReset
 	}
-	return Result{Principal: p}, s.record(ctx, q, now, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+	return Result{Principal: p}, s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
 		Result: result, IP: m.IP, UserAgent: m.UserAgent})
 }
 

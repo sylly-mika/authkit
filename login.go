@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 	"unicode/utf8"
 
@@ -142,7 +143,7 @@ func (s *Service) refuseLocked(ctx context.Context, q db.Querier, a *attempt, un
 		}
 	}
 	a.ev.Result = ResultLocked
-	if err := s.record(ctx, q, a.now, a.ev); err != nil {
+	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
 		return Result{}, err
 	}
 	return Result{Refusal: ErrLocked{RetryAfter: until.Sub(a.now)}}, nil
@@ -156,7 +157,7 @@ func (s *Service) refuseFailed(ctx context.Context, q db.Querier, a *attempt) (R
 			return Result{}, err
 		}
 	}
-	if err := s.record(ctx, q, a.now, a.ev); err != nil {
+	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
 		return Result{}, err
 	}
 	return Result{Refusal: ErrInvalidCredentials}, nil
@@ -172,7 +173,7 @@ func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Princi
 	}
 	if refusal != nil {
 		a.ev.Result = refusal.Result
-		if err := s.record(ctx, q, a.now, a.ev); err != nil {
+		if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
 			return Result{}, err
 		}
 		return Result{Refusal: refusal.Err}, nil
@@ -190,7 +191,7 @@ func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Princi
 		return Result{}, err
 	}
 	a.ev.Result, a.ev.SessionID, a.ev.ScopeID = ResultSignedIn, &sess.ID, adm.ScopeID
-	if err := s.record(ctx, q, a.now, a.ev); err != nil {
+	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
 		return Result{}, err
 	}
 	return Result{Principal: p, Session: &sess, Tokens: &pair, Admission: &adm}, nil
@@ -229,13 +230,24 @@ func (s *Service) admit(ctx context.Context, q db.Querier, p Proposal) (Admissio
 	return adm, nil, nil
 }
 
-func (s *Service) record(ctx context.Context, q db.Querier, now time.Time, e events.Event) error {
+// record logs an event of source and hands it to Config.OnEvent on the same
+// querier, so the app's mirror of it commits or rolls back with it.
+func (s *Service) record(ctx context.Context, q db.Querier, now time.Time, source string, e events.Event) error {
 	id, err := token.ID(s.cfg.Rand)
 	if err != nil {
 		return err
 	}
-	e.ID, e.At = id, now
-	return events.Record(ctx, q, e)
+	e.ID, e.At, e.Source = id, now, source
+	if err := events.Record(ctx, q, e); err != nil {
+		return err
+	}
+	if s.cfg.OnEvent == nil {
+		return nil
+	}
+	if err := s.cfg.OnEvent(ctx, q, e); err != nil {
+		return fmt.Errorf("authkit: OnEvent: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) openSession(ctx context.Context, q db.Querier, p Principal, aud Audience, adm Admission, m Meta, now time.Time) (Session, TokenPair, error) {

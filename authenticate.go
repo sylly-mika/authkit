@@ -72,6 +72,6 @@ func (s *Service) Logout(ctx context.Context, q db.Querier, c *Claims, m Meta) (
 	if err := session.Revoke(ctx, q, sess.ID, ReasonLogout, now); err != nil {
 		return Result{}, err
 	}
-	return Result{Session: &sess}, s.record(ctx, q, now, events.Event{PrincipalID: &sess.PrincipalID, SessionID: &sess.ID,
+	return Result{Session: &sess}, s.record(ctx, q, now, SourceLogout, events.Event{PrincipalID: &sess.PrincipalID, SessionID: &sess.ID,
 		ScopeID: sess.ScopeID, Audience: sess.Audience, Result: ResultSignedOut, IP: m.IP, UserAgent: m.UserAgent})
 }

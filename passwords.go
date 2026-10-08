@@ -73,8 +73,12 @@ func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, c
 		return Result{}, err
 	}
 	sess.AuthenticatedAt = now
-	return Result{Principal: p, Session: &sess}, s.record(ctx, q, now, events.Event{PrincipalID: &p.ID, SessionID: &sess.ID,
-		ScopeID: sess.ScopeID, Audience: sess.Audience, Login: p.Login, Result: ResultPasswordReset, IP: m.IP, UserAgent: m.UserAgent})
+	result := ResultPasswordChanged
+	if s.cfg.Events.ChangeLogsReset {
+		result = ResultPasswordReset
+	}
+	return Result{Principal: p, Session: &sess}, s.record(ctx, q, now, SourceChangePassword, events.Event{PrincipalID: &p.ID,
+		SessionID: &sess.ID, ScopeID: sess.ScopeID, Audience: sess.Audience, Login: p.Login, Result: result, IP: m.IP, UserAgent: m.UserAgent})
 }
 
 // SetPassword gives a principal without a password its first one inside the
@@ -108,7 +112,7 @@ func (s *Service) SetPassword(ctx context.Context, q db.Querier, p Principal, au
 	if had {
 		result = ResultPasswordReset
 	}
-	return Result{Principal: p}, s.record(ctx, q, now, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+	return Result{Principal: p}, s.record(ctx, q, now, SourceSetPassword, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
 		Result: result, IP: m.IP, UserAgent: m.UserAgent})
 }
 
@@ -135,7 +139,7 @@ func (s *Service) VerifyPassword(ctx context.Context, q db.Querier, p Principal,
 	if ok {
 		return Result{Principal: p}, nil
 	}
-	if err := s.record(ctx, q, s.now(), events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+	if err := s.record(ctx, q, s.now(), SourceVerifyPassword, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
 		Result: ResultBadPassword, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
 		return Result{}, err
 	}

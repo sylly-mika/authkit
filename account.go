@@ -41,7 +41,7 @@ func (s *Service) RevokeSession(ctx context.Context, q db.Querier, c *Claims, id
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{}, s.record(ctx, q, now, events.Event{PrincipalID: &c.Subject, SessionID: &id, ScopeID: caller.ScopeID,
+	return Result{}, s.record(ctx, q, now, SourceRevokeSession, events.Event{PrincipalID: &c.Subject, SessionID: &id, ScopeID: caller.ScopeID,
 		Audience: c.Audience, Result: ResultRevoked, IP: m.IP, UserAgent: m.UserAgent})
 }
 

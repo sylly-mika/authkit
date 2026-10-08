@@ -24,6 +24,9 @@ type Event struct {
 	Result      string
 	IP          string
 	UserAgent   string
+	// Source is the Service method that recorded the event (authkit.Source*).
+	// OnEvent sees it; it is not stored, so List leaves it empty.
+	Source string
 }
 
 // Record inserts without RETURNING: on a pinned connection the insert passes
