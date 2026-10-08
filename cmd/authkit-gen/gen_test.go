@@ -37,7 +37,8 @@ func TestRunNumbersAfterTheAppsHighestMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"000009_authkit_core.up.sql", "000009_authkit_core.down.sql"}; !slices.Equal(names(written), want) {
+	if want := []string{"000009_authkit_core.up.sql", "000009_authkit_core.down.sql",
+		"000010_authkit_absolute_expiry.up.sql", "000010_authkit_absolute_expiry.down.sql"}; !slices.Equal(names(written), want) {
 		t.Fatalf("wrote %v, want %v", names(written), want)
 	}
 }
@@ -67,8 +68,8 @@ func TestRunIsIdempotentThroughTheLock(t *testing.T) {
 	var l lockFile
 	b, _ := os.ReadFile(lock)
 	if err := json.Unmarshal(b, &l); err != nil || l.Library != "v0.1.0" || l.Principals != "users" ||
-		len(l.Migrations) != 1 || l.Migrations[0].ID != 1 || l.Migrations[0].Name != "core" || l.Migrations[0].File != "000004_authkit_core" ||
-		len(l.Migrations[0].SHA256) != 64 {
+		len(l.Migrations) != 2 || l.Migrations[0].ID != 1 || l.Migrations[0].Name != "core" || l.Migrations[0].File != "000004_authkit_core" ||
+		len(l.Migrations[0].SHA256) != 64 || l.Migrations[1].ID != 2 || l.Migrations[1].File != "000005_authkit_absolute_expiry" {
 		t.Fatalf("lock = %+v (%v)", l, err)
 	}
 }
@@ -146,7 +147,8 @@ func TestRunRecordsTheVersionThatRanLast(t *testing.T) {
 func TestRunKeepsTheAppsDigitWidth(t *testing.T) {
 	dir, lock := appDir(t, "0007_saved_views.up.sql", "0007_saved_views.down.sql")
 	written, err := run(options{principals: "users", out: dir, lock: lock, version: "v0.1.0"})
-	if want := []string{"0008_authkit_core.up.sql", "0008_authkit_core.down.sql"}; err != nil || !slices.Equal(names(written), want) {
+	if want := []string{"0008_authkit_core.up.sql", "0008_authkit_core.down.sql", "0009_authkit_absolute_expiry.up.sql", "0009_authkit_absolute_expiry.down.sql"}; err != nil ||
+		!slices.Equal(names(written), want) {
 		t.Fatalf("wrote %v (%v), want %v", names(written), err, want)
 	}
 }

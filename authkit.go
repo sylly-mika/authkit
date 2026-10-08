@@ -156,11 +156,26 @@ func New(cfg Config, principals Principals) (*Service, error) {
 
 func (s *Service) now() time.Time { return s.cfg.Clock.Now() }
 
-func (s *Service) refreshTTL(aud Audience) time.Duration {
+// expiry is a session's idle expiry from now, clamped to its absolute cap
+// (spec §3.5), so every expires_at predicate enforces the cap too.
+func (s *Service) expiry(now time.Time, aud Audience, absolute *time.Time) time.Time {
+	idle := s.cfg.Session.IdleTTL
 	if d, ok := s.cfg.RefreshTTLFor[aud]; ok {
-		return d
+		idle = d
 	}
-	return s.cfg.Session.IdleTTL
+	if exp := now.Add(idle); absolute == nil || exp.Before(*absolute) {
+		return exp
+	}
+	return *absolute
+}
+
+// absoluteFrom is the cap of a session signed in at now; nil without one.
+func (s *Service) absoluteFrom(now time.Time) *time.Time {
+	if s.cfg.Session.AbsoluteTTL < 0 {
+		return nil
+	}
+	at := now.Add(s.cfg.Session.AbsoluteTTL)
+	return &at
 }
 
 // Codec parses and mints access tokens (echov5.ParseBearer; app tests); nil

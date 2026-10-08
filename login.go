@@ -174,7 +174,8 @@ func (s *Service) openSession(ctx context.Context, q db.Querier, p Principal, au
 		return Session{}, TokenPair{}, err
 	}
 	sess := Session{ID: id, PrincipalID: p.ID, Audience: string(aud), ScopeID: adm.ScopeID, IP: m.IP, UserAgent: m.UserAgent,
-		AuthenticatedAt: now, CreatedAt: now, ExpiresAt: now.Add(s.refreshTTL(aud))}
+		AuthenticatedAt: now, CreatedAt: now, AbsoluteExpiresAt: s.absoluteFrom(now)}
+	sess.ExpiresAt = s.expiry(now, aud, sess.AbsoluteExpiresAt)
 	if err := session.Create(ctx, q, sess, hash); err != nil {
 		return Session{}, TokenPair{}, err
 	}

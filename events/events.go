@@ -36,6 +36,11 @@ func Record(ctx context.Context, q db.Querier, e Event) error {
 	return err
 }
 
+// Prune deletes the events recorded before before.
+func Prune(ctx context.Context, q db.Querier, before time.Time) (int64, error) {
+	return q.Exec(ctx, `DELETE FROM auth_events WHERE at < $1`, before)
+}
+
 // List is the principal's events, newest first, without the excluded results,
 // and their count. Result names never contain a comma (the Service checks).
 func List(ctx context.Context, q db.Querier, principal uuid.UUID, exclude []string, limit, offset int) ([]Event, int, error) {

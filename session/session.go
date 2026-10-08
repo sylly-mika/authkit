@@ -26,17 +26,20 @@ type Session struct {
 	CreatedAt       time.Time
 	LastSeenAt      *time.Time
 	ExpiresAt       time.Time
-	RevokedAt       *time.Time
-	RotatedAt       *time.Time
-	Current         bool
+	// AbsoluteExpiresAt is the cap set at sign-in; nil without one. Every
+	// write of ExpiresAt is clamped to it.
+	AbsoluteExpiresAt *time.Time
+	RevokedAt         *time.Time
+	RotatedAt         *time.Time
+	Current           bool
 }
 
-// Create inserts a new session with its refresh token's hash.
+// Create inserts a new session with its token's hash.
 func Create(ctx context.Context, q db.Querier, s Session, tokenHash []byte) error {
 	_, err := q.Exec(ctx, `
-		INSERT INTO auth_sessions (id, principal_id, audience, scope_id, token_hash, authenticated_at, ip, user_agent, created_at, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		s.ID, s.PrincipalID, s.Audience, s.ScopeID, tokenHash, s.AuthenticatedAt, s.IP, s.UserAgent, s.CreatedAt, s.ExpiresAt)
+		INSERT INTO auth_sessions (id, principal_id, audience, scope_id, token_hash, authenticated_at, ip, user_agent, created_at, expires_at, absolute_expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		s.ID, s.PrincipalID, s.Audience, s.ScopeID, tokenHash, s.AuthenticatedAt, s.IP, s.UserAgent, s.CreatedAt, s.ExpiresAt, s.AbsoluteExpiresAt)
 	return err
 }
 
@@ -45,12 +48,12 @@ func Create(ctx context.Context, q db.Querier, s Session, tokenHash []byte) erro
 var ErrRotationLost = errors.New("authkit: the session changed under its row lock")
 
 const columns = `id, principal_id, audience, scope_id, ip, user_agent, authenticated_at, created_at,
-	last_seen_at, expires_at, revoked_at, rotated_at`
+	last_seen_at, expires_at, absolute_expires_at, revoked_at, rotated_at`
 
 func scan(row interface{ Scan(...any) error }) (Session, error) {
 	var s Session
 	err := row.Scan(&s.ID, &s.PrincipalID, &s.Audience, &s.ScopeID, &s.IP, &s.UserAgent, &s.AuthenticatedAt, &s.CreatedAt,
-		&s.LastSeenAt, &s.ExpiresAt, &s.RevokedAt, &s.RotatedAt)
+		&s.LastSeenAt, &s.ExpiresAt, &s.AbsoluteExpiresAt, &s.RevokedAt, &s.RotatedAt)
 	return s, err
 }
 

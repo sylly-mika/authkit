@@ -41,7 +41,7 @@ func (s *Service) Refresh(ctx context.Context, q db.Querier, aud Audience, raw s
 	if err != nil {
 		return Result{}, err
 	}
-	sess.ExpiresAt, sess.RotatedAt = now.Add(s.refreshTTL(aud)), &now
+	sess.ExpiresAt, sess.RotatedAt = s.expiry(now, aud, sess.AbsoluteExpiresAt), &now
 	if err := session.Rotate(ctx, q, sess.ID, old, nextHash, now, sess.ExpiresAt); err != nil {
 		return Result{}, err
 	}
