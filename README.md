@@ -140,7 +140,8 @@ use that slot and take no other. Without it, each method takes a slot itself.
   (`echov5.Session`, `Claims`, `Admission`) and sets a rotated cookie. A
   refusal is committed and the request continues with no session.
 - `echov5.RequireSession(opts, keepCookie)` per route: with no session it
-  returns `ErrSessionEnded` and clears the cookie unless `keepCookie`.
+  returns `ErrSessionEnded` and clears the cookie the request carried, unless
+  `keepCookie`.
 - `echov5.RequireOrigin(allow)` on cookie-authenticated mutations: every method
   but GET, HEAD and OPTIONS needs an `Origin` equal to an entry. An absent
   `Origin` is refused, `*` entries are dropped, and there is no Referer

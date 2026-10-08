@@ -64,13 +64,13 @@ func SessionCookie(s Sessions, aud authkit.Audience, opts cookie.Options, inTx f
 }
 
 // RequireSession is per route: with no stored session it returns
-// authkit.ErrSessionEnded (render 401), clearing the cookie first unless
-// keepCookie.
+// authkit.ErrSessionEnded (render 401), first clearing the cookie the request
+// carried, unless keepCookie. A request that carried none gets no Set-Cookie.
 func RequireSession(opts cookie.Options, keepCookie bool) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
 			if _, ok := Session(c); !ok {
-				if !keepCookie {
+				if !keepCookie && opts.Read(c.Request()) != "" {
 					opts.Clear(c.Response())
 				}
 				return authkit.ErrSessionEnded

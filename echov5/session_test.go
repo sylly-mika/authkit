@@ -411,3 +411,18 @@ func TestHashSlotReturnsAnAcquireErrorWithoutRunningTheHandler(t *testing.T) {
 		t.Fatalf("HashSlot on a failing slot store = %v, want the failure wrapped", err)
 	}
 }
+
+func TestRequireSessionSetsNoCookieWhenTheRequestCarriedNone(t *testing.T) {
+	f := sessionSetup(t, nil)
+	rec, err := serve(withCookie(""), []echo.MiddlewareFunc{echov5.SessionCookie(f.svc, "admin", opts, f.inTx), echov5.RequireSession(opts, false)},
+		func(*echo.Context) error {
+			t.Error("a request without a session reached the handler")
+			return nil
+		})
+	if err != authkit.ErrSessionEnded {
+		t.Errorf("RequireSession = %v, want ErrSessionEnded", err)
+	}
+	if got := rec.Header().Values("Set-Cookie"); len(got) != 0 {
+		t.Errorf("Set-Cookie = %v, want none: the request carried no cookie", got)
+	}
+}
