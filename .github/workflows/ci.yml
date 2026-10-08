@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 127.0.0.1:5446:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    env:
+      AUTHKIT_REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.1'
+      - name: Roles
+        run: psql "postgres://postgres:postgres@localhost:5446/postgres" -v ON_ERROR_STOP=1 -f scripts/dev-db-init.sql
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - run: go test ./transport/bearer -run='^$' -fuzz='^FuzzParse$' -fuzztime=20s
+      - run: go test ./transport/bearer -run='^$' -fuzz='^FuzzFromHeader$' -fuzztime=20s

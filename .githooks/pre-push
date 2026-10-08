@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# The push gate, on the machine that pushes; CI runs the same checks on pushes
+# to main and on pull requests. Needs `make start-db`.
+# Installed by `make hooks`. Skip it with `git push --no-verify`.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+pushing=0
+while read -r _ local_sha _ _ || [[ -n "${local_sha:-}" ]]; do
+  [[ "$local_sha" =~ ^0+$ ]] || pushing=1
+done
+[[ $pushing -eq 1 ]] || exit 0
+
+make --no-print-directory verify

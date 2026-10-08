@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: authkit_db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:5446:5432"
+    volumes:
+      - authkit_pgdata:/var/lib/postgresql/data
+      - ./scripts/dev-db-init.sql:/docker-entrypoint-initdb.d/10-dev-db-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  authkit_pgdata:
