@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -113,8 +115,12 @@ func NewHasher(p Params, concurrency int, wait time.Duration, rand io.Reader) (*
 }
 
 // Acquire takes one slot, waiting at most the Hasher's wait (ErrBusy) or
-// until ctx ends. Hash, Verify and VerifyDummy take their own.
+// until ctx ends. Hash, Verify and VerifyDummy take their own, except under a
+// context from Hold, where Acquire takes none.
 func (h *Hasher) Acquire(ctx context.Context) (release func(), err error) {
+	if held, _ := ctx.Value(slotKey{h}).(*atomic.Bool); held != nil && held.Load() {
+		return func() {}, nil
+	}
 	timer := time.NewTimer(h.wait)
 	defer timer.Stop()
 	select {
@@ -125,6 +131,28 @@ func (h *Hasher) Acquire(ctx context.Context) (release func(), err error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+}
+
+type slotKey struct{ h *Hasher }
+
+// Hold takes one slot for the work done under the returned context, so a
+// caller can wait for it before it opens a transaction (spec §3.2). Hash,
+// Verify and VerifyDummy under that context use it and take no other, one
+// after another, until release, which is idempotent and never nil.
+func (h *Hasher) Hold(ctx context.Context) (context.Context, func(), error) {
+	release, err := h.Acquire(ctx)
+	if err != nil {
+		return ctx, func() {}, err
+	}
+	held := new(atomic.Bool)
+	held.Store(true)
+	var once sync.Once
+	return context.WithValue(ctx, slotKey{h}, held), func() {
+		once.Do(func() {
+			held.Store(false)
+			release()
+		})
+	}, nil
 }
 
 // Hash encodes pw under the Hasher's parameters once it holds a slot

@@ -183,3 +183,94 @@ func TestPruneKeepsALiveWindowWithoutALock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestCountJudgesTheLimitAndLocksTheNext is spec §3.2: r.Failures attempts
+// pass, the next is locked; a running lockout is kept, not extended; a lapsed
+// one starts a fresh window.
+func TestCountJudgesTheLimitAndLocksTheNext(t *testing.T) {
+	d := authkittest.NewDB(t)
+	ctx := context.Background()
+	rules := throttle.Rules{Failures: 3, Window: 10 * time.Minute, Lockout: 2 * time.Minute}
+	t0 := authkittest.NewClock().Now()
+	count := func(at time.Time) (time.Time, bool) {
+		t.Helper()
+		var until time.Time
+		var locked bool
+		if err := d.InAuthTx(ctx, func(q db.Querier) error {
+			var err error
+			until, locked, err = throttle.Count(ctx, q, "ada", "staff", at, rules)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return until, locked
+	}
+	for i := range 3 {
+		if _, locked := count(t0.Add(time.Duration(i) * time.Second)); locked {
+			t.Fatalf("attempt %d of 3 is locked", i+1)
+		}
+	}
+	lockedAt := t0.Add(3 * time.Second)
+	if until, locked := count(lockedAt); !locked || !until.Equal(lockedAt.Add(2*time.Minute)) {
+		t.Fatalf("the fourth attempt = %v, %v; want locked until %v", until, locked, lockedAt.Add(2*time.Minute))
+	}
+	if until, locked := count(lockedAt.Add(time.Minute)); !locked || !until.Equal(lockedAt.Add(2*time.Minute)) {
+		t.Fatalf("an attempt during the lockout = %v, %v; want the lockout kept as it was", until, locked)
+	}
+	if _, locked := count(lockedAt.Add(2 * time.Minute)); locked {
+		t.Fatal("the attempt after the lockout is locked: a lapsed lockout starts a fresh window")
+	}
+	var failures int
+	if err := d.Row(t, `SELECT failures FROM auth_throttle WHERE login = 'ada'`).Scan(&failures); err != nil || failures != 1 {
+		t.Fatalf("failures after the lockout = %d (%v), want a fresh window of 1", failures, err)
+	}
+}
+
+func TestConcurrentCountsLockExactlyPastTheLimit(t *testing.T) {
+	d := authkittest.NewDB(t)
+	ctx := context.Background()
+	rules := throttle.Rules{Failures: 10, Window: time.Hour, Lockout: 15 * time.Minute}
+	t0 := authkittest.NewClock().Now()
+	const n = 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	locked := make(chan bool, n)
+	for range n {
+		wg.Go(func() {
+			<-start
+			if err := d.InAuthTx(ctx, func(q db.Querier) error {
+				_, l, err := throttle.Count(ctx, q, "ada", "staff", t0, rules)
+				locked <- l
+				return err
+			}); err != nil {
+				t.Errorf("a concurrent Count: %v", err)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(locked)
+	n0 := 0
+	for l := range locked {
+		if !l {
+			n0++
+		}
+	}
+	if n0 != 10 {
+		t.Fatalf("%d of %d concurrent attempts passed, want exactly 10", n0, n)
+	}
+}
+
+func TestCountNeedsATransaction(t *testing.T) {
+	d := authkittest.NewDB(t)
+	ctx := context.Background()
+	conn, err := d.App.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _, err = throttle.Count(ctx, sqldb.Conn(conn), "ada", "staff", authkittest.NewClock().Now(), throttle.Rules{Failures: 1, Window: time.Minute, Lockout: time.Minute})
+	if !errors.Is(err, db.ErrTxRequired) {
+		t.Fatalf("Count on a bare connection = %v, want db.ErrTxRequired", err)
+	}
+}

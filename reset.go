@@ -96,7 +96,7 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if err := session.RevokeAll(ctx, q, p.ID, ReasonPasswordReset, now); err != nil {
 		return Result{}, err
 	}
-	if err := throttle.Clear(ctx, q, Normalize(p.Login), string(aud)); err != nil {
+	if err := throttle.Clear(ctx, q, s.throttleKey(Normalize(p.Login)), string(aud)); err != nil {
 		return Result{}, err
 	}
 	result := ResultPasswordSet

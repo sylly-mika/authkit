@@ -41,6 +41,35 @@ func Locked(ctx context.Context, q db.Querier, login, aud string, now time.Time)
 	return *until, true, nil
 }
 
+// Count counts one attempt before its verification (spec §3.2) and reports
+// whether the login is now locked, and until when. Its upsert locks the
+// login's row for the caller's transaction, so attempts on one login queue
+// here. The attempt past r.Failures within the window starts a lockout; a
+// running lockout is kept as it is; a lapsed one starts a fresh window.
+func Count(ctx context.Context, q db.Querier, login, aud string, now time.Time, r Rules) (time.Time, bool, error) {
+	if err := db.RequireTx(q); err != nil {
+		return time.Time{}, false, err
+	}
+	if _, err := q.Exec(ctx, `
+		INSERT INTO auth_throttle AS t (login, audience, failures, window_start)
+		VALUES ($1, $2, 1, $3)
+		ON CONFLICT (login, audience) DO UPDATE SET
+		    failures     = CASE WHEN t.locked_until > $3 THEN t.failures
+		                        WHEN t.locked_until IS NOT NULL OR t.window_start <= $4 THEN 1
+		                        ELSE t.failures + 1 END,
+		    window_start = CASE WHEN t.locked_until > $3 THEN t.window_start
+		                        WHEN t.locked_until IS NOT NULL OR t.window_start <= $4 THEN $3
+		                        ELSE t.window_start END,
+		    locked_until = CASE WHEN t.locked_until > $3 THEN t.locked_until
+		                        WHEN t.locked_until IS NOT NULL OR t.window_start <= $4 THEN NULL
+		                        WHEN t.failures + 1 > $5 THEN $6::timestamptz
+		                        END`,
+		login, aud, now, now.Add(-r.Window), r.Failures, now.Add(r.Lockout)); err != nil {
+		return time.Time{}, false, err
+	}
+	return Locked(ctx, q, login, aud, now)
+}
+
 // Fail counts one failed verification. A window that has passed starts over;
 // the failure that reaches the limit locks the login from now.
 func Fail(ctx context.Context, q db.Querier, login, aud string, now time.Time, r Rules) error {

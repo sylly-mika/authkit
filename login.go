@@ -2,6 +2,8 @@ package authkit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"time"
 	"unicode/utf8"
@@ -16,42 +18,48 @@ import (
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 
-// Login signs a principal in with its password (spec §7 Login): normalise,
-// check the throttle, look the login up, run exactly one argon2id
-// verification, count and log a failure, ask Admit, then open the session,
-// mint the pair, clear the throttle and log signed_in. Its refusals return
-// normally after writing their throttle increment and event.
+// Login signs a principal in with its password (spec §3.2; P1 spec §7). By
+// default every attempt is counted before its verification: the hash slot
+// first (from ctx, or taken here), so a Busy refusal counts nothing; then the
+// login's throttle row, locked until the caller commits, is counted, and an
+// attempt past the limit is refused ErrLocked without a verification. Then
+// the lookup, exactly one argon2id verification, Admit, the session, the
+// counter cleared and signed_in. Throttle.CountAfterVerify is v0.1's order:
+// check the lock, verify, count a failure. Its refusals return normally after
+// writing their throttle count and event.
 func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, pw string, m Meta) (Result, error) {
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}
 	m = m.clean()
-	now := s.now()
-	key := Normalize(login)
-	ev := events.Event{Audience: string(aud), Login: typedLogin(login), IP: m.IP, UserAgent: m.UserAgent}
+	a := &attempt{aud: aud, key: Normalize(login), now: s.now(), m: m,
+		ev: events.Event{Audience: string(aud), Login: typedLogin(login), IP: m.IP, UserAgent: m.UserAgent}}
 	// A login longer than any account's is neither counted nor looked up: it
 	// is unknown, so no account escapes the throttle through it.
-	counted := utf8.RuneCountInString(key) <= maxLoginRunes
-
-	until, locked := time.Time{}, false
-	if counted {
-		var err error
-		if until, locked, err = throttle.Locked(ctx, q, key, string(aud), now); err != nil {
+	a.counted = utf8.RuneCountInString(a.key) <= maxLoginRunes
+	if !s.cfg.Throttle.CountAfterVerify {
+		held, release, err := s.hasher.Hold(ctx)
+		if errors.Is(err, ErrBusy) {
+			return Result{Refusal: ErrBusy}, nil
+		}
+		if err != nil {
 			return Result{}, err
 		}
+		defer release()
+		ctx = held
+	}
+	until, locked, err := s.throttled(ctx, q, a)
+	if err != nil {
+		return Result{}, err
 	}
 	if locked {
-		ev.Result = ResultLocked
-		if err := s.record(ctx, q, now, ev); err != nil {
-			return Result{}, err
-		}
-		return Result{Refusal: ErrLocked{RetryAfter: until.Sub(now)}}, nil
+		return s.refuseLocked(ctx, q, a, until)
 	}
 
 	var p Principal
-	err := ErrUnknownLogin
-	if counted {
-		p, err = s.principals.Lookup(ctx, q, key, aud)
+	err = ErrUnknownLogin
+	if a.counted {
+		p, err = s.principals.Lookup(ctx, q, a.key, aud)
 	}
 	known := err == nil
 	if err != nil && !errors.Is(err, ErrUnknownLogin) {
@@ -60,7 +68,7 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 	var hash string
 	var hasCredential bool
 	if known {
-		ev.PrincipalID = &p.ID
+		a.ev.PrincipalID = &p.ID
 		if hash, hasCredential, err = credentialOf(ctx, q, p.ID); err != nil {
 			return Result{}, err
 		}
@@ -75,30 +83,96 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 	if !ok {
 		switch {
 		case !known:
-			ev.Result = ResultUnknownLogin
+			a.ev.Result = ResultUnknownLogin
 		case !hasCredential:
-			ev.Result = ResultNoPassword
+			a.ev.Result = ResultNoPassword
 		default:
-			ev.Result = ResultBadPassword
+			a.ev.Result = ResultBadPassword
 		}
-		if counted {
-			if err := throttle.Fail(ctx, q, key, string(aud), now, s.cfg.Throttle); err != nil {
-				return Result{}, err
-			}
-		}
-		if err := s.record(ctx, q, now, ev); err != nil {
+		return s.refuseFailed(ctx, q, a)
+	}
+	return s.signIn(ctx, q, a, p, hash, pw)
+}
+
+// attempt is one Login call's state.
+type attempt struct {
+	aud     Audience
+	key     string // the normalised login
+	counted bool   // false for a login too long to be any account's
+	now     time.Time
+	m       Meta
+	ev      events.Event
+}
+
+// throttleKey is the auth_throttle key of a normalised login: its sha256 in
+// hex, so the table holds no logins, unless Throttle.PlainLoginKey. Turning
+// PlainLoginKey off on a running app orphans its counters; they lapse within
+// Lockout and Prune deletes them.
+func (s *Service) throttleKey(normalised string) string {
+	if s.cfg.Throttle.PlainLoginKey {
+		return normalised
+	}
+	sum := sha256.Sum256([]byte(normalised))
+	return hex.EncodeToString(sum[:])
+}
+
+// throttled counts the attempt (count-before) or reads the lock
+// (CountAfterVerify), and reports whether the login is locked.
+func (s *Service) throttled(ctx context.Context, q db.Querier, a *attempt) (time.Time, bool, error) {
+	switch {
+	case !a.counted:
+		return time.Time{}, false, nil
+	case s.cfg.Throttle.CountAfterVerify:
+		return throttle.Locked(ctx, q, s.throttleKey(a.key), string(a.aud), a.now)
+	}
+	return throttle.Count(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle)
+}
+
+// refuseLocked logs an attempt on a locked login, verified by nobody. In the
+// count-before order its event names the principal when the login resolves
+// (spec §3.6); CountAfterVerify keeps v0.1's event, without one.
+func (s *Service) refuseLocked(ctx context.Context, q db.Querier, a *attempt, until time.Time) (Result, error) {
+	if !s.cfg.Throttle.CountAfterVerify {
+		p, err := s.principals.Lookup(ctx, q, a.key, a.aud)
+		switch {
+		case err == nil:
+			a.ev.PrincipalID = &p.ID
+		case !errors.Is(err, ErrUnknownLogin):
 			return Result{}, err
 		}
-		return Result{Refusal: ErrInvalidCredentials}, nil
 	}
+	a.ev.Result = ResultLocked
+	if err := s.record(ctx, q, a.now, a.ev); err != nil {
+		return Result{}, err
+	}
+	return Result{Refusal: ErrLocked{RetryAfter: until.Sub(a.now)}}, nil
+}
 
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud})
+// refuseFailed logs a failed verification; CountAfterVerify counts it here,
+// the count-before order counted it already.
+func (s *Service) refuseFailed(ctx context.Context, q db.Querier, a *attempt) (Result, error) {
+	if a.counted && s.cfg.Throttle.CountAfterVerify {
+		if err := throttle.Fail(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle); err != nil {
+			return Result{}, err
+		}
+	}
+	if err := s.record(ctx, q, a.now, a.ev); err != nil {
+		return Result{}, err
+	}
+	return Result{Refusal: ErrInvalidCredentials}, nil
+}
+
+// signIn finishes a verified attempt: Admit, the rehash, the session, the
+// counter cleared and signed_in. An Admit refusal leaves the counter as it
+// is: only a sign-in clears it.
+func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Principal, hash, pw string) (Result, error) {
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: a.aud})
 	if err != nil {
 		return Result{}, err
 	}
 	if refusal != nil {
-		ev.Result = refusal.Result
-		if err := s.record(ctx, q, now, ev); err != nil {
+		a.ev.Result = refusal.Result
+		if err := s.record(ctx, q, a.now, a.ev); err != nil {
 			return Result{}, err
 		}
 		return Result{Refusal: refusal.Err}, nil
@@ -108,15 +182,15 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 			return Result{}, err
 		}
 	}
-	sess, pair, err := s.openSession(ctx, q, p, aud, adm, m, now)
+	sess, pair, err := s.openSession(ctx, q, p, a.aud, adm, a.m, a.now)
 	if err != nil {
 		return Result{}, err
 	}
-	if err := throttle.Clear(ctx, q, key, string(aud)); err != nil {
+	if err := throttle.Clear(ctx, q, s.throttleKey(a.key), string(a.aud)); err != nil {
 		return Result{}, err
 	}
-	ev.Result, ev.SessionID, ev.ScopeID = ResultSignedIn, &sess.ID, adm.ScopeID
-	if err := s.record(ctx, q, now, ev); err != nil {
+	a.ev.Result, a.ev.SessionID, a.ev.ScopeID = ResultSignedIn, &sess.ID, adm.ScopeID
+	if err := s.record(ctx, q, a.now, a.ev); err != nil {
 		return Result{}, err
 	}
 	return Result{Principal: p, Session: &sess, Tokens: &pair, Admission: &adm}, nil

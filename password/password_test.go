@@ -184,3 +184,36 @@ func TestNewHasherRefusesUnusableParameters(t *testing.T) {
 		t.Error("NewHasher with no slots made a hasher")
 	}
 }
+
+// TestHoldServesTheWorkUnderItsContext is spec §3.2: the slot an app takes
+// before its transaction serves the hashing under that context, and no other.
+func TestHoldServesTheWorkUnderItsContext(t *testing.T) {
+	h := hasher(t, cheap, 1, 50*time.Millisecond)
+	ctx := context.Background()
+	held, release, err := h.Hold(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Hash(held, "a password"); err != nil {
+		t.Fatalf("Hash under the held context = %v, want it to hash on the held slot", err)
+	}
+	if err := h.VerifyDummy(held, "a password"); err != nil {
+		t.Fatalf("VerifyDummy under the held context = %v", err)
+	}
+	if _, err := h.Hash(ctx, "a password"); !errors.Is(err, password.ErrBusy) {
+		t.Fatalf("Hash outside it = %v, want ErrBusy: the one slot is held", err)
+	}
+	release()
+	other, err := h.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("Acquire after the release = %v", err)
+	}
+	if _, err := h.Hash(held, "a password"); !errors.Is(err, password.ErrBusy) {
+		t.Fatalf("Hash under a released hold, the ceiling full = %v, want ErrBusy: a released slot is not reused", err)
+	}
+	release()
+	if _, err := h.Acquire(ctx); !errors.Is(err, password.ErrBusy) {
+		t.Fatalf("Acquire after a second release = %v, want ErrBusy: release must free its slot once", err)
+	}
+	other()
+}

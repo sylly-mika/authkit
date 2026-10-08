@@ -49,7 +49,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 // reads a pinned connection may run, and the methods that reach no database.
 var (
 	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "OneTime.CreatedSince", "OneTime.Peek"}
-	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword"}
+	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword", "AcquireHashSlot"}
 )
 
 // TestWriteMethodsRefuseABareConnection: every write method refuses a bare
