@@ -13,11 +13,17 @@ import (
 
 // Rules: Failures within Window lock the login for Lockout. When Lockout is
 // shorter than Window, a lock that lapses inside its window re-arms on the
-// next failure in it.
+// next failure in it. The two switches are read by authkit's Login.
 type Rules struct {
 	Failures int
 	Window   time.Duration
 	Lockout  time.Duration
+	// CountAfterVerify is v0.1's order: check the lock, verify, count a
+	// failure. False (the default) counts every attempt before its verify.
+	CountAfterVerify bool
+	// PlainLoginKey keys auth_throttle on the normalised login, as v0.1 did.
+	// False (the default) keys it on hex(sha256(normalised login)).
+	PlainLoginKey bool
 }
 
 // Locked reports whether the login is locked at now, and until when.

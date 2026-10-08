@@ -33,11 +33,28 @@ func newWorld(t *testing.T, tweaks ...func(*authkit.Config)) *world {
 	w := &world{t: t, ctx: context.Background(), d: authkittest.NewDB(t), p: authkittest.NewPrincipals(), clock: authkittest.NewClock()}
 	w.cfg = authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Hashing: cheap,
 		HashWait: 200 * time.Millisecond, Clock: w.clock, Rand: authkittest.Rand(7)}
+	pinned(&w.cfg)
 	for _, f := range tweaks {
 		f(&w.cfg)
 	}
 	w.svc = w.service(w.cfg)
 	return w
+}
+
+// pinned is what ino-tasks pins on v0.2 to keep v0.1's behaviour (spec §6),
+// so every world runs the P1 suite unchanged. A v0.2 test drops it with
+// defaults.
+func pinned(c *authkit.Config) {
+	c.Session = authkit.SessionRules{IdleTTL: 7 * 24 * time.Hour, AbsoluteTTL: -1}
+	c.Throttle = authkit.Throttle{Failures: 10, Window: 15 * time.Minute, Lockout: 15 * time.Minute, CountAfterVerify: true, PlainLoginKey: true}
+	c.Events.ChangeLogsReset = true
+	c.Reset.MayCreateCredential = true
+	c.EventRetention = -1
+}
+
+// defaults undoes pinned: the zero values, which are the v0.2 defaults.
+func defaults(c *authkit.Config) {
+	c.Session, c.Throttle, c.Events, c.Reset, c.EventRetention = authkit.SessionRules{}, authkit.Throttle{}, authkit.EventRules{}, authkit.ResetRules{}, 0
 }
 
 func (w *world) service(cfg authkit.Config) *authkit.Service {

@@ -14,10 +14,7 @@ package authkit
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
-	"fmt"
-	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -120,26 +117,6 @@ type Result struct {
 	TokenID   *uuid.UUID // RequestReset: the one-time link to mail
 }
 
-// Config is built by the app from its own environment. Zero durations and
-// zero structs take the spec's defaults.
-type Config struct {
-	Issuer          string
-	Secret          []byte // at least 32 bytes
-	AccessTTL       time.Duration
-	RefreshTTL      time.Duration
-	RefreshTTLFor   map[Audience]time.Duration
-	ResetTTL        time.Duration
-	ResetFloor      time.Duration
-	Password        password.Policy
-	Hashing         password.Params
-	Throttle        Throttle
-	HashConcurrency int
-	HashWait        time.Duration
-	ReuseGrace      time.Duration
-	Clock           Clock
-	Rand            io.Reader
-}
-
 // Service is authkit's entry point: every flow is one of its methods, run on
 // the db.Querier the caller hands it. It is safe for concurrent use when
 // Config.Clock and Config.Rand are.
@@ -153,18 +130,12 @@ type Service struct {
 }
 
 // New builds the Service. It reads no database: the app calls CheckSchema at
-// startup. Zero fields take the spec's defaults. New refuses a nil Principals,
-// an empty Issuer, a Secret under 32 bytes, a negative AccessTTL, any throttle
-// rule, TTL, floor, wait or grace that is not positive, a password policy
-// outside 1 <= MinRunes <= MaxRunes, and hashing parameters NewHasher refuses.
+// startup. Zero fields take the v0.2 defaults. New refuses a nil Principals
+// and every Config that check refuses, and hashing parameters NewHasher
+// refuses. A Session-mode Service has no Codec.
 func New(cfg Config, principals Principals) (*Service, error) {
-	switch {
-	case principals == nil:
+	if principals == nil {
 		return nil, errors.New("authkit: New needs the app's Principals")
-	case cfg.Issuer == "":
-		return nil, errors.New("authkit: Config.Issuer is empty")
-	case len(cfg.Secret) < 32:
-		return nil, errors.New("authkit: Config.Secret must be at least 32 bytes")
 	}
 	cfg = withDefaults(cfg)
 	if err := cfg.check(); err != nil {
@@ -174,73 +145,13 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	codec, err := bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, cfg.Clock.Now)
-	if err != nil {
-		return nil, err
-	}
-	return &Service{cfg: cfg, principals: principals, hasher: hasher, codec: codec,
-		links: onetime.New(cfg.Clock.Now, cfg.Rand)}, nil
-}
-
-func withDefaults(c Config) Config {
-	def := func(d *time.Duration, v time.Duration) {
-		if *d == 0 {
-			*d = v
+	s := &Service{cfg: cfg, principals: principals, hasher: hasher, links: onetime.New(cfg.Clock.Now, cfg.Rand)}
+	if cfg.Transport == TransportBearer {
+		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, cfg.Clock.Now); err != nil {
+			return nil, err
 		}
 	}
-	def(&c.AccessTTL, 15*time.Minute)
-	def(&c.RefreshTTL, 7*24*time.Hour)
-	def(&c.ResetTTL, time.Hour)
-	def(&c.ResetFloor, 500*time.Millisecond)
-	def(&c.HashWait, 2*time.Second)
-	def(&c.ReuseGrace, 30*time.Second)
-	if c.Password == (password.Policy{}) {
-		c.Password = password.DefaultPolicy
-	}
-	if c.Hashing == (password.Params{}) {
-		c.Hashing = password.Default
-	}
-	if c.Throttle.Failures == 0 {
-		c.Throttle.Failures = 10
-	}
-	def(&c.Throttle.Window, 15*time.Minute)
-	def(&c.Throttle.Lockout, 15*time.Minute)
-	if c.HashConcurrency == 0 {
-		c.HashConcurrency = 4
-	}
-	if c.Clock == nil {
-		c.Clock = systemClock{}
-	}
-	if c.Rand == nil {
-		c.Rand = rand.Reader
-	}
-	return c
-}
-
-// check refuses what withDefaults leaves non-positive: a throttle that never
-// locks, a password policy that admits an empty password or none, a session
-// or link born expired, a negative pad, wait or grace.
-func (c Config) check() error {
-	if t := c.Throttle; t.Failures < 1 || t.Window <= 0 || t.Lockout <= 0 {
-		return fmt.Errorf("authkit: Config.Throttle needs a positive limit, window and lockout: %+v", t)
-	}
-	for aud, d := range c.RefreshTTLFor {
-		if d <= 0 {
-			return fmt.Errorf("authkit: Config.RefreshTTLFor[%q] is not positive", aud)
-		}
-	}
-	if p := c.Password; p.MinRunes < 1 || p.MaxRunes < p.MinRunes {
-		return fmt.Errorf("authkit: Config.Password needs 1 <= MinRunes <= MaxRunes: %+v", p)
-	}
-	for _, d := range []struct {
-		field string
-		v     time.Duration
-	}{{"RefreshTTL", c.RefreshTTL}, {"ResetTTL", c.ResetTTL}, {"ResetFloor", c.ResetFloor}, {"HashWait", c.HashWait}, {"ReuseGrace", c.ReuseGrace}} {
-		if d.v <= 0 {
-			return fmt.Errorf("authkit: Config.%s must be positive, not %v", d.field, d.v)
-		}
-	}
-	return nil
+	return s, nil
 }
 
 func (s *Service) now() time.Time { return s.cfg.Clock.Now() }
@@ -249,10 +160,11 @@ func (s *Service) refreshTTL(aud Audience) time.Duration {
 	if d, ok := s.cfg.RefreshTTLFor[aud]; ok {
 		return d
 	}
-	return s.cfg.RefreshTTL
+	return s.cfg.Session.IdleTTL
 }
 
-// Codec parses and mints access tokens (echov5.ParseBearer; app tests).
+// Codec parses and mints access tokens (echov5.ParseBearer; app tests); nil
+// in Session mode.
 func (s *Service) Codec() *bearer.Codec { return s.codec }
 
 // OneTime is the one-time link store for the app's own purposes (invites).
