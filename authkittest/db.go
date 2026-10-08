@@ -198,6 +198,16 @@ func roleDSN(role, name string) (string, error) {
 	return u.String(), nil
 }
 
+// DSN is role's DSN for d (OwnerRole or AppRole), for a driver other than
+// lib/pq or a migration tool.
+func (d *DB) DSN(role string) string {
+	dsn, err := roleDSN(role, d.Name)
+	if err != nil {
+		panic(err)
+	}
+	return dsn
+}
+
 func open(t testing.TB, role, name string) *sql.DB {
 	t.Helper()
 	dsn, err := roleDSN(role, name)
