@@ -112,9 +112,23 @@ type Result struct {
 	Refusal   error
 	Principal Principal
 	Session   *Session
-	Tokens    *TokenPair
-	Admission *Admission
-	TokenID   *uuid.UUID // RequestReset: the one-time link to mail
+	Tokens    *TokenPair // Bearer mode
+	// SessionToken (Session mode) is the raw session token to set as the
+	// cookie: on a sign-in, and when AuthenticateSession rotated it. Empty
+	// means the cookie stays as it is.
+	SessionToken string
+	Admission    *Admission
+	TokenID      *uuid.UUID // RequestReset: the one-time link to mail
+}
+
+// Claims is the session the Result names, as the account methods take it
+// (Logout, ListSessions, RevokeSession, ChangePassword): Subject, SessionID
+// and Audience. Nil when the Result has no Session.
+func (r Result) Claims() *Claims {
+	if r.Session == nil {
+		return nil
+	}
+	return &Claims{Subject: r.Session.PrincipalID, SessionID: r.Session.ID, Audience: r.Session.Audience}
 }
 
 // Service is authkit's entry point: every flow is one of its methods, run on

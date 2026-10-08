@@ -84,6 +84,10 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"VerifyPassword": func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
+		"AuthenticateSession": func() error {
+			_, err := w.svc.AuthenticateSession(ctx, q, "staff", res.Tokens.RefreshToken, authkit.Meta{})
+			return err
+		},
 		"Prune":          func() error { return w.svc.Prune(ctx, q) },
 		"OneTime.Lock":   func() error { return links.Lock(ctx, q, "reset", id) },
 		"OneTime.Create": func() error { _, err := links.Create(ctx, q, "reset", id, time.Hour); return err },

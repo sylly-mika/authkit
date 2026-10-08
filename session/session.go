@@ -90,6 +90,33 @@ func Rotate(ctx context.Context, q db.Querier, id uuid.UUID, old, next []byte, n
 	return nil
 }
 
+// ByToken reads the session of aud whose current token hashes to tokenHash,
+// whatever its state (Session mode). It takes no lock: Swap's guard decides
+// a race.
+func ByToken(ctx context.Context, q db.Querier, tokenHash []byte, aud string) (Session, error) {
+	return scan(q.QueryRow(ctx, `SELECT `+columns+` FROM auth_sessions WHERE token_hash = $1 AND audience = $2`, tokenHash, aud))
+}
+
+// Swap replaces the session token by compare-and-swap (spec §3.5 rule 7):
+// only a row that still carries old, unrevoked, takes next, keeps old as the
+// previous token and slides. It reports whether this call swapped.
+func Swap(ctx context.Context, q db.Querier, id uuid.UUID, old, next []byte, now, expires time.Time) (bool, error) {
+	n, err := q.Exec(ctx, `
+		UPDATE auth_sessions
+		   SET prev_token_hash = token_hash, token_hash = $3, rotated_at = $4, last_seen_at = $4, expires_at = $5
+		 WHERE id = $1 AND token_hash = $2 AND revoked_at IS NULL`, id, old, next, now, expires)
+	return n == 1, err
+}
+
+// Slide stamps last_seen_at and moves the idle expiry when last_seen_at is
+// unset or not after staleBefore.
+func Slide(ctx context.Context, q db.Querier, id uuid.UUID, now, staleBefore, expires time.Time) error {
+	_, err := q.Exec(ctx, `
+		UPDATE auth_sessions SET last_seen_at = $2, expires_at = $4
+		 WHERE id = $1 AND revoked_at IS NULL AND (last_seen_at IS NULL OR last_seen_at <= $3)`, id, now, staleBefore, expires)
+	return err
+}
+
 // Load reads the principal's session by id, whatever its state.
 func Load(ctx context.Context, q db.Querier, id, principal uuid.UUID) (Session, error) {
 	return scan(q.QueryRow(ctx, `SELECT `+columns+` FROM auth_sessions WHERE id = $1 AND principal_id = $2`, id, principal))

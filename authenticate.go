@@ -17,8 +17,12 @@ const touchEvery = time.Minute
 // querier the app binds for the request; a bare pinned connection is fine. A
 // missing, revoked or expired session is ErrSessionEnded. An Admit refusal,
 // or claims that differ from what Admit grants now, is ErrStale. It stamps
-// last_seen_at at most once a minute.
+// last_seen_at at most once a minute. Bearer mode only; Session mode has
+// AuthenticateSession.
 func (s *Service) Authenticate(ctx context.Context, q db.Querier, c *Claims) (Result, error) {
+	if s.cfg.Transport != TransportBearer {
+		return Result{}, errors.New("authkit: Authenticate needs Config.Transport TransportBearer")
+	}
 	now := s.now()
 	sess, err := session.Load(ctx, q, c.SessionID, c.Subject)
 	if errors.Is(err, db.ErrNoRows) {

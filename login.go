@@ -183,18 +183,18 @@ func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Princi
 			return Result{}, err
 		}
 	}
-	sess, pair, err := s.openSession(ctx, q, p, a.aud, adm, a.m, a.now)
+	res, err := s.openSession(ctx, q, p, a.aud, adm, a.m, a.now)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := throttle.Clear(ctx, q, s.throttleKey(a.key), string(a.aud)); err != nil {
 		return Result{}, err
 	}
-	a.ev.Result, a.ev.SessionID, a.ev.ScopeID = ResultSignedIn, &sess.ID, adm.ScopeID
+	a.ev.Result, a.ev.SessionID, a.ev.ScopeID = ResultSignedIn, &res.Session.ID, adm.ScopeID
 	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
 		return Result{}, err
 	}
-	return Result{Principal: p, Session: &sess, Tokens: &pair, Admission: &adm}, nil
+	return res, nil
 }
 
 // verify runs exactly one argon2id verification: against the stored hash, or
@@ -250,26 +250,35 @@ func (s *Service) record(ctx context.Context, q db.Querier, now time.Time, sourc
 	return nil
 }
 
-func (s *Service) openSession(ctx context.Context, q db.Querier, p Principal, aud Audience, adm Admission, m Meta, now time.Time) (Session, TokenPair, error) {
+// openSession creates the principal's session, capped from now, and its
+// credential: an access and a refresh token (Bearer) or a session token
+// (Session mode), issued at the method's one now.
+func (s *Service) openSession(ctx context.Context, q db.Querier, p Principal, aud Audience, adm Admission, m Meta, now time.Time) (Result, error) {
 	id, err := token.ID(s.cfg.Rand)
 	if err != nil {
-		return Session{}, TokenPair{}, err
+		return Result{}, err
 	}
 	raw, hash, err := token.New(s.cfg.Rand)
 	if err != nil {
-		return Session{}, TokenPair{}, err
+		return Result{}, err
 	}
 	sess := Session{ID: id, PrincipalID: p.ID, Audience: string(aud), ScopeID: adm.ScopeID, IP: m.IP, UserAgent: m.UserAgent,
 		AuthenticatedAt: now, CreatedAt: now, AbsoluteExpiresAt: s.absoluteFrom(now)}
 	sess.ExpiresAt = s.expiry(now, aud, sess.AbsoluteExpiresAt)
 	if err := session.Create(ctx, q, sess, hash); err != nil {
-		return Session{}, TokenPair{}, err
+		return Result{}, err
+	}
+	res := Result{Principal: p, Session: &sess, Admission: &adm}
+	if s.cfg.Transport == TransportSession {
+		res.SessionToken = raw
+		return res, nil
 	}
 	access, exp, err := s.codec.MintAt(now, p.ID, id, string(aud), adm.Claims)
 	if err != nil {
-		return Session{}, TokenPair{}, err
+		return Result{}, err
 	}
-	return sess, TokenPair{AccessToken: access, RefreshToken: raw, ExpiresAt: exp}, nil
+	res.Tokens = &TokenPair{AccessToken: access, RefreshToken: raw, ExpiresAt: exp}
+	return res, nil
 }
 
 // rehash re-encodes a password under the current parameters (spec §8.7),

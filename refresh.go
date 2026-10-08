@@ -14,10 +14,13 @@ import (
 // Refresh rotates a refresh token (spec §7 Refresh, §8.1). It locks the open
 // session of aud that carries the token, asks Admit with the session's scope
 // and only then writes: a refusal leaves the token valid. The pair is minted
-// with the claims Admit grants now.
+// with the claims Admit grants now. Bearer mode only.
 func (s *Service) Refresh(ctx context.Context, q db.Querier, aud Audience, raw string, m Meta) (Result, error) {
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
+	}
+	if s.cfg.Transport != TransportBearer {
+		return Result{}, errors.New("authkit: Refresh needs Config.Transport TransportBearer")
 	}
 	m = m.clean()
 	now := s.now()
