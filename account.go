@@ -3,6 +3,7 @@ package authkit
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -55,4 +56,31 @@ func (s *Service) ListEvents(ctx context.Context, q db.Querier, principal uuid.U
 		}
 	}
 	return events.List(ctx, q, principal, exclude, limit, offset)
+}
+
+var revokeReasons = []string{ReasonLogout, ReasonUser, ReasonPasswordChanged, ReasonPasswordReset, ReasonReuseDetected, ReasonAdmin}
+
+// RevokeAllSessions ends every open session of the principal for reason,
+// one of the revoke reasons (ReasonAdmin for an admin's action), and logs
+// revoked for each. Any other reason is an error. Needs a transaction.
+func (s *Service) RevokeAllSessions(ctx context.Context, q db.Querier, principal uuid.UUID, reason string, m Meta) (Result, error) {
+	if err := db.RequireTx(q); err != nil {
+		return Result{}, err
+	}
+	if !slices.Contains(revokeReasons, reason) {
+		return Result{}, fmt.Errorf("authkit: %q is not a revoke reason", reason)
+	}
+	m = m.clean()
+	now := s.now()
+	ended, err := session.RevokeOpenAll(ctx, q, principal, reason, now)
+	if err != nil {
+		return Result{}, err
+	}
+	for _, sess := range ended {
+		if err := s.record(ctx, q, now, SourceRevokeAll, events.Event{PrincipalID: &principal, SessionID: &sess.ID, ScopeID: sess.ScopeID,
+			Audience: sess.Audience, Result: ResultRevoked, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+			return Result{}, err
+		}
+	}
+	return Result{}, nil
 }

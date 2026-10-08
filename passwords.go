@@ -14,7 +14,9 @@ import (
 // steps run before any lock. Then it locks the credential and the session in
 // that order, the order CompleteReset writes them in, and every refusal comes
 // before the first write. A reset that lands after the verify answers
-// ErrCurrentPasswordWrong; a revoke, ErrSessionEnded.
+// ErrCurrentPasswordWrong; a revoke, ErrSessionEnded. RevokeOnPasswordChange
+// says whether the caller's own session survives (RevokeOthers) or is
+// replaced by a new one (RevokeAll).
 func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, current, next string, m Meta) (Result, error) {
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
@@ -63,6 +65,9 @@ func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, c
 	if err != nil {
 		return Result{}, err
 	}
+	if s.cfg.RevokeOnPasswordChange == RevokeAll {
+		return s.changeRevokingAll(ctx, q, grant{p: p, aud: Audience(sess.Audience), m: m, now: now}, sess, hash)
+	}
 	if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
 		return Result{}, err
 	}
@@ -73,12 +78,44 @@ func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, c
 		return Result{}, err
 	}
 	sess.AuthenticatedAt = now
+	return Result{Principal: p, Session: &sess}, s.record(ctx, q, now, SourceChangePassword, s.changeEvent(p, sess, m))
+}
+
+// changeRevokingAll is ChangePassword under RevokeAll: Admit for the
+// caller's session scope first (a refusal writes nothing), then the
+// credential, every session revoked (password_changed), the change logged
+// against the caller's session, and the caller signed in afresh, its cap
+// counted from now.
+func (s *Service) changeRevokingAll(ctx context.Context, q db.Querier, g grant, sess Session, hash string) (Result, error) {
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: g.p, Audience: g.aud, ScopeID: sess.ScopeID})
+	if err != nil {
+		return Result{}, err
+	}
+	if refusal != nil {
+		return Result{Refusal: refusal.Err}, nil
+	}
+	g.adm = adm
+	if err := setCredential(ctx, q, g.p.ID, hash, g.now); err != nil {
+		return Result{}, err
+	}
+	if err := session.RevokeAll(ctx, q, g.p.ID, ReasonPasswordChanged, g.now); err != nil {
+		return Result{}, err
+	}
+	if err := s.record(ctx, q, g.now, SourceChangePassword, s.changeEvent(g.p, sess, g.m)); err != nil {
+		return Result{}, err
+	}
+	return s.openSignedIn(ctx, q, SourceChangePassword, g)
+}
+
+// changeEvent is a password change's event, against the caller's session:
+// password_changed, or v0.1's password_reset under Events.ChangeLogsReset.
+func (s *Service) changeEvent(p Principal, sess Session, m Meta) events.Event {
 	result := ResultPasswordChanged
 	if s.cfg.Events.ChangeLogsReset {
 		result = ResultPasswordReset
 	}
-	return Result{Principal: p, Session: &sess}, s.record(ctx, q, now, SourceChangePassword, events.Event{PrincipalID: &p.ID,
-		SessionID: &sess.ID, ScopeID: sess.ScopeID, Audience: sess.Audience, Login: p.Login, Result: result, IP: m.IP, UserAgent: m.UserAgent})
+	return events.Event{PrincipalID: &p.ID, SessionID: &sess.ID, ScopeID: sess.ScopeID, Audience: sess.Audience, Login: p.Login,
+		Result: result, IP: m.IP, UserAgent: m.UserAgent}
 }
 
 // SetPassword gives a principal without a password its first one inside the

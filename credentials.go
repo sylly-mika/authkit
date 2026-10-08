@@ -47,3 +47,10 @@ func setCredential(ctx context.Context, q db.Querier, id uuid.UUID, hash string,
 		id, hash, now)
 	return err
 }
+
+// HasCredential reports whether the principal has a password. A bare
+// connection is fine.
+func (s *Service) HasCredential(ctx context.Context, q db.Querier, principal uuid.UUID) (bool, error) {
+	_, has, err := credentialOf(ctx, q, principal)
+	return has, err
+}

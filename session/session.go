@@ -158,6 +158,28 @@ func RevokeAll(ctx context.Context, q db.Querier, principal uuid.UUID, reason st
 	return err
 }
 
+// RevokeOpenAll ends every open session of the principal for reason and
+// returns them as they were before.
+func RevokeOpenAll(ctx context.Context, q db.Querier, principal uuid.UUID, reason string, now time.Time) ([]Session, error) {
+	rows, err := q.Query(ctx, `
+		UPDATE auth_sessions SET revoked_at = $3, revoke_reason = $2
+		 WHERE principal_id = $1 AND revoked_at IS NULL AND expires_at > $3
+		RETURNING `+columns, principal, reason, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		s, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // SetAuthenticated records now as the session's latest password proof.
 func SetAuthenticated(ctx context.Context, q db.Querier, id uuid.UUID, now time.Time) error {
 	_, err := q.Exec(ctx, `UPDATE auth_sessions SET authenticated_at = $2 WHERE id = $1`, id, now)

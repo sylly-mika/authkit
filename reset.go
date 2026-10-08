@@ -18,7 +18,8 @@ const (
 
 // RequestReset creates a reset link for a known login (spec §7 Request
 // reset); the app enqueues its email with Result.TokenID in the same
-// transaction. An unknown or capped login writes nothing and has no TokenID.
+// transaction. An unknown or capped login, or one without a credential unless
+// Reset.MayCreateCredential, writes nothing and has no TokenID.
 // The app's handler answers alike either way and pads with PadSince after
 // its transaction commits.
 func (s *Service) RequestReset(ctx context.Context, q db.Querier, aud Audience, login string) (Result, error) {
@@ -31,6 +32,15 @@ func (s *Service) RequestReset(ctx context.Context, q db.Querier, aud Audience, 
 	}
 	if err != nil {
 		return Result{}, err
+	}
+	if !s.cfg.Reset.MayCreateCredential {
+		_, has, err := credentialOf(ctx, q, p.ID)
+		if err != nil {
+			return Result{}, err
+		}
+		if !has {
+			return Result{Principal: p}, nil
+		}
 	}
 	if err := s.links.Lock(ctx, q, PurposeReset, p.ID); err != nil {
 		return Result{}, err
@@ -50,9 +60,13 @@ func (s *Service) RequestReset(ctx context.Context, q db.Querier, aud Audience, 
 }
 
 // CompleteReset spends a reset link and sets the password it was sent for
-// (spec §7 Complete reset): the policy first, then the spend, then the
-// credential, every session revoked (password_reset), the login's throttle
-// cleared, and password_set or password_reset logged. Nobody is signed in.
+// (spec §7 Complete reset, §3.5): the policy first, then the spend. A
+// principal without a credential is refused as an unknown link unless
+// Reset.MayCreateCredential. Session mode then asks Admit: a refusal keeps
+// the spend and logs its result, nothing more. Then the credential, every
+// session revoked (password_reset), the login's throttle cleared, and
+// password_set or password_reset logged. Session mode then signs the
+// principal in (Result.SessionToken); Bearer mode signs nobody in.
 func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience, raw, pw string, m Meta) (Result, error) {
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
@@ -90,6 +104,23 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if err != nil {
 		return Result{}, err
 	}
+	if !had && !s.cfg.Reset.MayCreateCredential {
+		return Result{Refusal: ErrTokenUnknown}, nil
+	}
+	g := grant{p: p, aud: aud, m: m, now: now}
+	if s.cfg.Transport == TransportSession {
+		var refusal *Refusal
+		if g.adm, refusal, err = s.admit(ctx, q, Proposal{Principal: p, Audience: aud}); err != nil {
+			return Result{}, err
+		}
+		if refusal != nil {
+			if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+				Result: refusal.Result, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+				return Result{}, err
+			}
+			return Result{Refusal: refusal.Err}, nil
+		}
+	}
 	if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
 		return Result{}, err
 	}
@@ -103,8 +134,14 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if had {
 		result = ResultPasswordReset
 	}
-	return Result{Principal: p}, s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
-		Result: result, IP: m.IP, UserAgent: m.UserAgent})
+	if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+		Result: result, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+		return Result{}, err
+	}
+	if s.cfg.Transport != TransportSession {
+		return Result{Principal: p}, nil
+	}
+	return s.openSignedIn(ctx, q, SourceCompleteReset, g)
 }
 
 // PadSince sleeps until floor has passed since start (spec §8.6). The app's

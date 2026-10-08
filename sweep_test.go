@@ -48,7 +48,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 // The exported methods the bare-connection sweep leaves out on purpose: the
 // reads a pinned connection may run, and the methods that reach no database.
 var (
-	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "OneTime.CreatedSince", "OneTime.Peek"}
+	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "HasCredential", "OneTime.CreatedSince", "OneTime.Peek"}
 	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword", "AcquireHashSlot"}
 )
 
@@ -84,6 +84,11 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"VerifyPassword": func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
+		"OpenSession":    func() error { _, err := w.svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"RevokeAllSessions": func() error {
+			_, err := w.svc.RevokeAllSessions(ctx, q, id, authkit.ReasonAdmin, authkit.Meta{})
+			return err
+		},
 		"AuthenticateSession": func() error {
 			_, err := w.svc.AuthenticateSession(ctx, q, "staff", res.Tokens.RefreshToken, authkit.Meta{})
 			return err
@@ -128,6 +133,9 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	}
 	if _, total, err := w.svc.ListEvents(w.ctx, q, id, nil, 10, 0); err != nil || total != 1 {
 		t.Errorf("ListEvents = %d, %v", total, err)
+	}
+	if has, err := w.svc.HasCredential(w.ctx, q, id); err != nil || !has {
+		t.Errorf("HasCredential = %v, %v", has, err)
 	}
 }
 

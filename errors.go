@@ -85,6 +85,8 @@ const (
 	ReasonPasswordChanged = "password_changed"
 	ReasonPasswordReset   = "password_reset"
 	ReasonReuseDetected   = "reuse_detected"
+	// ReasonAdmin is RevokeAllSessions on an admin's or the app's behalf.
+	ReasonAdmin = "admin"
 )
 
 // PurposeReset is the one-time-link purpose of RequestReset and CompleteReset.
