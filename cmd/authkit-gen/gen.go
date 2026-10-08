@@ -19,18 +19,27 @@ import (
 
 const module = "github.com/sylly-mika/authkit"
 
+// The migration formats: golang-migrate's up and down pair, or one goose file.
+const (
+	formatMigrate = "golang-migrate"
+	formatGoose   = "goose"
+)
+
 type options struct {
 	principals string
 	out        string
 	lock       string
+	format     string // "" is golang-migrate
 	version    string
 	library    []migrations.Migration // nil is migrations.All()
 }
 
-// lockFile records what the generator wrote into an app (spec §5.3).
+// lockFile records what the generator wrote into an app (spec §5.3). A lock
+// without a format is golang-migrate's, as v0.1 wrote it.
 type lockFile struct {
 	Library    string      `json:"library"`
 	Principals string      `json:"principals"`
+	Format     string      `json:"format"`
 	Migrations []lockEntry `json:"migrations"`
 }
 
@@ -41,7 +50,10 @@ type lockEntry struct {
 	SHA256 string `json:"sha256"` // of the rendered up and down, without the header
 }
 
-var appMigration = regexp.MustCompile(`^(\d+)_.+\.(up|down)\.sql$`)
+var (
+	appMigration   = regexp.MustCompile(`^(\d+)_.+\.(up|down)\.sql$`)
+	gooseMigration = regexp.MustCompile(`^(\d+)_.+\.(sql|go)$`)
+)
 
 // reserved is pg_get_keywords() catcode R or T on PostgreSQL 17.10: neither parses as a table name.
 var reserved = []string{
@@ -74,14 +86,21 @@ func checkPrincipals(name string) error {
 	return nil
 }
 
-// run writes every library migration the lock does not list into o.out,
-// numbered after the highest migration already there, and rewrites the lock.
-// It refuses, before any write, a lock it could not write, a locked migration
-// whose rendering changed and an unlocked one o.out already holds. It never
-// overwrites a file. It returns the files it wrote.
+// run writes every library migration the lock does not list into o.out, in
+// o.format, numbered after the highest migration already there, and rewrites
+// the lock. It refuses, before any write, a lock it could not write, a lock
+// of another format, a locked migration whose rendering changed and an
+// unlocked one o.out already holds. It never overwrites a file. It returns
+// the files it wrote.
 func run(o options) ([]string, error) {
 	if err := checkPrincipals(o.principals); err != nil {
 		return nil, err
+	}
+	if o.format == "" {
+		o.format = formatMigrate
+	}
+	if o.format != formatMigrate && o.format != formatGoose {
+		return nil, fmt.Errorf("authkit-gen: -format %q is neither %s nor %s", o.format, formatMigrate, formatGoose)
 	}
 	library := o.library
 	if library == nil {
@@ -94,6 +113,12 @@ func run(o options) ([]string, error) {
 	if lock.Principals != "" && lock.Principals != o.principals {
 		return nil, fmt.Errorf("authkit-gen: %s was generated for principals table %q, not %q", o.lock, lock.Principals, o.principals)
 	}
+	if lock.Format == "" {
+		lock.Format = formatMigrate
+	}
+	if len(lock.Migrations) > 0 && lock.Format != o.format {
+		return nil, fmt.Errorf("authkit-gen: %s was generated as %s, not %s: an app keeps one migration format", o.lock, lock.Format, o.format)
+	}
 	if _, err := os.Stat(filepath.Dir(o.lock)); err != nil {
 		return nil, fmt.Errorf("authkit-gen: the lock's directory: %w", err)
 	}
@@ -101,7 +126,7 @@ func run(o options) ([]string, error) {
 	for _, e := range lock.Migrations {
 		locked[e.ID] = e
 	}
-	next, width, err := nextNumber(o.out)
+	next, width, err := nextNumber(o.out, o.format)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +150,7 @@ func run(o options) ([]string, error) {
 			}
 			continue
 		}
-		if dup, _ := filepath.Glob(filepath.Join(o.out, "*_authkit_"+m.Name+".*.sql")); len(dup) > 0 {
+		if dup, _ := filepath.Glob(filepath.Join(o.out, "*_authkit_"+m.Name+".*")); len(dup) > 0 {
 			return nil, fmt.Errorf("authkit-gen: %s already holds %s, which %s does not list: restore the lock instead of generating a second copy", o.out, filepath.Base(dup[0]), o.lock)
 		}
 		todo = append(todo, r)
@@ -133,7 +158,11 @@ func run(o options) ([]string, error) {
 	var written []string
 	for _, r := range todo {
 		base := fmt.Sprintf("%0*d_authkit_%s", width, next, r.m.Name)
-		for _, part := range []struct{ suffix, sql string }{{".up.sql", r.up}, {".down.sql", r.down}} {
+		parts := []struct{ suffix, sql string }{{".up.sql", r.up}, {".down.sql", r.down}}
+		if o.format == formatGoose {
+			parts = []struct{ suffix, sql string }{{".sql", migrations.Goose(r.up, r.down)}}
+		}
+		for _, part := range parts {
 			path := filepath.Join(o.out, base+part.suffix)
 			if err := writeNew(path, header(o.version, r.m)+part.sql); err != nil {
 				return written, err
@@ -143,7 +172,7 @@ func run(o options) ([]string, error) {
 		lock.Migrations = append(lock.Migrations, lockEntry{ID: r.m.ID, Name: r.m.Name, File: base, SHA256: r.sum})
 		next++
 	}
-	lock.Library, lock.Principals = o.version, o.principals
+	lock.Library, lock.Principals, lock.Format = o.version, o.principals, o.format
 	return written, writeLock(o.lock, lock)
 }
 
@@ -153,16 +182,20 @@ func header(version string, m migrations.Migration) string {
 		module, version, m.ID, m.Name)
 }
 
-// nextNumber is one above the highest NNN_*.up|down.sql in dir, and the
-// digit width the app uses (6 when the directory has none).
-func nextNumber(dir string) (next, width int, err error) {
+// nextNumber is one above the highest migration in dir and the digit width
+// the app uses: NNN_*.up|down.sql for golang-migrate (6 digits when there is
+// none), NNN_*.sql or .go for goose (5, goose's own padding).
+func nextNumber(dir, format string) (next, width int, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0, 0, fmt.Errorf("authkit-gen: read %s: %w", dir, err)
 	}
-	width = 6
+	pattern, width := appMigration, 6
+	if format == formatGoose {
+		pattern, width = gooseMigration, 5
+	}
 	for _, e := range entries {
-		m := appMigration.FindStringSubmatch(e.Name())
+		m := pattern.FindStringSubmatch(e.Name())
 		if m == nil {
 			continue
 		}

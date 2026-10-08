@@ -1,4 +1,4 @@
-.PHONY: help hooks start-db stop clean wait-db fmt-check vet test fuzz verify
+.PHONY: help hooks start-db stop clean wait-db fmt-check vet test roundtrip fuzz verify
 
 SHELL := /bin/bash
 
@@ -42,9 +42,12 @@ vet: wait-db ## go vet every package in the Go container
 test: wait-db fmt-check ## Every test with -race, against the throwaway database (GO_TEST_ARGS narrows it; quote a -run pattern)
 	@$(GO_RUN) sh -c 'go test $(subst ','\'',$(GO_TEST_ARGS))'
 
+roundtrip: wait-db ## authkit-gen's output through goose and golang-migrate (its own module, cmd/authkit-gen/roundtrip)
+	@$(GO_RUN) sh -c 'cd cmd/authkit-gen/roundtrip && go vet ./... && go test -race -count=1 ./...'
+
 fuzz: wait-db ## Each fuzz target for FUZZTIME
 	@$(GO_RUN) sh -c 'go test ./transport/bearer -run=^$$ -fuzz=^FuzzParse$$ -fuzztime=$(FUZZTIME) && go test ./transport/bearer -run=^$$ -fuzz=^FuzzFromHeader$$ -fuzztime=$(FUZZTIME)'
 
-verify: fmt-check vet test fuzz ## The pre-push gate
+verify: fmt-check vet test roundtrip fuzz ## The pre-push gate
 
 .DEFAULT_GOAL := help

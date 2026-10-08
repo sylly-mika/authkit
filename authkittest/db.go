@@ -69,24 +69,47 @@ type DB struct {
 // is set.
 func NewDB(t testing.TB) *DB {
 	t.Helper()
-	ctx := context.Background()
+	admin := openAdmin(t)
+	defer admin.Close()
+	name := "t_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if err := clone(context.Background(), admin, name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { drop(t, name) })
+	return &DB{Name: name, Owner: open(t, OwnerRole, name), App: open(t, AppRole, name)}
+}
+
+// NewEmptyDB is a database with no schema, owned by OwnerRole, for a
+// migration tool to build (the generator's round trip). It is dropped when
+// the test ends, and skips as NewDB does.
+func NewEmptyDB(t testing.TB) *DB {
+	t.Helper()
+	admin := openAdmin(t)
+	defer admin.Close()
+	name := "t_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := admin.ExecContext(context.Background(), `CREATE DATABASE `+pq.QuoteIdentifier(name)+` OWNER `+pq.QuoteIdentifier(OwnerRole)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { drop(t, name) })
+	return &DB{Name: name, Owner: open(t, OwnerRole, name), App: open(t, AppRole, name)}
+}
+
+// openAdmin is the superuser pool; it skips the test when Postgres is
+// unreachable, unless AUTHKIT_REQUIRE_DB or CI is set.
+func openAdmin(t testing.TB) *sql.DB {
+	t.Helper()
 	admin, err := sql.Open("postgres", AdminDSN())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Close()
-	if err := admin.PingContext(ctx); err != nil {
+	if err := admin.PingContext(context.Background()); err != nil {
+		admin.Close()
 		if os.Getenv("AUTHKIT_REQUIRE_DB") != "" || os.Getenv("CI") != "" {
 			t.Fatalf("authkittest: Postgres is unreachable: %v", err)
 		}
 		t.Skipf("authkittest: Postgres is unreachable (%v); run make start-db", err)
 	}
-	name := "t_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if err := clone(ctx, admin, name); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { drop(t, name) })
-	return &DB{Name: name, Owner: open(t, OwnerRole, name), App: open(t, AppRole, name)}
+	return admin
 }
 
 func clone(ctx context.Context, admin *sql.DB, name string) error {

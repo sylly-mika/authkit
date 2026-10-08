@@ -84,6 +84,41 @@ func load(fsys fs.FS) []Migration {
 // Version is the schema version this library needs: the last migration's ID.
 var Version = func() int { all := All(); return all[len(all)-1].ID }()
 
+// Goose renders one migration as a goose file body, without a header:
+// -- +goose Up, the up SQL, -- +goose Down, the down SQL. A statement
+// holding $$ is wrapped in StatementBegin/End, so goose does not split it at
+// its inner semicolons. A statement ends at a line ending in a semicolon
+// outside $$, as every library migration's do.
+func Goose(up, down string) string {
+	return "-- +goose Up\n" + gooseStatements(up) + "\n-- +goose Down\n" + gooseStatements(down)
+}
+
+func gooseStatements(sql string) string {
+	var out, stmt strings.Builder
+	for _, line := range strings.SplitAfter(sql, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if stmt.Len() == 0 && (trimmed == "" || strings.HasPrefix(trimmed, "--")) {
+			out.WriteString(line)
+			continue
+		}
+		stmt.WriteString(line)
+		body := stmt.String()
+		if strings.Count(body, "$$")%2 != 0 || !strings.HasSuffix(trimmed, ";") {
+			continue
+		}
+		if !strings.HasSuffix(body, "\n") {
+			body += "\n"
+		}
+		if strings.Contains(body, "$$") {
+			body = "-- +goose StatementBegin\n" + body + "-- +goose StatementEnd\n"
+		}
+		out.WriteString(body)
+		stmt.Reset()
+	}
+	out.WriteString(stmt.String())
+	return out.String()
+}
+
 // Render substitutes the app's principals table into one migration file.
 func Render(sql, principals string) (string, error) {
 	if !identifier.MatchString(principals) {

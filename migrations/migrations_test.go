@@ -83,3 +83,20 @@ func TestRenderRefusesABadIdentifier(t *testing.T) {
 		}
 	}
 }
+
+// TestGooseWrapsOnlyDollarQuotedStatements is spec §3.4: goose splits an
+// unannotated section at semicolons, so a $$ body is wrapped whole.
+func TestGooseWrapsOnlyDollarQuotedStatements(t *testing.T) {
+	up := "-- a comment\nCREATE TABLE t (a int);\n\nCREATE FUNCTION f() RETURNS trigger AS $$\nBEGIN\n    NEW.a := 1;\n    RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\nUPDATE auth_schema SET version = 9;\n"
+	down := "DROP FUNCTION f();\nDROP TABLE t;\n"
+	want := "-- +goose Up\n-- a comment\nCREATE TABLE t (a int);\n\n-- +goose StatementBegin\nCREATE FUNCTION f() RETURNS trigger AS $$\nBEGIN\n    NEW.a := 1;\n    RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\n-- +goose StatementEnd\nUPDATE auth_schema SET version = 9;\n" +
+		"\n-- +goose Down\nDROP FUNCTION f();\nDROP TABLE t;\n"
+	if got := migrations.Goose(up, down); got != want {
+		t.Fatalf("Goose =\n%s\nwant\n%s", got, want)
+	}
+	for _, m := range migrations.All() {
+		if strings.Contains(migrations.Goose(m.Up, m.Down), "StatementBegin") {
+			t.Errorf("%04d_%s holds no $$, yet Goose wrapped a statement", m.ID, m.Name)
+		}
+	}
+}
