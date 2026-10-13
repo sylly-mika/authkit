@@ -14,7 +14,6 @@ import (
 	"github.com/sylly-mika/authkit/db"
 )
 
-// std is the method set pgx.Tx, *pgxpool.Conn and *pgxpool.Pool share.
 type std interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -83,7 +82,6 @@ func (q querier) QueryRow(ctx context.Context, query string, args ...any) db.Row
 	return row{q.std.QueryRow(ctx, query, args...)}
 }
 
-// rows is pgx.Rows with the error-returning Close db.Rows wants.
 type rows struct{ pgx.Rows }
 
 func (r rows) Close() error {

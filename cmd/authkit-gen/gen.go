@@ -19,7 +19,6 @@ import (
 
 const module = "github.com/sylly-mika/authkit"
 
-// The migration formats: golang-migrate's up and down pair, or one goose file.
 const (
 	formatMigrate = "golang-migrate"
 	formatGoose   = "goose"
@@ -29,13 +28,12 @@ type options struct {
 	principals string
 	out        string
 	lock       string
-	format     string // "" is golang-migrate
+	format     string
 	version    string
-	library    []migrations.Migration // nil is migrations.All()
+	library    []migrations.Migration
 }
 
-// lockFile records what the generator wrote into an app (spec §5.3). A lock
-// without a format is golang-migrate's, as v0.1 wrote it.
+// WHY: a lock without a format is golang-migrate's, so locks written before formats existed keep working.
 type lockFile struct {
 	Library    string      `json:"library"`
 	Principals string      `json:"principals"`
@@ -47,7 +45,7 @@ type lockEntry struct {
 	ID     int    `json:"id"`
 	Name   string `json:"name"`
 	File   string `json:"file"`
-	SHA256 string `json:"sha256"` // of the rendered up and down, without the header
+	SHA256 string `json:"sha256"`
 }
 
 var (
@@ -55,7 +53,7 @@ var (
 	gooseMigration = regexp.MustCompile(`^(\d+)_.+\.(sql|go)$`)
 )
 
-// reserved is pg_get_keywords() catcode R or T on PostgreSQL 17.10: neither parses as a table name.
+// WHY: these words are catcode R or T in pg_get_keywords() on PostgreSQL 17.10, so neither parses as a table name.
 var reserved = []string{
 	"all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "authorization",
 	"binary", "both", "case", "cast", "check", "collate", "collation", "column", "concurrently",
@@ -71,8 +69,6 @@ var reserved = []string{
 	"variadic", "verbose", "when", "where", "window", "with",
 }
 
-// checkPrincipals refuses a name the rendered SQL cannot use unquoted, and one
-// in authkit's or PostgreSQL's own namespace.
 func checkPrincipals(name string) error {
 	switch {
 	case slices.Contains(reserved, name):
@@ -86,12 +82,6 @@ func checkPrincipals(name string) error {
 	return nil
 }
 
-// run writes every library migration the lock does not list into o.out, in
-// o.format, numbered after the highest migration already there, and rewrites
-// the lock. It refuses, before any write, a lock it could not write, a lock
-// of another format, a locked migration whose rendering changed and an
-// unlocked one o.out already holds. It never overwrites a file. It returns
-// the files it wrote.
 func run(o options) ([]string, error) {
 	if err := checkPrincipals(o.principals); err != nil {
 		return nil, err
@@ -182,9 +172,6 @@ func header(version string, m migrations.Migration) string {
 		module, version, m.ID, m.Name)
 }
 
-// nextNumber is one above the highest migration in dir and the digit width
-// the app uses: NNN_*.up|down.sql for golang-migrate (6 digits when there is
-// none), NNN_*.sql or .go for goose (5, goose's own padding).
 func nextNumber(dir, format string) (next, width int, err error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -251,8 +238,6 @@ func writeLock(path string, l lockFile) error {
 	return nil
 }
 
-// libraryVersion is the authkit version this binary was built from: the
-// dependency's version when an app runs it, the main module's in this repo.
 func libraryVersion() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {

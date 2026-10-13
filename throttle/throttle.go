@@ -1,5 +1,5 @@
-// Package throttle is authkit's per-login failure counter, auth_throttle
-// (spec §8.9), keyed by the normalised login and the audience. authkit.Service
+// Package throttle is authkit's per-login failure counter, auth_throttle,
+// keyed by the normalised login and the audience. authkit.Service
 // calls it inside the caller's transaction; apps call the Service.
 package throttle
 
@@ -41,7 +41,7 @@ func Locked(ctx context.Context, q db.Querier, login, aud string, now time.Time)
 	return *until, true, nil
 }
 
-// Count counts one attempt before its verification (spec §3.2) and reports
+// Count counts one attempt before its verification and reports
 // whether the login is now locked, and until when. Its upsert locks the
 // login's row for the caller's transaction, so attempts on one login queue
 // here. The attempt past r.Failures within the window starts a lockout; a

@@ -11,7 +11,7 @@ import (
 	"github.com/sylly-mika/authkit/session"
 )
 
-// Refresh rotates a refresh token (spec §7 Refresh, §8.1). It locks the open
+// Refresh rotates a refresh token. It locks the open
 // session of aud that carries the token, asks Admit with the session's scope
 // and only then writes: a refusal leaves the token valid. The pair is minted
 // with the claims Admit grants now. Bearer mode only.
@@ -55,12 +55,7 @@ func (s *Service) Refresh(ctx context.Context, q db.Querier, aud Audience, raw s
 	return Result{Principal: p, Session: &sess, Tokens: &TokenPair{AccessToken: access, RefreshToken: next, ExpiresAt: exp}, Admission: &adm}, nil
 }
 
-// reuseOrEnded answers a refresh token that opens no session (§8.3). The
-// token a session rotated away within ReuseGrace is a concurrent loser:
-// refused, nothing written, the session lives. One rotated away earlier is a
-// replay: the session is revoked and the event logged, both for the caller to
-// commit. Only the immediately previous token is recognised; anything else is
-// a plain ErrSessionEnded.
+// WHY: a token rotated away within ReuseGrace may be the loser of a concurrent refresh, so it is refused without revoking the session.
 func (s *Service) reuseOrEnded(ctx context.Context, q db.Querier, old []byte, now time.Time, m Meta) (Result, error) {
 	prev, err := session.LockByPrevious(ctx, q, old)
 	if errors.Is(err, db.ErrNoRows) {

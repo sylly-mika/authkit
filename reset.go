@@ -16,8 +16,8 @@ const (
 	resetCapWindow = time.Hour
 )
 
-// RequestReset creates a reset link for a known login (spec §7 Request
-// reset); the app enqueues its email with Result.TokenID in the same
+// RequestReset creates a reset link for a known login; the app enqueues its
+// email with Result.TokenID in the same
 // transaction. An unknown or capped login, or one without a credential unless
 // Reset.MayCreateCredential, writes nothing and has no TokenID.
 // The app's handler answers alike either way and pads with PadSince after
@@ -60,7 +60,7 @@ func (s *Service) RequestReset(ctx context.Context, q db.Querier, aud Audience, 
 }
 
 // CompleteReset spends a reset link and sets the password it was sent for
-// (spec §7 Complete reset, §3.5): the policy first, then the spend. A
+// the policy first, then the spend. A
 // principal without a credential is refused as an unknown link unless
 // Reset.MayCreateCredential. Session mode then asks Admit: a refusal keeps
 // the spend and logs its result, nothing more. Then the credential, every
@@ -144,7 +144,7 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	return s.openSignedIn(ctx, q, SourceCompleteReset, g)
 }
 
-// PadSince sleeps until floor has passed since start (spec §8.6). The app's
+// PadSince sleeps until floor has passed since start. The app's
 // reset-request handler calls it after its transaction commits, so a known
 // and an unknown email take as long.
 func PadSince(start time.Time, floor time.Duration) {

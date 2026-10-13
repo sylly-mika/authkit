@@ -6,7 +6,7 @@ import (
 )
 
 // AcquireHashSlot takes one of the Service's argon2id slots before the app
-// opens its transaction (spec §3.2). Under the returned context, Login,
+// opens its transaction. Under the returned context, Login,
 // VerifyPassword, ChangePassword, CompleteReset and SetPassword hash on that
 // slot and take no other, so a wait for a slot holds no connection. release
 // is idempotent and always non-nil; call it when the request ends. A full

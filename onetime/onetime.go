@@ -1,4 +1,4 @@
-// Package onetime is authkit's one-time links (spec §5.2): rows that hold only
+// Package onetime is authkit's one-time links: rows that hold only
 // a token's hash, one live row per owner and purpose, minted at send time and
 // spent once. No raw token is stored or queued.
 package onetime
@@ -168,7 +168,7 @@ func state(used, revoked *time.Time, expires, now time.Time) State {
 	return StateLive
 }
 
-// Spend uses a live token of purpose exactly once (spec §8.2). The guarded
+// Spend uses a live token of purpose exactly once. The guarded
 // UPDATE is the whole decision: of any number of concurrent spends, one
 // matches and the rest re-check a spent row and match nothing. A refused
 // spend writes nothing; a peek at the same instant then decides unknown (no

@@ -30,16 +30,14 @@ func scanCredential(row db.Row) (string, bool, error) {
 	return hash, true, nil
 }
 
-// rehashCredential re-encodes the hash Login verified, only while it is still
-// the stored one: a change or reset committed since the read wins. A rehash
-// is not a password change, so changed_at stays.
+// WHY: the update is conditional on the stored hash, so a change or reset committed since the read wins.
+// WHY: changed_at stays, since a rehash is not a password change.
 func rehashCredential(ctx context.Context, q db.Querier, id uuid.UUID, old, hash string) error {
 	_, err := q.Exec(ctx, `UPDATE auth_credentials SET password_hash = $3 WHERE principal_id = $1 AND password_hash = $2`, id, old, hash)
 	return err
 }
 
-// setCredential creates or replaces the principal's password hash. It passes
-// the self policy on a pinned connection and the _auth policy without one.
+// WHY: it passes the self policy on a pinned connection and the _auth policy without one.
 func setCredential(ctx context.Context, q db.Querier, id uuid.UUID, hash string, now time.Time) error {
 	_, err := q.Exec(ctx, `
 		INSERT INTO auth_credentials (principal_id, password_hash, changed_at) VALUES ($1, $2, $3)

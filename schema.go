@@ -10,7 +10,7 @@ import (
 )
 
 // CheckSchema refuses a database whose auth_schema.version is older than this
-// library's migrations (spec §5.3). The app calls it once at startup.
+// library's migrations. The app calls it once at startup.
 func CheckSchema(ctx context.Context, q db.Querier) error {
 	var exists bool
 	if err := q.QueryRow(ctx, `SELECT to_regclass('auth_schema') IS NOT NULL`).Scan(&exists); err != nil {

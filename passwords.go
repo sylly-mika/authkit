@@ -9,7 +9,7 @@ import (
 	"github.com/sylly-mika/authkit/session"
 )
 
-// ChangePassword replaces the caller's password (spec §7, §8.10) on the
+// ChangePassword replaces the caller's password on the
 // caller's own transaction, normally on the pinned connection. Both argon2id
 // steps run before any lock. Then it locks the credential and the session in
 // that order, the order CompleteReset writes them in, and every refusal comes
@@ -81,11 +81,7 @@ func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, c
 	return Result{Principal: p, Session: &sess}, s.record(ctx, q, now, SourceChangePassword, s.changeEvent(p, sess, m))
 }
 
-// changeRevokingAll is ChangePassword under RevokeAll: Admit for the
-// caller's session scope first (a refusal writes nothing), then the
-// credential, every session revoked (password_changed), the change logged
-// against the caller's session, and the caller signed in afresh, its cap
-// counted from now.
+// WHY: Admit runs before any write, so a refusal leaves the credential and the sessions as they were.
 func (s *Service) changeRevokingAll(ctx context.Context, q db.Querier, g grant, sess Session, hash string) (Result, error) {
 	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: g.p, Audience: g.aud, ScopeID: sess.ScopeID})
 	if err != nil {
@@ -107,8 +103,6 @@ func (s *Service) changeRevokingAll(ctx context.Context, q db.Querier, g grant, 
 	return s.openSignedIn(ctx, q, SourceChangePassword, g)
 }
 
-// changeEvent is a password change's event, against the caller's session:
-// password_changed, or v0.1's password_reset under Events.ChangeLogsReset.
 func (s *Service) changeEvent(p Principal, sess Session, m Meta) events.Event {
 	result := ResultPasswordChanged
 	if s.cfg.Events.ChangeLogsReset {
@@ -119,8 +113,8 @@ func (s *Service) changeEvent(p Principal, sess Session, m Meta) events.Event {
 }
 
 // SetPassword gives a principal without a password its first one inside the
-// app's own flow (ino-tasks: accepting an invite creates the user, then calls
-// this in the same transaction) and logs password_set. It revokes nothing, so
+// app's own flow (for example, accepting an invite: the app creates the user,
+// then calls this in the same transaction) and logs password_set. It revokes nothing, so
 // replacing a password goes through ChangePassword or CompleteReset.
 func (s *Service) SetPassword(ctx context.Context, q db.Querier, p Principal, aud Audience, pw string, m Meta) (Result, error) {
 	if err := db.RequireTx(q); err != nil {
@@ -154,7 +148,7 @@ func (s *Service) SetPassword(ctx context.Context, q db.Querier, p Principal, au
 }
 
 // VerifyPassword checks an existing principal's password inside the app's own
-// flow (ino-tasks: accepting an invite with an existing account). A mismatch
+// flow (for example, accepting an invite with an existing account). A mismatch
 // logs bad_password and is refused with ErrInvalidCredentials; the caller
 // commits the event. It does not touch the throttle.
 func (s *Service) VerifyPassword(ctx context.Context, q db.Querier, p Principal, aud Audience, pw string, m Meta) (Result, error) {

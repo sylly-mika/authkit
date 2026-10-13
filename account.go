@@ -47,8 +47,7 @@ func (s *Service) RevokeSession(ctx context.Context, q db.Querier, c *Claims, id
 }
 
 // ListEvents is the principal's sign-in log, newest first, without the
-// excluded results, and its count (ino-tasks excludes locked and
-// reuse_detected until its admin labels them). A bare pinned connection is fine.
+// excluded results, and its count. A bare pinned connection is fine.
 func (s *Service) ListEvents(ctx context.Context, q db.Querier, principal uuid.UUID, exclude []string, limit, offset int) ([]Event, int, error) {
 	for _, r := range exclude {
 		if r == "" || strings.Contains(r, ",") {

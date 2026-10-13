@@ -11,7 +11,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 )
 
-// NoMembership is the result Principals refuses with, ino-tasks' own.
+// NoMembership is the refusal code Admit returns for a principal the test has refused with Refuse.
 const NoMembership = "no_membership"
 
 // Principals is an authkit.Principals over the harness users table. Admit

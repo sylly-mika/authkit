@@ -48,7 +48,7 @@ type Admission struct {
 	Context any            // the app's value for its handlers
 }
 
-// Principals is the app side of the seam (spec §5.1).
+// Principals is the app side of the seam.
 type Principals interface {
 	// Lookup resolves a normalised login for an audience; ErrUnknownLogin when absent.
 	// Match the normalised login exactly: folding further gives each variant
@@ -170,8 +170,7 @@ func New(cfg Config, principals Principals) (*Service, error) {
 
 func (s *Service) now() time.Time { return s.cfg.Clock.Now() }
 
-// expiry is a session's idle expiry from now, clamped to its absolute cap
-// (spec §3.5), so every expires_at predicate enforces the cap too.
+// WHY: every expires_at predicate relies on this clamp to enforce the cap.
 func (s *Service) expiry(now time.Time, aud Audience, absolute *time.Time) time.Time {
 	idle := s.cfg.Session.IdleTTL
 	if d, ok := s.cfg.RefreshTTLFor[aud]; ok {
@@ -183,7 +182,6 @@ func (s *Service) expiry(now time.Time, aud Audience, absolute *time.Time) time.
 	return *absolute
 }
 
-// absoluteFrom is the cap of a session signed in at now; nil without one.
 func (s *Service) absoluteFrom(now time.Time) *time.Time {
 	if s.cfg.Session.AbsoluteTTL < 0 {
 		return nil

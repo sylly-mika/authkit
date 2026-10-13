@@ -13,7 +13,7 @@ import (
 
 const touchEvery = time.Minute
 
-// Authenticate is Guard's check of one request (spec §7 Guard, §8.5), on the
+// Authenticate is Guard's check of one request, on the
 // querier the app binds for the request; a bare pinned connection is fine. A
 // missing, revoked or expired session is ErrSessionEnded. An Admit refusal,
 // or claims that differ from what Admit grants now, is ErrStale. It stamps
@@ -57,7 +57,7 @@ func (s *Service) Authenticate(ctx context.Context, q db.Querier, c *Claims) (Re
 	return Result{Principal: p, Session: &sess, Admission: &adm}, nil
 }
 
-// Logout ends the session the token names (spec §7 Logout) and logs
+// Logout ends the session the token names and logs
 // signed_out. A session already revoked or expired is left alone and logs
 // nothing, so a repeated logout succeeds.
 func (s *Service) Logout(ctx context.Context, q db.Querier, c *Claims, m Meta) (Result, error) {

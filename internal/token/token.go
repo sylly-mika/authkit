@@ -1,5 +1,5 @@
 // Package token makes authkit's opaque tokens and row ids from the injected
-// randomness (spec §8.8): 32 bytes as base64url, stored only as sha256.
+// randomness: 32 bytes as base64url, stored only as sha256.
 package token
 
 import (

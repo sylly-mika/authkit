@@ -58,9 +58,9 @@ func scan(row interface{ Scan(...any) error }) (Session, error) {
 }
 
 // LockForRefresh locks the open session of aud whose current refresh token
-// hashes to tokenHash (spec §7 Refresh). Concurrent refreshes of one token
+// hashes to tokenHash. Concurrent refreshes of one token
 // queue on this row lock; once the winner commits, each loser's re-check of
-// token_hash fails and it finds no row (§8.1).
+// token_hash fails and it finds no row.
 func LockForRefresh(ctx context.Context, q db.Querier, tokenHash []byte, aud string, now time.Time) (Session, error) {
 	return scan(q.QueryRow(ctx, `SELECT `+columns+` FROM auth_sessions
 		 WHERE token_hash = $1 AND audience = $2 AND revoked_at IS NULL AND expires_at > $3
@@ -68,14 +68,14 @@ func LockForRefresh(ctx context.Context, q db.Querier, tokenHash []byte, aud str
 }
 
 // LockByPrevious locks the unrevoked session whose previous refresh token
-// hashes to tokenHash (§8.3).
+// hashes to tokenHash.
 func LockByPrevious(ctx context.Context, q db.Querier, tokenHash []byte) (Session, error) {
 	return scan(q.QueryRow(ctx, `SELECT `+columns+` FROM auth_sessions
 		 WHERE prev_token_hash = $1 AND revoked_at IS NULL LIMIT 1 FOR UPDATE`, tokenHash))
 }
 
 // Rotate swaps in the next refresh token, keeps the old one's hash for reuse
-// detection and slides the expiry (§8.1).
+// detection and slides the expiry.
 func Rotate(ctx context.Context, q db.Querier, id uuid.UUID, old, next []byte, now, expires time.Time) error {
 	n, err := q.Exec(ctx, `
 		UPDATE auth_sessions
@@ -97,7 +97,7 @@ func ByToken(ctx context.Context, q db.Querier, tokenHash []byte, aud string) (S
 	return scan(q.QueryRow(ctx, `SELECT `+columns+` FROM auth_sessions WHERE token_hash = $1 AND audience = $2`, tokenHash, aud))
 }
 
-// Swap replaces the session token by compare-and-swap (spec §3.5 rule 7):
+// Swap replaces the session token by compare-and-swap:
 // only a row that still carries old, unrevoked, takes next, keeps old as the
 // previous token and slides. It reports whether this call swapped.
 func Swap(ctx context.Context, q db.Querier, id uuid.UUID, old, next []byte, now, expires time.Time) (bool, error) {

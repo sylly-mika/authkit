@@ -25,7 +25,7 @@ const (
 	TransportSession
 )
 
-// SessionRules bound a session's life (spec §3.5). A negative duration
+// SessionRules bound a session's life. A negative duration
 // switches the rule off.
 type SessionRules struct {
 	// IdleTTL ends a session unused for this long. Zero is 30 minutes.
@@ -66,7 +66,7 @@ const (
 )
 
 // Config is built by the app from its own environment. A zero field takes its
-// v0.2 default (spec §3.1); an app sets explicitly what it wants different.
+// default; an app sets explicitly what it wants different.
 type Config struct {
 	Transport Transport
 	Issuer    string // Bearer: required
@@ -139,10 +139,6 @@ func withDefaults(c Config) Config {
 	return c
 }
 
-// check refuses what withDefaults leaves unusable: a Bearer service that
-// cannot sign, a throttle that never locks, a password policy that admits an
-// empty password or none, a session or link born expired, a negative pad,
-// wait or grace, and session rules that contradict each other.
 func (c Config) check() error {
 	switch c.Transport {
 	case TransportBearer:
@@ -179,8 +175,6 @@ func (c Config) check() error {
 	return c.checkSessions()
 }
 
-// checkSessions refuses an idle timeout the cap would always cut short and,
-// in Session mode, a rotation that never comes before the idle timeout.
 func (c Config) checkSessions() error {
 	idle := map[string]time.Duration{"Session.IdleTTL": c.Session.IdleTTL}
 	for aud, d := range c.RefreshTTLFor {

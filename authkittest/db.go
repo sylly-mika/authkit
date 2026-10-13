@@ -1,7 +1,7 @@
-// Package authkittest is authkit's Postgres test harness (spec §12): a
+// Package authkittest is authkit's Postgres test harness: a
 // throwaway database per test, cloned from a template that holds the
-// library's migrations between an ino-tasks-shaped principals table and
-// ino-tasks-shaped policies, run as a non-owner role; plus a fake clock and
+// library's migrations between an app-shaped principals table and
+// app-shaped policies, run as a non-owner role; plus a fake clock and
 // deterministic randomness.
 package authkittest
 
@@ -33,7 +33,7 @@ import (
 const (
 	OwnerRole       = "authkit_owner"
 	AppRole         = "authkit_app"
-	lockKey   int64 = 0x61757468 // serialises template builds and clones across test binaries
+	lockKey   int64 = 0x61757468 // WHY: serialises template builds and clones across test binaries
 )
 
 var (
@@ -57,7 +57,7 @@ func AdminDSN() string {
 }
 
 // DB is one test's database. Owner owns every table and, under FORCE RLS, is
-// bound like ino-tasks' app role; App is a non-owner with DML grants only.
+// bound like an app's role; App is a non-owner with DML grants only.
 type DB struct {
 	Name  string
 	Owner *sql.DB
@@ -94,8 +94,6 @@ func NewEmptyDB(t testing.TB) *DB {
 	return &DB{Name: name, Owner: open(t, OwnerRole, name), App: open(t, AppRole, name)}
 }
 
-// openAdmin is the superuser pool; it skips the test when Postgres is
-// unreachable, unless AUTHKIT_REQUIRE_DB or CI is set.
 func openAdmin(t testing.TB) *sql.DB {
 	t.Helper()
 	admin, err := sql.Open("postgres", AdminDSN())
@@ -139,9 +137,7 @@ func clone(ctx context.Context, admin *sql.DB, name string) error {
 	return err
 }
 
-// buildTemplate runs under the advisory lock. The schema goes into a _build
-// database that takes the content-addressed name only once complete, so a
-// killed run never leaves a broken template behind.
+// WHY: the schema builds in a _build database that takes the content-addressed name only once complete, so a killed run leaves no broken template.
 func buildTemplate(ctx context.Context, admin *sql.Conn) (string, error) {
 	schema, err := templateSchema()
 	if err != nil {
@@ -188,8 +184,7 @@ func templateSchema() (string, error) {
 	return strings.Join(append(parts, policiesSQL), "\n"), nil
 }
 
-// applySchema sends the whole schema without arguments, so lib/pq runs it as
-// one simple query in one implicit transaction.
+// HACK: lib/pq sends a query with arguments as a prepared statement, which rejects several statements, so the schema is sent without arguments.
 func applySchema(ctx context.Context, name, schema string) error {
 	dsn, err := roleDSN(OwnerRole, name)
 	if err != nil {
@@ -204,8 +199,7 @@ func applySchema(ctx context.Context, name, schema string) error {
 	return err
 }
 
-// terminate ends every other session on a database: sql.DB.Close does not wait
-// for the server, and a clone or rename of a database in use fails with 55006.
+// WHY: sql.DB.Close does not wait for the server, so a clone or rename of a database in use fails with 55006 unless its other sessions are ended first.
 func terminate(ctx context.Context, admin *sql.Conn, name string) error {
 	_, err := admin.ExecContext(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`, name)
 	return err
@@ -281,7 +275,7 @@ func inTx(ctx context.Context, b beginner, fn func(q db.Querier) error, setup st
 	return tx.Commit()
 }
 
-// InAuthTx is ino-tasks' InAuthTx: a transaction on App with no setting bound,
+// InAuthTx opens a transaction on App with no setting bound,
 // so only the _auth policies admit rows.
 func (d *DB) InAuthTx(ctx context.Context, fn func(q db.Querier) error) error {
 	return inTx(ctx, d.App, fn, "")
@@ -323,7 +317,7 @@ func (d *DB) Pinned(t testing.TB, principal, scope uuid.UUID, kind string) *sql.
 	return conn
 }
 
-// InConnTx is ino-tasks' InConnTx: a transaction on a pinned connection.
+// InConnTx opens a transaction on a pinned connection.
 func InConnTx(ctx context.Context, conn *sql.Conn, fn func(q db.Querier) error) error {
 	return inTx(ctx, conn, fn, "")
 }

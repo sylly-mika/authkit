@@ -1,5 +1,5 @@
 // Package password hashes and verifies passwords with argon2id in PHC string
-// format, behind a ceiling on concurrent hashes (spec §8.7).
+// format, behind a ceiling on concurrent hashes.
 package password
 
 import (
@@ -37,7 +37,7 @@ var (
 
 var b64 = base64.RawStdEncoding
 
-// The highest stored costs Verify spends: a tampered row must not exhaust memory.
+// WHY: a tampered row must not exhaust memory, so the stored costs Verify spends are capped at these.
 const maxMemory, maxTime = 1 << 20, 16
 
 func phcString(p Params, salt, key []byte) string {
@@ -99,7 +99,7 @@ type Hasher struct {
 }
 
 // NewHasher computes the dummy hash up front, under the same parameters, so
-// the first unknown login pays one hash like every other (spec §8.6).
+// the first unknown login pays one hash like every other.
 func NewHasher(p Params, concurrency int, wait time.Duration, rand io.Reader) (*Hasher, error) {
 	if concurrency < 1 || p.Time < 1 || p.Threads < 1 || p.KeyLen < 1 {
 		return nil, fmt.Errorf("authkit: hashing needs a slot, a pass, a lane and a key: %d slots, %+v", concurrency, p)
@@ -136,7 +136,7 @@ func (h *Hasher) Acquire(ctx context.Context) (release func(), err error) {
 type slotKey struct{ h *Hasher }
 
 // Hold takes one slot for the work done under the returned context, so a
-// caller can wait for it before it opens a transaction (spec §3.2). Hash,
+// caller can wait for it before it opens a transaction. Hash,
 // Verify and VerifyDummy under that context use it and take no other, one
 // after another, until release, which is idempotent and never nil.
 func (h *Hasher) Hold(ctx context.Context) (context.Context, func(), error) {
@@ -183,13 +183,13 @@ func (h *Hasher) Verify(ctx context.Context, encoded, pw string) (bool, error) {
 }
 
 // VerifyDummy spends what Verify spends, for a login with no hash to check
-// (spec §8.6). Its outcome is discarded: it never admits anyone.
+// Its outcome is discarded: it never admits anyone.
 func (h *Hasher) VerifyDummy(ctx context.Context, pw string) error {
 	_, err := h.Verify(ctx, h.dummy, pw)
 	return err
 }
 
-// NeedsRehash reports a stored hash made under weaker parameters (spec §8.7).
+// NeedsRehash reports a stored hash made under weaker parameters.
 func (h *Hasher) NeedsRehash(encoded string) bool {
 	stored, err := decode(encoded)
 	if err != nil {
