@@ -144,7 +144,7 @@ type Service struct {
 }
 
 // New builds the Service. It reads no database: the app calls CheckSchema at
-// startup. Zero fields take the v0.2 defaults. New refuses a nil Principals
+// startup. Zero fields take their defaults. New refuses a nil Principals
 // and every Config that check refuses, and hashing parameters NewHasher
 // refuses. A Session-mode Service has no Codec.
 func New(cfg Config, principals Principals) (*Service, error) {
