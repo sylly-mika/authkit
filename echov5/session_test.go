@@ -45,7 +45,6 @@ func sessionSetup(t *testing.T, tweak func(*authkit.Config)) *sessionFixture {
 	return f
 }
 
-// inTx is the app's transaction hook: commit when fn returns nil.
 func (f *sessionFixture) inTx(ctx context.Context, fn func(q db.Querier) error) error {
 	f.txs++
 	return f.d.InAuthTx(ctx, fn)
@@ -70,7 +69,6 @@ func (f *sessionFixture) signIn(t *testing.T) (uuid.UUID, authkit.Result) {
 	return id, res
 }
 
-// serve runs req through the chain by hand and returns the recorder and the error.
 func serve(req *http.Request, chain []echo.MiddlewareFunc, last echo.HandlerFunc) (*httptest.ResponseRecorder, error) {
 	rec := httptest.NewRecorder()
 	h := last
@@ -101,9 +99,6 @@ func TestSessionCookieOpensNoTransactionWithoutACookie(t *testing.T) {
 	}
 }
 
-// TestSessionCookieStoresTheResultAndSetsTheRotatedCookie is spec §3.5: the
-// handler finds the Result, its Claims and its Admission, and the response
-// carries the rotated token, alive until the cap.
 func TestSessionCookieStoresTheResultAndSetsTheRotatedCookie(t *testing.T) {
 	f := sessionSetup(t, nil)
 	id, signed := f.signIn(t)
@@ -134,9 +129,6 @@ func TestSessionCookieStoresTheResultAndSetsTheRotatedCookie(t *testing.T) {
 	}
 }
 
-// TestSessionCookieCommitsARefusalAndContinues is spec §3.5: the reuse of a
-// token past the grace revokes its session through the app's hook, and the
-// request goes on with no session.
 func TestSessionCookieCommitsARefusalAndContinues(t *testing.T) {
 	f := sessionSetup(t, nil)
 	_, signed := f.signIn(t)
@@ -178,7 +170,6 @@ func TestSessionCookieWrapsInfrastructureErrors(t *testing.T) {
 	}
 }
 
-// TestRequireSessionAnswersEndedAndClearsTheCookie is spec §3.5.
 func TestRequireSessionAnswersEndedAndClearsTheCookie(t *testing.T) {
 	f := sessionSetup(t, nil)
 	for name, keep := range map[string]bool{"clearing": false, "keepCookie": true} {
@@ -212,9 +203,6 @@ func TestRequireOriginRefusesAForeignMutation(t *testing.T) {
 	}
 }
 
-// TestHashSlotHoldsASlotForTheRequest is spec §3.2: the handler hashes on
-// the slot the middleware took, so a ceiling of one serves it, and the slot
-// is released when the request ends.
 func TestHashSlotHoldsASlotForTheRequest(t *testing.T) {
 	f := sessionSetup(t, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
 	f.signIn(t)
@@ -254,8 +242,6 @@ func TestParseBearerOnASessionModeServiceIsAServerError(t *testing.T) {
 	}
 }
 
-// fakeSessions records what SessionCookie handed AuthenticateSession and
-// answers with a canned Result.
 type fakeSessions struct {
 	res     authkit.Result
 	err     error
@@ -270,7 +256,6 @@ func (f *fakeSessions) AuthenticateSession(_ context.Context, q db.Querier, aud 
 	return f.res, f.err
 }
 
-// fakeHashSlots hands out a slot whose context is marked and counts its releases.
 type fakeHashSlots struct {
 	err      error
 	releases int
@@ -282,15 +267,10 @@ func (f *fakeHashSlots) AcquireHashSlot(ctx context.Context) (context.Context, f
 	return context.WithValue(ctx, slotKey{}, "held"), func() { f.releases++ }, authkit.Result{}, f.err
 }
 
-// passThrough is an app hook for a test that needs no transaction: it hands fn q.
 func passThrough(q db.Querier) func(context.Context, func(q db.Querier) error) error {
 	return func(_ context.Context, fn func(q db.Querier) error) error { return fn(q) }
 }
 
-// TestSessionCookieHandsAuthenticateSessionTheRequest is spec §3.5: the
-// cookie's value, the audience, the hook's Querier and the request's RealIP
-// and User-Agent reach AuthenticateSession, and the handler finds the Result,
-// its Claims and its Admission.
 func TestSessionCookieHandsAuthenticateSessionTheRequest(t *testing.T) {
 	id, sid := uuid.New(), uuid.New()
 	fake := &fakeSessions{res: authkit.Result{Session: &authkit.Session{ID: sid, PrincipalID: id}, Admission: &authkit.Admission{Context: "member"}}}
@@ -316,9 +296,6 @@ func TestSessionCookieHandsAuthenticateSessionTheRequest(t *testing.T) {
 	}
 }
 
-// TestSessionCookieSetsTheRotatedCookieToTheCap is spec §3.5: a Result with a
-// SessionToken sets the new cookie, alive to the session's cap; one without
-// sets none.
 func TestSessionCookieSetsTheRotatedCookieToTheCap(t *testing.T) {
 	capAt := time.Now().Add(2 * time.Hour)
 	for name, tc := range map[string]struct {
@@ -347,9 +324,6 @@ func TestSessionCookieSetsTheRotatedCookieToTheCap(t *testing.T) {
 	}
 }
 
-// TestRequireOriginRunsTheHandlerOnlyWhenItAdmits is spec §3.5 through the
-// middleware: an allowed POST and a GET without Origin run on, and a foreign
-// POST stops with cookie.ErrForeignOrigin before the handler.
 func TestRequireOriginRunsTheHandlerOnlyWhenItAdmits(t *testing.T) {
 	mw := []echo.MiddlewareFunc{echov5.RequireOrigin([]string{"https://admin.example.invalid"})}
 	for name, tc := range map[string]struct {
@@ -379,9 +353,6 @@ func TestRequireOriginRunsTheHandlerOnlyWhenItAdmits(t *testing.T) {
 	}
 }
 
-// TestHashSlotHandsOnTheHeldContextAndReleasesOnce is spec §3.2 with a fake
-// ceiling: the handler sees the context the slot came with, and the slot is
-// released once, also when the handler fails.
 func TestHashSlotHandsOnTheHeldContextAndReleasesOnce(t *testing.T) {
 	failure := errors.New("the handler failed")
 	for name, want := range map[string]error{"a handler that succeeds": nil, "a handler that fails": failure} {
@@ -398,8 +369,6 @@ func TestHashSlotHandsOnTheHeldContextAndReleasesOnce(t *testing.T) {
 	}
 }
 
-// TestHashSlotReturnsAnAcquireErrorWithoutRunningTheHandler is spec §3.2: a
-// failing slot check is returned and the handler does not run.
 func TestHashSlotReturnsAnAcquireErrorWithoutRunningTheHandler(t *testing.T) {
 	down := errors.New("pq: the slot store is down")
 	fake := &fakeHashSlots{err: down}

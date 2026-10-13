@@ -63,9 +63,6 @@ func TestRevokeSessionLogsRevokedAndReachesOnlyOwnSessions(t *testing.T) {
 	}
 }
 
-// TestAccountMethodsCleanMeta: the account methods log the request's
-// metadata, so a NUL or invalid UTF-8 in it must not turn their result into
-// an error, as it does not Login's.
 func TestAccountMethodsCleanMeta(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the old password")
@@ -171,7 +168,6 @@ func TestCheckSchema(t *testing.T) {
 	}
 }
 
-// TestDeletingAPrincipalCascades is spec §8.10.
 func TestDeletingAPrincipalCascades(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -185,10 +181,7 @@ func TestDeletingAPrincipalCascades(t *testing.T) {
 	}
 }
 
-// TestAccountMethodsReachOnlyTheirPrincipal runs the account methods with no
-// workspace bound, where the _auth policies admit every row, so only the
-// library's own principal predicates keep ada's calls off bob's rows. On the
-// pinned connection the self policies would hide a missing predicate.
+// WHY: with no workspace bound, the _auth policies admit every row, so only the predicates the library adds keep each principal to its own rows.
 func TestAccountMethodsReachOnlyTheirPrincipal(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the old password")
@@ -244,9 +237,6 @@ func TestAccountMethodsReachOnlyTheirPrincipal(t *testing.T) {
 	}
 }
 
-// TestPruneKeepsEachTableUntilItsRetentionPasses pins the 30-day cut-off on
-// sessions and one-time links: what died 29 days ago stays, what died 31 days
-// ago goes, and a live link stays.
 func TestPruneKeepsEachTableUntilItsRetentionPasses(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -280,9 +270,6 @@ func TestPruneKeepsEachTableUntilItsRetentionPasses(t *testing.T) {
 	}
 }
 
-// TestCheckSchemaAcceptsANewerSchemaAndRefusesAMissingOne: an app rolled back
-// past a library upgrade still starts; a database without the row or the
-// table does not.
 func TestCheckSchemaAcceptsANewerSchemaAndRefusesAMissingOne(t *testing.T) {
 	w := newWorld(t)
 	check := func() error {

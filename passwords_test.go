@@ -21,7 +21,6 @@ func (w *world) changePassword(conn *sql.Conn, c *authkit.Claims, current, next 
 	})
 }
 
-// TestChangePasswordRevokesTheOtherSessions is spec §8.10.
 func TestChangePasswordRevokesTheOtherSessions(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the old password")
@@ -107,8 +106,6 @@ func (w *world) changeBehind(holder *sql.Tx, conn *sql.Conn, c *authkit.Claims) 
 	return o.res
 }
 
-// TestChangePasswordLosesToAResetThatLands: the change verified the old hash,
-// then waits on the credential row a reset holds, then finds it replaced.
 func TestChangePasswordLosesToAResetThatLands(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the old password")
@@ -177,9 +174,6 @@ func TestSetPasswordAndVerifyPassword(t *testing.T) {
 	}
 }
 
-// TestChangePasswordHashesBeforeItLocks: both argon2id steps finish before the
-// change waits on the credential row, so a hash ceiling that fills while it
-// waits cannot refuse it.
 func TestChangePasswordHashesBeforeItLocks(t *testing.T) {
 	w := newWorld(t, func(c *authkit.Config) { c.HashConcurrency = 1 })
 	id := w.user("ada@example.invalid", "the old password")
@@ -219,10 +213,7 @@ func TestChangePasswordHashesBeforeItLocks(t *testing.T) {
 	}
 }
 
-// TestChangePasswordLocksTheCredentialBeforeTheSession is Spec correction 6:
-// a change that waits on the credential row a reset holds holds no session
-// row, so the reset's revoke of every session goes through instead of
-// deadlocking with it.
+// WHY: the change locks the credential row before the session row, so a reset revoking every session cannot deadlock with it.
 func TestChangePasswordLocksTheCredentialBeforeTheSession(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the old password")

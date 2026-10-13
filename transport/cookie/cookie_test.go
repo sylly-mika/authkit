@@ -16,8 +16,6 @@ func set(o cookie.Options, token string, absolute *time.Time) *http.Cookie {
 	return rec.Result().Cookies()[0]
 }
 
-// TestSetWritesAHostCookie is spec §3.5: __Host-<Name>, Secure, HttpOnly,
-// Path=/, no Domain, SameSite=Strict, alive until the cap.
 func TestSetWritesAHostCookie(t *testing.T) {
 	capAt := time.Now().Add(12 * time.Hour)
 	c := set(cookie.Options{Name: "bmparts_session"}, "the-token", &capAt)
@@ -34,8 +32,6 @@ func TestInsecureDropsThePrefixAndSecure(t *testing.T) {
 	}
 }
 
-// TestSetWithoutAnExpiryIsABrowserSessionCookie is spec §3.5: nil writes
-// neither Max-Age nor Expires.
 func TestSetWithoutAnExpiryIsABrowserSessionCookie(t *testing.T) {
 	c := set(cookie.Options{Name: "bmparts_session"}, "the-token", nil)
 	if c.MaxAge != 0 || !c.Expires.IsZero() {
@@ -82,8 +78,6 @@ func TestReadFindsOnlyItsOwnCookie(t *testing.T) {
 	}
 }
 
-// TestRequireOriginRefusesAnAbsentOrForeignOrigin is spec §3.5: no Referer
-// fallback, and a wildcard vouches for nobody.
 func TestRequireOriginRefusesAnAbsentOrForeignOrigin(t *testing.T) {
 	check := cookie.RequireOrigin([]string{"https://admin.example.invalid", "*", ""})
 	for name, tc := range map[string]struct {
@@ -119,8 +113,6 @@ func TestRequireOriginRefusesAnAbsentOrForeignOrigin(t *testing.T) {
 	}
 }
 
-// TestRequireOriginDropsWildcardAndEmptyEntries is spec §3.5: a "*" or an
-// empty entry vouches for nobody, not even a present-but-empty Origin.
 func TestRequireOriginDropsWildcardAndEmptyEntries(t *testing.T) {
 	wild := cookie.RequireOrigin([]string{"*"})
 	for _, origin := range []string{"https://x.example.invalid", "*"} {

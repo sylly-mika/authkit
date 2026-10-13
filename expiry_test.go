@@ -11,7 +11,6 @@ import (
 	"github.com/sylly-mika/authkit/db"
 )
 
-// expiries is a session's expires_at and absolute_expires_at as stored.
 func (w *world) expiries(id uuid.UUID) (time.Time, *time.Time) {
 	w.t.Helper()
 	var exp time.Time
@@ -22,8 +21,6 @@ func (w *world) expiries(id uuid.UUID) (time.Time, *time.Time) {
 	return exp, abs
 }
 
-// TestASignInIsCappedByDefault is spec §3.1: 30 minutes idle and a 12-hour
-// cap, set at sign-in.
 func TestASignInIsCappedByDefault(t *testing.T) {
 	w := newWorld(t, defaults)
 	w.user("ada@example.invalid", "the right password")
@@ -46,8 +43,6 @@ func TestANegativeAbsoluteTTLStoresNoCap(t *testing.T) {
 	}
 }
 
-// TestRefreshClampsToTheCap: a refresh slides the idle expiry, never past
-// the cap, and the cap never moves, so the session ends at it however busy.
 func TestRefreshClampsToTheCap(t *testing.T) {
 	w := newWorld(t, defaults, func(c *authkit.Config) {
 		c.Session = authkit.SessionRules{IdleTTL: time.Hour, AbsoluteTTL: 2 * time.Hour}
@@ -72,8 +67,6 @@ func TestRefreshClampsToTheCap(t *testing.T) {
 	}
 }
 
-// TestAnAudiencesIdleTimeoutIsClampedToo: RefreshTTLFor is a per-audience
-// IdleTTL, under the same cap.
 func TestAnAudiencesIdleTimeoutIsClampedToo(t *testing.T) {
 	w := newWorld(t, defaults, func(c *authkit.Config) {
 		c.Session.AbsoluteTTL = 3 * time.Hour
@@ -96,8 +89,6 @@ func (w *world) prune() {
 	}
 }
 
-// TestPruneKeepsEventsForTheRetention is spec §3.1's EventRetention: 90 days
-// by default, forever when negative (ino-tasks' pin), or what the app sets.
 func TestPruneKeepsEventsForTheRetention(t *testing.T) {
 	day := 24 * time.Hour
 	for name, tc := range map[string]struct {

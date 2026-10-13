@@ -90,8 +90,6 @@ func TestLoginRefusalsAreLoggedAndCounted(t *testing.T) {
 	}
 }
 
-// TestLoginVerifiesExactlyOncePerAttempt is spec §8.6: the dummy verify makes
-// an unknown login and a login without a password cost what a wrong one does.
 func TestLoginVerifiesExactlyOncePerAttempt(t *testing.T) {
 	w := newWorld(t)
 	w.user("known@example.invalid", "the right password")
@@ -112,8 +110,6 @@ func TestLoginVerifiesExactlyOncePerAttempt(t *testing.T) {
 	}
 }
 
-// TestARefusedLoginCommitsItsThrottleAndEvent is spec §12's transaction test:
-// the refusal is a value, so the caller's transaction commits its writes.
 func TestARefusedLoginCommitsItsThrottleAndEvent(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -130,7 +126,6 @@ func TestARefusedLoginCommitsItsThrottleAndEvent(t *testing.T) {
 	}
 }
 
-// TestTheLockoutEngagesAfterTenFailures is spec §8.9.
 func TestTheLockoutEngagesAfterTenFailures(t *testing.T) {
 	w := newWorld(t)
 	w.user("ada@example.invalid", "the right password")
@@ -284,8 +279,6 @@ func TestLoginRehashesWhenTheParametersRise(t *testing.T) {
 	w.signIn("ada@example.invalid", "the right password")
 }
 
-// TestARehashKeepsAPasswordChangedDuringTheLogin: a change or reset that
-// commits between Login's credential read and its rehash must survive it.
 func TestARehashKeepsAPasswordChangedDuringTheLogin(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the old password")
@@ -308,8 +301,7 @@ func TestARehashKeepsAPasswordChangedDuringTheLogin(t *testing.T) {
 	}
 }
 
-// admitHook runs before the harness's Admit: after Login's verify has released
-// its hash slot and before the rehash asks for one.
+// WHY: the hook runs after the verify releases its hash slot and before the rehash asks for one.
 type admitHook struct {
 	*authkittest.Principals
 	before func()
@@ -382,8 +374,6 @@ func TestLoginLogsTheLoginAsTypedWithinBounds(t *testing.T) {
 	}
 }
 
-// TestALoginTooLongToThrottleIsUnknown is spec correction 14: a login the
-// throttle cannot count is never looked up, so no account escapes it.
 func TestALoginTooLongToThrottleIsUnknown(t *testing.T) {
 	w := newWorld(t)
 	long := strings.Repeat("a", 260) + "@example.invalid"
@@ -396,8 +386,6 @@ func TestALoginTooLongToThrottleIsUnknown(t *testing.T) {
 	}
 }
 
-// TestLoginRefusesNotErrsOnNUL: Postgres text holds no NUL or invalid UTF-8,
-// so what the client sends must not turn a refusal or a sign-in into an error.
 func TestLoginRefusesNotErrsOnNUL(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -428,8 +416,6 @@ func TestLoginNeedsATransaction(t *testing.T) {
 	}
 }
 
-// ticking advances a second on every read, so a method that reads the clock
-// twice stamps two instants.
 type ticking struct{ c *authkittest.Clock }
 
 func (t ticking) Now() time.Time {
@@ -437,8 +423,6 @@ func (t ticking) Now() time.Time {
 	return t.c.Now()
 }
 
-// TestTheAccessTokenUsesTheMethodsInstant is Decision P3: the access token is
-// issued at the method's one now, not at a second read of the clock.
 func TestTheAccessTokenUsesTheMethodsInstant(t *testing.T) {
 	w := newWorld(t)
 	w.user("ada@example.invalid", "the right password")

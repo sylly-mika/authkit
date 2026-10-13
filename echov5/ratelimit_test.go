@@ -73,8 +73,6 @@ func TestConcurrentRefusalsSpendNothing(t *testing.T) {
 	}
 }
 
-// TestOneClientIPIsOneBucket: every connection of an address shares its
-// bucket, and without an IPExtractor a forwarded header changes nothing.
 func TestOneClientIPIsOneBucket(t *testing.T) {
 	e := echo.New()
 	e.GET("/limited", ok, echov5.RateLimit(rate.Every(15*time.Second), 2))
@@ -90,8 +88,6 @@ func TestOneClientIPIsOneBucket(t *testing.T) {
 	}
 }
 
-// TestASubSecondWaitSaysOneSecond: Retry-After rounds up, so a client never
-// reads 0 and never retries before its token is back.
 func TestASubSecondWaitSaysOneSecond(t *testing.T) {
 	e := echo.New()
 	e.GET("/limited", ok, echov5.RateLimit(rate.Every(500*time.Millisecond), 1))

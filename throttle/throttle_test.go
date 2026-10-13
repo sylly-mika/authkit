@@ -184,9 +184,6 @@ func TestPruneKeepsALiveWindowWithoutALock(t *testing.T) {
 	}
 }
 
-// TestCountJudgesTheLimitAndLocksTheNext is spec §3.2: r.Failures attempts
-// pass, the next is locked; a running lockout is kept, not extended; a lapsed
-// one starts a fresh window.
 func TestCountJudgesTheLimitAndLocksTheNext(t *testing.T) {
 	d := authkittest.NewDB(t)
 	ctx := context.Background()

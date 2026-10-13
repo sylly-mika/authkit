@@ -14,15 +14,11 @@ import (
 	"github.com/sylly-mika/authkit/db"
 )
 
-// hashedKey is the default auth_throttle key: hex(sha256(normalised login)).
 func hashedKey(login string) string {
 	sum := sha256.Sum256([]byte(login))
 	return hex.EncodeToString(sum[:])
 }
 
-// TestTheSixthAttemptIsRefusedUnverified is spec §3.2 at the defaults: five
-// attempts are judged, the sixth is refused for Lockout without a
-// verification, and its locked event names the principal (spec §3.6).
 func TestTheSixthAttemptIsRefusedUnverified(t *testing.T) {
 	w := newWorld(t, defaults)
 	id := w.user("ada@example.invalid", "the right password")
@@ -55,8 +51,6 @@ func TestTheSixthAttemptIsRefusedUnverified(t *testing.T) {
 	}
 }
 
-// TestALapsedLockoutStartsAFreshWindow: with Lockout shorter than Window, the
-// attempt after the lockout is judged, not refused for the old window's count.
 func TestALapsedLockoutStartsAFreshWindow(t *testing.T) {
 	w := newWorld(t, defaults, func(c *authkit.Config) { c.Throttle.Lockout = 5 * time.Minute })
 	w.user("ada@example.invalid", "the right password")
@@ -72,8 +66,6 @@ func TestALapsedLockoutStartsAFreshWindow(t *testing.T) {
 	}
 }
 
-// TestABusyLoginCountsNothing is spec §3.2: the hash slot comes before the
-// count, so a Busy refusal writes nothing.
 func TestABusyLoginCountsNothing(t *testing.T) {
 	w := newWorld(t, defaults, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
 	w.user("ada@example.invalid", "the right password")
@@ -90,9 +82,6 @@ func TestABusyLoginCountsNothing(t *testing.T) {
 	}
 }
 
-// TestTheCountComesBeforeTheVerify: a login that waits on another attempt's
-// throttle row has not verified yet. Under CountAfterVerify it verifies
-// first and waits to count its failure, as v0.1 did.
 func TestTheCountComesBeforeTheVerify(t *testing.T) {
 	for name, tc := range map[string]struct {
 		tweak    func(*authkit.Config)
@@ -136,8 +125,6 @@ func TestTheCountComesBeforeTheVerify(t *testing.T) {
 	}
 }
 
-// TestAnAdmitRefusalStaysCounted: the attempt was counted before its outcome
-// was known, and only a sign-in clears the counter.
 func TestAnAdmitRefusalStaysCounted(t *testing.T) {
 	w := newWorld(t, defaults)
 	id := w.user("ada@example.invalid", "the right password")
@@ -148,8 +135,6 @@ func TestAnAdmitRefusalStaysCounted(t *testing.T) {
 	}
 }
 
-// TestTheThrottleKeysTheLoginsHashByDefault: auth_throttle holds no logins
-// unless PlainLoginKey, v0.1's key, is set.
 func TestTheThrottleKeysTheLoginsHashByDefault(t *testing.T) {
 	for name, tc := range map[string]struct {
 		tweak func(*authkit.Config)
@@ -167,9 +152,6 @@ func TestTheThrottleKeysTheLoginsHashByDefault(t *testing.T) {
 	}
 }
 
-// TestCompleteResetClearsTheHashedKey: the reset clears the counter under the
-// key Login wrote it under, the hash of the normalised login, though the
-// stored login is not in that form.
 func TestCompleteResetClearsTheHashedKey(t *testing.T) {
 	w := newWorld(t, defaults)
 	id := w.user("Ada@Example.invalid", "the old password")

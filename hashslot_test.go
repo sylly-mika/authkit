@@ -10,9 +10,6 @@ import (
 	"github.com/sylly-mika/authkit/db"
 )
 
-// TestAnAppHeldSlotServesTheHashingMethods is spec §3.2: under the context
-// AcquireHashSlot returns, the methods hash on its slot, so a ceiling of one
-// never refuses them, while a call outside it is Busy.
 func TestAnAppHeldSlotServesTheHashingMethods(t *testing.T) {
 	for name, tweak := range map[string]func(*authkit.Config){"count-before": defaults, "CountAfterVerify": func(*authkit.Config) {}} {
 		w := newWorld(t, tweak, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })

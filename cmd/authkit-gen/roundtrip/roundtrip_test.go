@@ -1,6 +1,4 @@
-// Package roundtrip_test runs authkit-gen's output through the two migration
-// tools it writes for, against a real database (P3 spec §3.4). It is a module
-// of its own, so authkit's go.mod requires neither tool.
+// WHY: a separate module so the authkit module requires neither tool.
 package roundtrip_test
 
 import (
@@ -26,7 +24,6 @@ func write(t *testing.T, dir, name, body string) {
 	}
 }
 
-// generate runs authkit-gen, as an app does, into dir for an admins table.
 func generate(t *testing.T, format, dir string) {
 	t.Helper()
 	out, err := exec.Command("go", "run", "github.com/sylly-mika/authkit/cmd/authkit-gen",
@@ -36,8 +33,6 @@ func generate(t *testing.T, format, dir string) {
 	}
 }
 
-// schema is auth_schema's version, -1 without the table, and whether
-// auth_sessions has 0002's column.
 func schema(t *testing.T, d *authkittest.DB) (int, bool) {
 	t.Helper()
 	var exists, capped bool
@@ -108,8 +103,7 @@ func TestGolangMigrateRoundTrip(t *testing.T) {
 	}
 }
 
-// TestGooseRunsADollarQuotedStatement: unwrapped, goose would split this
-// function at PERFORM 1; and fail.
+// HACK: goose splits an unquoted PL/pgSQL body at its inner semicolons, so the test pins the dollar quoting that prevents it.
 func TestGooseRunsADollarQuotedStatement(t *testing.T) {
 	d := authkittest.NewEmptyDB(t)
 	dir := t.TempDir()

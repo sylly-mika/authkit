@@ -35,9 +35,6 @@ func TestAuthenticateAdmitsAnOpenSessionOnAPinnedConnection(t *testing.T) {
 	}
 }
 
-// The four refusals below are spec §8.5 (†): no request through Guard
-// succeeds after its session is revoked or expired, or once Admit refuses it
-// or its claims go stale.
 func TestAuthenticateRefusesARevokedSession(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -84,8 +81,6 @@ func TestAuthenticateRefusesStaleClaims(t *testing.T) {
 	}
 }
 
-// Refresh and Guard ask Admit about the session's own scope (spec §7), not
-// whatever scope the app would pick for a fresh login.
 func TestRefreshAndAuthenticateAdmitTheSessionsScope(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -111,9 +106,7 @@ func TestAuthenticateRefusesAnotherPrincipalsSession(t *testing.T) {
 	}
 }
 
-// Where RLS shows every session (the auth policy here, an app without RLS in
-// the fleet), only the library's principal predicate keeps a token's subject
-// to its own sessions.
+// WHY: with RLS showing every session, only the predicate the library adds keeps a token subject to its own sessions.
 func TestAnotherPrincipalsSessionWithoutRLS(t *testing.T) {
 	w := newWorld(t)
 	w.user("ada@example.invalid", "the right password")
@@ -179,7 +172,6 @@ func (q *countingQuerier) Exec(ctx context.Context, query string, args ...any) (
 	return q.Querier.Exec(ctx, query, args...)
 }
 
-// Guard's read path writes once a minute at most, not a no-op UPDATE per request.
 func TestAuthenticateWritesAtMostOnceAMinute(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -276,9 +268,6 @@ func TestConcurrentLogoutsLogOnce(t *testing.T) {
 	}
 }
 
-// TestRefreshAndLogoutCleanMeta: the reuse branch and Logout log the request's
-// metadata, so a NUL or invalid UTF-8 in it must not turn their result into an
-// error, as it does not Login's.
 func TestRefreshAndLogoutCleanMeta(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")

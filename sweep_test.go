@@ -24,7 +24,6 @@ import (
 	"github.com/sylly-mika/authkit/onetime"
 )
 
-// counted counts the statements a method runs on its querier.
 type counted struct {
 	db.Querier
 	n *int
@@ -45,16 +44,11 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 	return c.Querier.QueryRow(ctx, query, args...)
 }
 
-// The exported methods the bare-connection sweep leaves out on purpose: the
-// reads a pinned connection may run, and the methods that reach no database.
 var (
 	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "HasCredential", "OneTime.CreatedSince", "OneTime.Peek"}
 	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword", "AcquireHashSlot"}
 )
 
-// TestWriteMethodsRefuseABareConnection: every write method refuses a bare
-// connection before its first statement (spec §5), and every exported method
-// of the Service and the Store is either swept here or listed as a read.
 func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -149,9 +143,6 @@ type literal struct {
 	text string
 }
 
-// literals is every string literal of a Go file, of either kind, unquoted. A
-// chain of literals joined by + reads as one, with ? for an identifier in the
-// chain, so SQL split across a concatenation is scanned whole.
 func literals(path string, src []byte) []literal {
 	fset := token.NewFileSet()
 	var s scanner.Scanner
@@ -188,7 +179,6 @@ func literals(path string, src []byte) []literal {
 	}
 }
 
-// sqlViolations is every match of re in a Go file's literals.
 func sqlViolations(re *regexp.Regexp, path string, src []byte) []string {
 	var out []string
 	for _, l := range literals(path, src) {
@@ -199,8 +189,6 @@ func sqlViolations(re *regexp.Regexp, path string, src []byte) []string {
 	return out
 }
 
-// librarySources walks every non-test Go file outside cmd/ (the generator runs
-// no SQL; its reserved-word list names the clock keywords) and every migration.
 func librarySources(t *testing.T, fn func(path string, src []byte, migration bool)) {
 	t.Helper()
 	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
@@ -231,8 +219,7 @@ func librarySources(t *testing.T, fn func(path string, src []byte, migration boo
 	}
 }
 
-// TestNoInsertUsesReturning: under a self-insert-only policy an INSERT …
-// RETURNING needs a row the writer may not read; ids come from rand instead.
+// WHY: under a self-insert-only policy an INSERT with RETURNING needs a row the writer may not read, so ids come from rand.
 func TestNoInsertUsesReturning(t *testing.T) {
 	librarySources(t, func(path string, src []byte, migration bool) {
 		if migration {
@@ -244,9 +231,6 @@ func TestNoInsertUsesReturning(t *testing.T) {
 	})
 }
 
-// TestNoSQLReadsTheDatabaseClock: every timestamp is a parameter from the
-// injected clock (P3), so the fake clock and the database never disagree. It
-// reads only string literals, so the Service's now method does not count.
 func TestNoSQLReadsTheDatabaseClock(t *testing.T) {
 	librarySources(t, func(path string, src []byte, migration bool) {
 		if !migration {
@@ -264,8 +248,6 @@ func TestNoSQLReadsTheDatabaseClock(t *testing.T) {
 	})
 }
 
-// TestTheSweepPatternsCatchPlantedViolations: the two scans above pass on a
-// clean tree, so they are proven on planted sources instead.
 func TestTheSweepPatternsCatchPlantedViolations(t *testing.T) {
 	for re, cases := range map[*regexp.Regexp]struct{ caught, clean []string }{
 		dbClock: {

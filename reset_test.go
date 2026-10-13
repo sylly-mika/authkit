@@ -84,8 +84,7 @@ func TestRequestResetCapsAtThreeAnHour(t *testing.T) {
 	}
 }
 
-// TestRequestResetCountsUnderTheLock: a request that waits on another's lock
-// counts the link that one created, so concurrent requests keep the cap.
+// WHY: a request that waits on a lock held by another request counts the link that request created, so concurrent requests keep the cap.
 func TestRequestResetCountsUnderTheLock(t *testing.T) {
 	w := newWorld(t)
 	w.user("ada@example.invalid", "the old password")
@@ -127,7 +126,6 @@ func TestRequestResetCountsUnderTheLock(t *testing.T) {
 	}
 }
 
-// TestCompleteResetSetsThePasswordAndEndsEverySession is spec §8.10.
 func TestCompleteResetSetsThePasswordAndEndsEverySession(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the old password")
@@ -242,9 +240,6 @@ func TestPadSinceWaitsForTheFloor(t *testing.T) {
 	}
 }
 
-// TestCompleteResetForAGonePrincipalKeepsTheSpend is Decision P6: the link of
-// a principal deleted since it was sent answers unknown, writes nothing else,
-// and its spend commits, so it cannot be tried again.
 func TestCompleteResetForAGonePrincipalKeepsTheSpend(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the old password")
@@ -262,8 +257,6 @@ func TestCompleteResetForAGonePrincipalKeepsTheSpend(t *testing.T) {
 	}
 }
 
-// TestPadSincePadsToTheFloorNotBeyondIt is spec §8.6: the floor counts from
-// start, so the work done before PadSince is absorbed, not added.
 func TestPadSincePadsToTheFloorNotBeyondIt(t *testing.T) {
 	start := time.Now().Add(-600 * time.Millisecond)
 	authkit.PadSince(start, 700*time.Millisecond)
@@ -272,9 +265,7 @@ func TestPadSincePadsToTheFloorNotBeyondIt(t *testing.T) {
 	}
 }
 
-// TestCompleteResetClearsTheNormalisedLoginsThrottle: Login keys the throttle
-// by the normalised login, and the principal's stored login need not be in
-// that form. Only the reset's audience is cleared.
+// WHY: Login keys the throttle by the normalised login, which the stored login may not match, so the reset clears under that key.
 func TestCompleteResetClearsTheNormalisedLoginsThrottle(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("Ada@Example.invalid", "the old password")

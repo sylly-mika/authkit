@@ -220,8 +220,6 @@ func TestRunWritesNothingWhenTheLockCannotBeWritten(t *testing.T) {
 	}
 }
 
-// TestGooseNumbersAfterTheAppsHighestGooseFile is spec §3.4: one file per
-// migration, numbered after the highest SQL or Go migration, at its width.
 func TestGooseNumbersAfterTheAppsHighestGooseFile(t *testing.T) {
 	dir, lock := appDir(t, "00020_supplier_offers_list_index.sql", "00021_audit_expiry.sql", "00022_backfill_units.go", "embed.go")
 	written, err := run(options{principals: "administrators", out: dir, lock: lock, format: "goose", version: "v0.2.0"})
@@ -246,8 +244,6 @@ func TestGooseInAnEmptyDirectoryStartsAtOneWithFiveDigits(t *testing.T) {
 	}
 }
 
-// TestTheLockKeepsOneFormat is spec §3.4: the lock records the format, and a
-// run in another one is refused before any write; a v0.1 lock is golang-migrate.
 func TestTheLockKeepsOneFormat(t *testing.T) {
 	dir, lock := appDir(t, "00021_audit_expiry.sql")
 	if _, err := run(options{principals: "users", out: dir, lock: lock, format: "goose", version: "v0.2.0", library: library("core")}); err != nil {

@@ -12,7 +12,6 @@ import (
 	"github.com/sylly-mika/authkit/db/sqldb"
 )
 
-// captured is every event OnEvent was handed, as "source/result".
 type captured struct{ pairs []string }
 
 func (c *captured) onEvent(_ context.Context, _ db.Querier, e authkit.Event) error {
@@ -20,9 +19,6 @@ func (c *captured) onEvent(_ context.Context, _ db.Querier, e authkit.Event) err
 	return nil
 }
 
-// TestEveryEventNamesItsSource is spec §3.7 over Bearer mode: each method's
-// events reach OnEvent with its Source, the pairs lane B's mapping lists.
-// The Source is not stored.
 func TestEveryEventNamesItsSource(t *testing.T) {
 	var c captured
 	w := newWorld(t, defaults, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
@@ -77,9 +73,6 @@ func TestEveryEventNamesItsSource(t *testing.T) {
 	}
 }
 
-// TestOnEventRunsInTheCallersTransaction is spec §3.7: OnEvent sees its
-// event on the method's own transaction, and its writes commit or roll back
-// with authkit's.
 func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 	var seen []bool
 	w := newWorld(t, defaults, func(c *authkit.Config) {
@@ -113,8 +106,6 @@ func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 	}
 }
 
-// TestAnOnEventErrorFailsTheMethod: the host's mirror and authkit's event
-// commit together or not at all, refusals included.
 func TestAnOnEventErrorFailsTheMethod(t *testing.T) {
 	down := errors.New("app: the mirror is down")
 	w := newWorld(t, defaults, func(c *authkit.Config) {
@@ -135,8 +126,6 @@ func TestAnOnEventErrorFailsTheMethod(t *testing.T) {
 	}
 }
 
-// TestChangePasswordLogsPasswordChanged is spec §3.6; ChangeLogsReset keeps
-// v0.1's password_reset (P1's TestChangePasswordRevokesTheOtherSessions).
 func TestChangePasswordLogsPasswordChanged(t *testing.T) {
 	w := newWorld(t, defaults)
 	id := w.user("ada@example.invalid", "the old password")

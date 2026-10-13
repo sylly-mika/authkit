@@ -15,7 +15,7 @@ import (
 	"github.com/sylly-mika/authkit/password"
 )
 
-// cheap keeps -race runs fast; TestTheDefaultsAreTheSpecParameters pins the real ones.
+// WHY: cheap hashing keeps -race runs fast.
 var cheap = password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen: 32}
 
 type world struct {
@@ -41,9 +41,6 @@ func newWorld(t *testing.T, tweaks ...func(*authkit.Config)) *world {
 	return w
 }
 
-// pinned is what ino-tasks pins on v0.2 to keep v0.1's behaviour (spec §6),
-// so every world runs the P1 suite unchanged. A v0.2 test drops it with
-// defaults.
 func pinned(c *authkit.Config) {
 	c.Session = authkit.SessionRules{IdleTTL: 7 * 24 * time.Hour, AbsoluteTTL: -1}
 	c.Throttle = authkit.Throttle{Failures: 10, Window: 15 * time.Minute, Lockout: 15 * time.Minute, CountAfterVerify: true, PlainLoginKey: true}
@@ -52,7 +49,6 @@ func pinned(c *authkit.Config) {
 	c.EventRetention = -1
 }
 
-// defaults undoes pinned: the zero values, which are the v0.2 defaults.
 func defaults(c *authkit.Config) {
 	c.Session, c.Throttle, c.Events, c.Reset, c.EventRetention = authkit.SessionRules{}, authkit.Throttle{}, authkit.EventRules{}, authkit.ResetRules{}, 0
 }
@@ -66,7 +62,6 @@ func (w *world) service(cfg authkit.Config) *authkit.Service {
 	return svc
 }
 
-// user inserts a principal and, unless pw is empty, its credential.
 func (w *world) user(login, pw string) uuid.UUID {
 	w.t.Helper()
 	id := w.d.NewPrincipal(w.t, login)
@@ -80,8 +75,7 @@ func (w *world) user(login, pw string) uuid.UUID {
 	return id
 }
 
-// inAuth runs fn with no workspace bound and commits whatever a refusal wrote,
-// as ino-tasks' wrappers do (P6).
+// WHY: a refusal is a value, not an error, so its writes must commit; the helper commits whatever fn wrote.
 func (w *world) inAuth(fn func(q db.Querier) (authkit.Result, error)) authkit.Result {
 	w.t.Helper()
 	var res authkit.Result
@@ -95,7 +89,6 @@ func (w *world) inAuth(fn func(q db.Querier) (authkit.Result, error)) authkit.Re
 	return res
 }
 
-// inConn is inAuth on a pinned connection's transaction.
 func (w *world) inConn(conn *sql.Conn, fn func(q db.Querier) (authkit.Result, error)) authkit.Result {
 	w.t.Helper()
 	var res authkit.Result
@@ -154,7 +147,6 @@ func (w *world) storedHash(id uuid.UUID) string {
 	return hash
 }
 
-// results is a principal's sign-in log, oldest first (ties by name).
 func (w *world) results(id uuid.UUID) []string {
 	w.t.Helper()
 	rows, err := w.d.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 ORDER BY at, result`, id)

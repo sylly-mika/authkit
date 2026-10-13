@@ -185,8 +185,6 @@ func TestNewHasherRefusesUnusableParameters(t *testing.T) {
 	}
 }
 
-// TestHoldServesTheWorkUnderItsContext is spec §3.2: the slot an app takes
-// before its transaction serves the hashing under that context, and no other.
 func TestHoldServesTheWorkUnderItsContext(t *testing.T) {
 	h := hasher(t, cheap, 1, 50*time.Millisecond)
 	ctx := context.Background()

@@ -227,8 +227,6 @@ func TestMintRefusesAnUnknownOrClosedRow(t *testing.T) {
 	}
 }
 
-// TestMintQueuesBehindASupersede: a resend that supersedes the row while the
-// worker mints it wins, and the worker skips the old mail.
 func TestMintQueuesBehindASupersede(t *testing.T) {
 	f := setup(t)
 	owner := f.d.NewPrincipal(t, "ada@example.invalid")
@@ -299,8 +297,7 @@ func TestSpendIsSingleUse(t *testing.T) {
 	}
 }
 
-// TestSpendConcurrentOnlyOneWins is spec §8.2 (†). A holder locks the row
-// first, so all 16 spends queue on it and race the moment it lets go.
+// WHY: a holder locks the row first, so all 16 spends queue on it and race when it lets go.
 func TestSpendConcurrentOnlyOneWins(t *testing.T) {
 	f := setup(t)
 	owner := f.d.NewPrincipal(t, "ada@example.invalid")
@@ -395,8 +392,6 @@ func TestSpendAndPeekAgreeAtTheExpiryInstant(t *testing.T) {
 	}
 }
 
-// TestSpendDecidesOnOneInstant is P3: a clock that steps back between the
-// guarded UPDATE and the fallback must not turn an expiry refusal into "live".
 func TestSpendDecidesOnOneInstant(t *testing.T) {
 	f := setup(t)
 	owner := f.d.NewPrincipal(t, "ada@example.invalid")
@@ -465,8 +460,7 @@ func TestInviteLinksFollowTheInvitePolicy(t *testing.T) {
 	}
 }
 
-// TestPruneDropsEachKindOfDeadRow starts a year ahead, so a wall-clock
-// timestamp would sit far behind the fake clock and be pruned too early.
+// WHY: the clock starts a year ahead, so a wall-clock timestamp would sit far behind the fake clock and be pruned too early.
 func TestPruneDropsEachKindOfDeadRow(t *testing.T) {
 	f := setup(t)
 	const year = 365 * 24 * time.Hour

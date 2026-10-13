@@ -126,9 +126,6 @@ func TestParseRefusesEveryNonStrictToken(t *testing.T) {
 	}
 }
 
-// TestParseAcceptsAnIatWithinTheLeeway: a token minted by a host whose clock
-// runs ahead, or parsed just after this host's clock was stepped back, is
-// accepted up to IssuedAtLeeway; its exp still has no leeway.
 func TestParseAcceptsAnIatWithinTheLeeway(t *testing.T) {
 	for _, ahead := range []time.Duration{time.Second, bearer.IssuedAtLeeway} {
 		claims := valid()
