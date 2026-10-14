@@ -77,8 +77,13 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.svc.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
 			return err
 		},
-		"VerifyPassword": func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
-		"OpenSession":    func() error { _, err := w.svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"VerifyPassword":    func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
+		"OpenSession":       func() error { _, err := w.svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"BeginPasskeyLogin": func() error { _, err := w.svc.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
+		"FinishPasskeyLogin": func() error {
+			_, err := w.svc.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
+			return err
+		},
 		"OpenSessionFrom": func() error {
 			_, err := w.svc.OpenSessionFrom(ctx, q, res.Session.ID, p, "staff", authkit.Meta{})
 			return err
