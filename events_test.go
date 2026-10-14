@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
@@ -67,9 +69,51 @@ func TestEveryEventNamesItsSource(t *testing.T) {
 	if w.count(`SELECT count(*) FROM auth_events`) != len(want) {
 		t.Fatalf("auth_events holds %d rows, want one per OnEvent call", w.count(`SELECT count(*) FROM auth_events`))
 	}
+	rows, err := w.d.Owner.Query(`SELECT source || '/' || result FROM auth_events`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var stored []string
+	for rows.Next() {
+		var pair string
+		if err := rows.Scan(&pair); err != nil {
+			t.Fatal(err)
+		}
+		stored = append(stored, pair)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(stored)
+	wantSorted := slices.Clone(want)
+	slices.Sort(wantSorted)
+	if !slices.Equal(stored, wantSorted) {
+		t.Fatalf("auth_events stores source/result\n%v\nwant\n%v", stored, wantSorted)
+	}
 	list, _, err := w.svc.ListEvents(w.ctx, sqldb.Conn(conn), id, nil, 50, 0)
-	if err != nil || len(list) == 0 || list[0].Source != "" {
-		t.Fatalf("ListEvents = %+v (%v); want events without a Source: it is not stored", list, err)
+	if err != nil || len(list) == 0 || list[0].Source != "refresh" || list[0].Result != "reuse_detected" {
+		t.Fatalf("ListEvents = %+v (%v); want the newest event to read Source refresh", list, err)
+	}
+	for _, e := range list {
+		if e.Source == "" {
+			t.Fatalf("ListEvents returned an event without a Source: %+v", e)
+		}
+	}
+}
+
+func TestListEventsReadsTheStoredSource(t *testing.T) {
+	w := newWorld(t, defaults)
+	id := w.user("ada@example.invalid", "the old password")
+	t0 := w.clock.Now()
+	w.signIn("ada@example.invalid", "the old password")
+	w.d.Exec(t, "INSERT INTO auth_events (id, at, principal_id, audience, result) VALUES ($1, $2, $3, 'staff', 'signed_in')", uuid.New(), t0.Add(-time.Hour), id)
+	list, total, err := w.svc.ListEvents(w.ctx, sqldb.Conn(w.pinned(id)), id, nil, 50, 0)
+	if err != nil || total != 2 || len(list) != 2 {
+		t.Fatalf("ListEvents = %d events, total %d (%v); want 2 and 2", len(list), total, err)
+	}
+	if list[0].Source != "login" || list[1].Source != "" {
+		t.Fatalf("ListEvents sources = %q, %q; want \"login\" for the sign-in and \"\" for the row written before 0003", list[0].Source, list[1].Source)
 	}
 }
 
