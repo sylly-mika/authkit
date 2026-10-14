@@ -75,7 +75,7 @@ func TestNewRecoveryCodesDrawAgainOnADuplicate(t *testing.T) {
 		t.Errorf("NewRecoveryCodes on 109 bytes = %d codes, %v, want nil and an error", len(codes), err)
 	}
 	if codes, err := factor.NewRecoveryCodes(bytes.NewReader(stream), 0); codes != nil || err == nil || err.Error() != "authkit: recovery code count must be positive" {
-		t.Errorf("NewRecoveryCodes with n = 0 = %v, %v, want nil and the positive-count error", codes, err)
+		t.Errorf("NewRecoveryCodes with n = 0 = %d codes, %v, want nil and the positive-count error", len(codes), err)
 	}
 }
 
