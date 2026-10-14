@@ -35,7 +35,7 @@ func (s *Service) Authenticate(ctx context.Context, q db.Querier, c *Claims) (Re
 		return Result{Refusal: ErrSessionEnded}, nil
 	}
 	p := Principal{ID: c.Subject}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: Audience(c.Audience), ScopeID: sess.ScopeID})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: Audience(c.Audience), ScopeID: sess.ScopeID, SecondFactor: FactorKind(sess.SecondFactor)})
 	if err != nil {
 		return Result{}, err
 	}
