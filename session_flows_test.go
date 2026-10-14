@@ -359,3 +359,85 @@ func TestOpenSessionFromRefusesAnotherAudience(t *testing.T) {
 		t.Fatalf("a refused OpenSessionFrom must write nothing; events %v", c.pairs)
 	}
 }
+
+func TestCompleteResetRemovesEveryPasskey(t *testing.T) {
+	var c captured
+	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	ada := w.user("ada@example.invalid", "the old password")
+	bob := w.user("bob@example.invalid", "the right password")
+	old := w.signIn("ada@example.invalid", "the old password")
+	w.addStoredPasskey(ada, "Laptop", false)
+	w.addStoredPasskey(ada, "Phone", true)
+	w.addStoredPasskey(bob, "Bob key", false)
+	raw := w.mintLink(*w.requestReset("ada@example.invalid").TokenID)
+	c.pairs = nil
+	res := w.completeReset(raw, "the new password")
+	if res.Refusal != nil || res.Session == nil || res.PasskeysRemoved != 2 {
+		t.Fatalf("CompleteReset = %+v; want 2 passkeys removed and a session", res)
+	}
+	if w.count(`SELECT count(*) FROM auth_passkeys WHERE principal_id = $1`, ada) != 0 || w.count(`SELECT count(*) FROM auth_passkeys WHERE principal_id = $1`, bob) != 1 {
+		t.Fatal("want none of ada's passkeys left and bob's kept")
+	}
+	if w.count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoke_reason = 'password_reset'`, old.Session.ID) != 1 {
+		t.Fatal("want the old session revoked for password_reset")
+	}
+	if !slices.Equal(c.pairs, []string{"complete_reset/password_reset", "complete_reset/passkeys_reset", "complete_reset/signed_in"}) {
+		t.Fatalf("events = %v; want password_reset, passkeys_reset, then signed_in", c.pairs)
+	}
+	if w.count(`SELECT count(*) FROM auth_events WHERE result = 'passkeys_reset' AND principal_id = $1`, ada) != 1 {
+		t.Fatal("want one passkeys_reset event for ada")
+	}
+}
+
+func TestBearerCompleteResetReportsTheRemovedPasskeys(t *testing.T) {
+	w := newWorld(t)
+	ada := w.user("ada@example.invalid", "the old password")
+	w.addStoredPasskey(ada, "Laptop", false)
+	raw := w.mintLink(*w.requestReset("ada@example.invalid").TokenID)
+	res := w.completeReset(raw, "the new password")
+	if res.Refusal != nil || res.Tokens != nil || res.PasskeysRemoved != 1 {
+		t.Fatalf("Bearer CompleteReset = %+v; want 1 passkey removed and no tokens", res)
+	}
+	if w.count(`SELECT count(*) FROM auth_passkeys WHERE principal_id = $1`, ada) != 0 {
+		t.Fatal("want ada's passkey removed")
+	}
+}
+
+func TestCompleteResetWithoutPasskeysLogsNoPasskeyEvent(t *testing.T) {
+	var c captured
+	w := newWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	w.user("ada@example.invalid", "the old password")
+	raw := w.mintLink(*w.requestReset("ada@example.invalid").TokenID)
+	c.pairs = nil
+	res := w.completeReset(raw, "the new password")
+	if res.Refusal != nil || res.PasskeysRemoved != 0 {
+		t.Fatalf("CompleteReset without passkeys = %+v; want none removed", res)
+	}
+	if !slices.Equal(c.pairs, []string{"complete_reset/password_reset"}) {
+		t.Fatalf("events = %v; want password_reset only", c.pairs)
+	}
+	if w.count(`SELECT count(*) FROM auth_events WHERE result = 'passkeys_reset'`) != 0 {
+		t.Fatal("want no passkeys_reset event")
+	}
+}
+
+func TestARefusedResetKeepsThePasskeys(t *testing.T) {
+	var c captured
+	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	id := w.user("ada@example.invalid", "the old password")
+	w.addStoredPasskey(id, "Laptop", false)
+	raw := w.mintLink(*w.requestReset("ada@example.invalid").TokenID)
+	errDeactivated := errors.New("app: deactivated")
+	w.p.Refuse(id, errDeactivated)
+	c.pairs = nil
+	res := w.completeReset(raw, "the new password")
+	if res.Refusal != errDeactivated || res.PasskeysRemoved != 0 {
+		t.Fatalf("refused CompleteReset = %+v; want the app's refusal and no passkey removed", res)
+	}
+	if w.count(`SELECT count(*) FROM auth_passkeys WHERE principal_id = $1`, id) != 1 {
+		t.Fatal("a refused reset must keep the passkey")
+	}
+	if slices.Contains(c.pairs, "complete_reset/passkeys_reset") {
+		t.Fatalf("events = %v; a refused reset must not log passkeys_reset", c.pairs)
+	}
+}
