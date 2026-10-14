@@ -549,6 +549,34 @@ func TestPasskeyLoginRefusesAnotherUsersHandle(t *testing.T) {
 	}
 }
 
+func TestPasskeyOwnerHandlerRefusesAnotherUsersHandle(t *testing.T) {
+	w := newWorld(t, passkeys)
+	adaID := w.user("ada@example.invalid", "")
+	bobID := w.user("bob@example.invalid", "")
+	cred := w.seedPasskey(adaID, authkittest.NewAuthenticator("localhost", staffOrigin))
+	lookup := func(userHandle []byte) (webauthn.User, error) {
+		var user webauthn.User
+		var err error
+		if txErr := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+			user, err = authkit.PasskeyOwnerHandler(w.ctx, q, cred.ID, userHandle)
+			return nil
+		}); txErr != nil {
+			t.Fatalf("lookup: %v", txErr)
+		}
+		return user, err
+	}
+	if user, err := lookup(adaID[:]); err != nil || user == nil {
+		t.Fatalf("the handler refused Ada's own handle: user %v, err %v", user, err)
+	}
+	user, err := lookup(bobID[:])
+	if err == nil {
+		t.Error("the handler accepted Bob's user handle for Ada's passkey")
+	}
+	if user != nil {
+		t.Errorf("the handler returned user %s with a refusal", user.WebAuthnName())
+	}
+}
+
 func TestPasskeyLoginRefusesABadSignature(t *testing.T) {
 	w := newWorld(t, passkeys)
 	id := w.user("ada@example.invalid", "")

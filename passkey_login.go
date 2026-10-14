@@ -72,21 +72,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audi
 	}
 	var hit *passkeyRow
 	var infraErr error
-	handler := func(rawID, userHandle []byte) (webauthn.User, error) {
-		row, found, err := loadPasskeyForUpdate(ctx, q, rawID)
-		if err != nil {
-			infraErr = err
-			return nil, err
-		}
-		if !found {
-			return nil, errUnknownPasskey
-		}
-		hit = &row
-		if !bytes.Equal(userHandle, row.principal[:]) {
-			return nil, errPasskeyOwner
-		}
-		return passkeyUser{p: Principal{ID: row.principal}, creds: []webauthn.Credential{row.cred}}, nil
-	}
+	handler := passkeyHandler(ctx, q, &hit, &infraErr)
 	_, cred, err := rp.ValidatePasskeyLogin(handler, sd, parsed)
 	if infraErr != nil {
 		return Result{}, infraErr
@@ -126,6 +112,24 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audi
 		return Result{}, err
 	}
 	return res, nil
+}
+
+func passkeyHandler(ctx context.Context, q db.Querier, hit **passkeyRow, infraErr *error) func(rawID, userHandle []byte) (webauthn.User, error) {
+	return func(rawID, userHandle []byte) (webauthn.User, error) {
+		row, found, err := loadPasskeyForUpdate(ctx, q, rawID)
+		if err != nil {
+			*infraErr = err
+			return nil, err
+		}
+		if !found {
+			return nil, errUnknownPasskey
+		}
+		*hit = &row
+		if !bytes.Equal(userHandle, row.principal[:]) {
+			return nil, errPasskeyOwner
+		}
+		return passkeyUser{p: Principal{ID: row.principal}, creds: []webauthn.Credential{row.cred}}, nil
+	}
 }
 
 func (s *Service) refusePasskey(ctx context.Context, q db.Querier, hit *passkeyRow, aud Audience, m Meta, now time.Time) (Result, error) {
