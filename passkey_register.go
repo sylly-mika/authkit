@@ -51,6 +51,13 @@ func (s *Service) BeginPasskeyRegistration(ctx context.Context, q db.Querier, c 
 	if !ok {
 		return Result{Refusal: ErrPasskeyInvalid}, nil
 	}
+	n, err := countPasskeys(ctx, q, c.Subject)
+	if err != nil {
+		return Result{}, err
+	}
+	if n >= s.cfg.Passkeys.Max {
+		return Result{Refusal: ErrPasskeyLimit}, nil
+	}
 	p, err := s.principals.ByID(ctx, q, c.Subject, aud)
 	if err != nil {
 		return Result{}, err
@@ -106,6 +113,13 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, q db.Querier, c
 	if !ok {
 		return Result{Refusal: ErrPasskeyInvalid}, nil
 	}
+	n, err := countPasskeys(ctx, q, c.Subject)
+	if err != nil {
+		return Result{}, err
+	}
+	if n >= s.cfg.Passkeys.Max {
+		return Result{Refusal: ErrPasskeyLimit}, nil
+	}
 	data, ok, err := ceremony.Spend(ctx, q, ceremony.KindRegister, string(aud), ceremonyID, &c.Subject, &sess.ID, now)
 	if err != nil {
 		return Result{}, err
@@ -156,6 +170,12 @@ func (s *Service) freshSession(ctx context.Context, q db.Querier, c *Claims, now
 		return session.Session{}, false, nil
 	}
 	return sess, true, nil
+}
+
+func countPasskeys(ctx context.Context, q db.Querier, principal uuid.UUID) (int, error) {
+	var n int
+	err := q.QueryRow(ctx, `SELECT count(*) FROM auth_passkeys WHERE principal_id = $1`, principal).Scan(&n)
+	return n, err
 }
 
 func insertPasskey(ctx context.Context, q db.Querier, pk Passkey, principal uuid.UUID, cred *webauthn.Credential) (bool, error) {

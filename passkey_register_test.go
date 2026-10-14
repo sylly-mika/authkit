@@ -1,6 +1,8 @@
 package authkit_test
 
 import (
+	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -14,6 +16,7 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/db/sqldb"
 )
 
 var regOrigins = map[authkit.Audience][]string{"staff": {staffOrigin}, "client": {clientOrigin}}
@@ -543,5 +546,90 @@ func TestBeginOnAnEndedSession(t *testing.T) {
 	regRefused(t, regBegin(w, c), authkit.ErrReauthRequired)
 	if all, _ := regCeremonies(w, id); all != 0 {
 		t.Fatalf("ceremonies = %d, want 0", all)
+	}
+}
+
+func regSeed(w *world, id uuid.UUID, n int) {
+	w.t.Helper()
+	for i := 0; i < n; i++ {
+		cred := make([]byte, 16)
+		if _, err := rand.Read(cred); err != nil {
+			w.t.Fatal(err)
+		}
+		w.d.Exec(w.t, `INSERT INTO auth_passkeys (id, principal_id, credential_id, label, data, created_at) VALUES ($1, $2, $3, 'seed', '{}', $4)`,
+			uuid.New(), id, cred, w.clock.Now())
+	}
+}
+
+func TestBeginAtTheCap(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	regSeed(w, id, 10)
+	regRefused(t, regBegin(w, w.claims(res)), authkit.ErrPasskeyLimit)
+	if all, _ := regCeremonies(w, id); all != 0 {
+		t.Fatalf("ceremonies = %d, want 0", all)
+	}
+}
+
+func TestFinishAtTheCap(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	regSeed(w, id, 9)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	regSeed(w, id, 1)
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, resp, "Laptop"), authkit.ErrPasskeyLimit)
+	if n := regPasskeys(w, id); n != 10 {
+		t.Fatalf("auth_passkeys rows = %d, want 10", n)
+	}
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 0 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 unspent", all, spent)
+	}
+}
+
+func TestTwoFinishesCannotPassTheCap(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, first := regUser(w, "ada@example.invalid")
+	second := w.signIn("ada@example.invalid", "the right password")
+	c1, c2 := w.claims(first), w.claims(second)
+	regSeed(w, id, 9)
+	b1 := regBegin(w, c1)
+	r1 := regCreate(t, regAuthn(staffOrigin), b1.Ceremony)
+	b2 := regBegin(w, c2)
+	r2 := regCreate(t, regAuthn(staffOrigin), b2.Ceremony)
+
+	holder, err := w.d.App.BeginTx(w.ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	held, err := w.svc.FinishPasskeyRegistration(w.ctx, sqldb.Tx(holder), c1, b1.Ceremony.ID, r1, "Laptop", authkit.Meta{})
+	if err != nil || held.Refusal != nil || held.Passkey == nil {
+		t.Fatalf("first finish: error %v, refusal %v, passkey given %v", err, held.Refusal, held.Passkey != nil)
+	}
+
+	var got authkit.Result
+	var gotErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		gotErr = w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+			r, err := w.svc.FinishPasskeyRegistration(w.ctx, q, c2, b2.Ceremony.ID, r2, "Laptop", authkit.Meta{})
+			got = r
+			return err
+		})
+	}()
+	w.d.WaitForLockWaiters(t, 1)
+	if err := holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	if gotErr != nil {
+		t.Fatalf("second finish: error %v", gotErr)
+	}
+	regRefused(t, got, authkit.ErrPasskeyLimit)
+	if n := regPasskeys(w, id); n != 10 {
+		t.Fatalf("auth_passkeys rows = %d, want 10", n)
 	}
 }
