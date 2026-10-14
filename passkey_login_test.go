@@ -123,7 +123,6 @@ func (w *world) loginEvents(id uuid.UUID) []string {
 	return out
 }
 
-// passkeyState reads the stored sign count and last use of the principal's passkeys, to show a refused sign-in left them alone.
 func (w *world) passkeyState(id uuid.UUID) string {
 	w.t.Helper()
 	var s string
@@ -495,16 +494,16 @@ func TestPasskeyLoginChecksOriginAndRPPerAudience(t *testing.T) {
 		refusedNoSession(t, w, id, w.passkeySignIn("client", c))
 	})
 	t.Run("staff with a foreign RP ID", func(t *testing.T) {
-		a.Origin = ""
+		a.Origin = staffOrigin
 		h := sha256.Sum256([]byte("example.com"))
 		a.RPIDHash = h[:]
 		refusedNoSession(t, w, id, w.passkeySignIn("staff", a))
 	})
-	a.RPIDHash = nil
+	a.Origin, a.RPIDHash = staffOrigin, nil
 	if res := w.passkeySignIn("staff", a); res.Refusal != nil {
 		t.Errorf("staff sign-in with its own origin = %v, want signed in", res.Refusal)
 	}
-	c.Origin = ""
+	c.Origin = clientOrigin
 	if res := w.passkeySignIn("client", c); res.Refusal != nil {
 		t.Errorf("client sign-in with its own origin = %v, want signed in", res.Refusal)
 	}
@@ -594,7 +593,9 @@ func TestPasskeyLoginRefusesABackwardsCounter(t *testing.T) {
 	afterFirst := w.passkeyState(id)
 	w.clock.Advance(time.Minute)
 	a.SetCounter(3)
-	refusedNoSession(t, w, id, w.passkeySignIn("staff", a))
+	if res := w.passkeySignIn("staff", a); !errors.Is(res.Refusal, authkit.ErrPasskeyRejected) {
+		t.Errorf("backwards counter refusal = %v, want ErrPasskeyRejected", res.Refusal)
+	}
 	if after := w.passkeyState(id); after != afterFirst {
 		t.Error("a backwards counter changed the passkey row")
 	}
