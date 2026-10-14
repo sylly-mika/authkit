@@ -17,6 +17,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
@@ -119,6 +120,12 @@ type Result struct {
 	SessionToken string
 	Admission    *Admission
 	TokenID      *uuid.UUID // RequestReset: the one-time link to mail
+	// Ceremony is a passkey begin's answer.
+	Ceremony *Ceremony
+	// Passkey is the passkey a registration or rename wrote.
+	Passkey *Passkey
+	// PasskeysRemoved is how many passkeys a completed reset deleted.
+	PasskeysRemoved int
 }
 
 // Claims is the session the Result names, as the account methods take it
@@ -140,6 +147,7 @@ type Service struct {
 	hasher     *password.Hasher
 	codec      *bearer.Codec
 	links      *onetime.Store
+	rps        map[Audience]*webauthn.WebAuthn
 	onVerify   func()
 }
 
@@ -159,7 +167,11 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{cfg: cfg, principals: principals, hasher: hasher, links: onetime.New(cfg.Clock.Now, cfg.Rand)}
+	rps, err := relyingParties(cfg.Passkeys)
+	if err != nil {
+		return nil, err
+	}
+	s := &Service{cfg: cfg, principals: principals, hasher: hasher, links: onetime.New(cfg.Clock.Now, cfg.Rand), rps: rps}
 	if cfg.Transport == TransportBearer {
 		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, cfg.Clock.Now); err != nil {
 			return nil, err
