@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,10 +12,11 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/events"
 	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/internal/token"
 	"github.com/sylly-mika/authkit/throttle"
 )
 
-// VerifySecondStep completes a sign-in that returned Result.SecondStep, with an authenticator code or a recovery code. A wrong code counts on the challenge and on the login's throttle; the refusal's writes must be committed.
+// VerifySecondStep completes a sign-in that returned Result.SecondStep, with an authenticator code, an emailed code or a recovery code. A wrong code counts on the challenge and on the login's throttle; the refusal's writes must be committed.
 func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audience, token string, method FactorKind, code string, m Meta) (Result, error) {
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
@@ -50,7 +52,7 @@ func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audien
 		}
 		return Result{Refusal: ErrLocked{RetryAfter: until.Sub(now)}}, nil
 	}
-	if method != FactorTOTP && method != FactorRecovery {
+	if method != FactorTOTP && method != FactorEmail && method != FactorRecovery {
 		return s.failSecondStep(ctx, q, ch, aud, now, ev)
 	}
 	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: method})
@@ -148,6 +150,71 @@ func (s *Service) issueSecondStep(ctx context.Context, q db.Querier, source stri
 	return Result{Principal: p, SecondStep: &SecondStep{Token: raw, ExpiresAt: exp, Methods: methods}}, nil
 }
 
+// SendSecondStepEmail issues an emailed sign-in code for a live second-step challenge. The code is minted later by MintEmailCode and never returned here. Needs a transaction.
+func (s *Service) SendSecondStepEmail(ctx context.Context, q db.Querier, aud Audience, raw string, m Meta) (Result, error) {
+	if err := db.RequireTx(q); err != nil {
+		return Result{}, err
+	}
+	if len(s.cfg.SecondFactors.Key) == 0 {
+		return Result{Refusal: ErrSecondFactorsOff}, nil
+	}
+	m = m.clean()
+	now := s.now()
+	var principalID uuid.UUID
+	var throttleKey string
+	err := q.QueryRow(ctx, `SELECT principal_id, throttle_key FROM auth_second_step_challenges
+		WHERE challenge_hash = $1 AND audience = $2 AND used_at IS NULL AND expires_at > $3 AND tries < $4`,
+		token.Hash(raw), string(aud), now, s.cfg.SecondFactors.MaxTries).Scan(&principalID, &throttleKey)
+	if errors.Is(err, db.ErrNoRows) {
+		return Result{Refusal: ErrChallengeEnded}, nil
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	until, locked, err := throttle.Locked(ctx, q, throttleKey, string(aud), now)
+	if err != nil {
+		return Result{}, err
+	}
+	if locked {
+		return Result{Refusal: ErrLocked{RetryAfter: until.Sub(now)}}, nil
+	}
+	confirmed, err := factor.ConfirmedKinds(ctx, q, principalID)
+	if err != nil {
+		return Result{}, err
+	}
+	if !slices.Contains(confirmed, string(FactorEmail)) {
+		return Result{Refusal: ErrFactorNotFound}, nil
+	}
+	id, exp, retryAfter, err := factor.RequestEmailCode(ctx, q, s.cfg.Rand, principalID, factor.PurposeSignIn, now, s.emailRules())
+	if err != nil {
+		return Result{}, err
+	}
+	if retryAfter > 0 {
+		return Result{Refusal: ErrResendTooSoon{RetryAfter: retryAfter}}, nil
+	}
+	p, err := s.principals.ByID(ctx, q, principalID, aud)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Principal: p, EmailCode: &EmailCodeRequest{ID: id, ExpiresAt: exp}}, nil
+}
+
+func (s *Service) checkEmailStep(ctx context.Context, q db.Querier, principalID uuid.UUID, code string, now time.Time) (bool, error) {
+	keys := factor.DeriveKeys(s.cfg.SecondFactors.Key)
+	confirmed, err := factor.ConfirmedKinds(ctx, q, principalID)
+	if err != nil {
+		return false, err
+	}
+	if !slices.Contains(confirmed, string(FactorEmail)) {
+		return false, nil
+	}
+	c, err := factor.CheckEmailCode(ctx, q, keys.EmailKey, principalID, factor.PurposeSignIn, code, now, s.cfg.SecondFactors.MaxTries)
+	if err != nil {
+		return false, err
+	}
+	return c == factor.CodeOK, nil
+}
+
 func (s *Service) checkFactor(ctx context.Context, q db.Querier, id uuid.UUID, method FactorKind, code string, now time.Time) (bool, error) {
 	keys := factor.DeriveKeys(s.cfg.SecondFactors.Key)
 	switch method {
@@ -168,6 +235,8 @@ func (s *Service) checkFactor(ctx context.Context, q db.Querier, id uuid.UUID, m
 			return false, nil
 		}
 		return factor.AcceptStep(ctx, q, id, step)
+	case FactorEmail:
+		return s.checkEmailStep(ctx, q, id, code, now)
 	case FactorRecovery:
 		hash := factor.HashCode(keys.RecoveryKey, id, "recovery", factor.NormalizeCode(code))
 		return factor.SpendRecoveryCode(ctx, q, id, hash, now)

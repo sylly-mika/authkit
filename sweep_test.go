@@ -83,6 +83,10 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.svc.VerifySecondStep(ctx, q, "staff", "x", authkit.FactorTOTP, "123456", authkit.Meta{})
 			return err
 		},
+		"SendSecondStepEmail": func() error {
+			_, err := w.svc.SendSecondStepEmail(ctx, q, "staff", "x", authkit.Meta{})
+			return err
+		},
 		"BeginPasskeyLogin": func() error { _, err := w.svc.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
 		"FinishPasskeyLogin": func() error {
 			_, err := w.svc.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
