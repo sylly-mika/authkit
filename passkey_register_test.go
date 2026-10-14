@@ -633,3 +633,83 @@ func TestTwoFinishesCannotPassTheCap(t *testing.T) {
 		t.Fatalf("auth_passkeys rows = %d, want 10", n)
 	}
 }
+
+func regRawID(t *testing.T, resp []byte) []byte {
+	t.Helper()
+	var r struct {
+		RawID string `json:"rawId"`
+	}
+	if err := json.Unmarshal(resp, &r); err != nil {
+		t.Fatalf("parse the response: %v", err)
+	}
+	id, err := base64.RawURLEncoding.DecodeString(r.RawID)
+	if err != nil {
+		t.Fatalf("decode the response's id: %v", err)
+	}
+	return id
+}
+
+func TestBeginExcludesTheExistingPasskeys(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	finish := regFinish(w, c, begin.Ceremony.ID, regCreate(t, regAuthn(staffOrigin), begin.Ceremony), "Laptop")
+	if finish.Refusal != nil || finish.Passkey == nil {
+		t.Fatalf("finish: refusal %v, passkey given %v", finish.Refusal, finish.Passkey != nil)
+	}
+	var stored []byte
+	if err := w.d.Row(t, `SELECT credential_id FROM auth_passkeys WHERE principal_id = $1`, id).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	again := regBegin(w, c)
+	if again.Refusal != nil || again.Ceremony == nil {
+		t.Fatalf("second begin: refusal %v, ceremony given %v", again.Refusal, again.Ceremony != nil)
+	}
+	ex := regParse(t, again.Ceremony).PublicKey.Exclude
+	if len(ex) != 1 || ex[0].Type != "public-key" || ex[0].ID != base64.RawURLEncoding.EncodeToString(stored) {
+		t.Fatalf("excludeCredentials has %d items, want the one stored credential of type public-key", len(ex))
+	}
+}
+
+func TestAKnownCredentialIsRefused(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	ada, res := regUser(w, "ada@example.invalid")
+	bob, _ := regUser(w, "bob@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	w.d.Exec(t, `INSERT INTO auth_passkeys (id, principal_id, credential_id, label, data, created_at) VALUES ($1, $2, $3, 'seed', '{}', $4)`,
+		uuid.New(), bob, regRawID(t, resp), w.clock.Now())
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, resp, "Laptop"), authkit.ErrPasskeyExists)
+	if n := regPasskeys(w, ada); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if n := regAdded(w, ada); n != 0 {
+		t.Fatalf("passkey_added events = %d, want 0", n)
+	}
+	if all, spent := regCeremonies(w, ada); all != 1 || spent != 1 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 spent", all, spent)
+	}
+}
+
+func TestAKnownCredentialIsRefusedOnAPinnedConnection(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	ada, res := regUser(w, "ada@example.invalid")
+	bob, _ := regUser(w, "bob@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	w.d.Exec(t, `INSERT INTO auth_passkeys (id, principal_id, credential_id, label, data, created_at) VALUES ($1, $2, $3, 'seed', '{}', $4)`,
+		uuid.New(), bob, regRawID(t, resp), w.clock.Now())
+	finish := w.inConn(w.pinned(ada), func(q db.Querier) (authkit.Result, error) {
+		return w.svc.FinishPasskeyRegistration(w.ctx, q, c, begin.Ceremony.ID, resp, "Laptop", authkit.Meta{})
+	})
+	regRefused(t, finish, authkit.ErrPasskeyExists)
+	if n := regPasskeys(w, ada); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if all, spent := regCeremonies(w, ada); all != 1 || spent != 1 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 spent", all, spent)
+	}
+}

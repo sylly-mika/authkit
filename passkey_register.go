@@ -62,7 +62,11 @@ func (s *Service) BeginPasskeyRegistration(ctx context.Context, q db.Querier, c 
 	if err != nil {
 		return Result{}, err
 	}
-	creation, data, err := rp.BeginRegistration(passkeyUser{p: p})
+	exclude, err := passkeyExclusions(ctx, q, c.Subject)
+	if err != nil {
+		return Result{}, err
+	}
+	creation, data, err := rp.BeginRegistration(passkeyUser{p: p}, webauthn.WithExclusions(exclude))
 	if err != nil {
 		return Result{}, err
 	}
@@ -139,6 +143,13 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, q db.Querier, c
 	if err != nil {
 		return Result{Refusal: ErrPasskeyInvalid}, nil
 	}
+	known, err := credentialKnown(ctx, q, cred.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	if known {
+		return Result{Refusal: ErrPasskeyExists}, nil
+	}
 	id, err := token.ID(s.cfg.Rand)
 	if err != nil {
 		return Result{}, err
@@ -178,18 +189,47 @@ func countPasskeys(ctx context.Context, q db.Querier, principal uuid.UUID) (int,
 	return n, err
 }
 
+func passkeyExclusions(ctx context.Context, q db.Querier, principal uuid.UUID) ([]protocol.CredentialDescriptor, error) {
+	rows, err := q.Query(ctx, `SELECT credential_id, data FROM auth_passkeys WHERE principal_id = $1 ORDER BY created_at, id`, principal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []protocol.CredentialDescriptor
+	for rows.Next() {
+		var id, data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		var cred webauthn.Credential
+		if err := json.Unmarshal(data, &cred); err != nil {
+			return nil, err
+		}
+		out = append(out, protocol.CredentialDescriptor{Type: protocol.PublicKeyCredentialType, CredentialID: id, Transport: cred.Transport})
+	}
+	return out, rows.Err()
+}
+
+func credentialKnown(ctx context.Context, q db.Querier, id []byte) (bool, error) {
+	var known bool
+	err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM auth_passkeys WHERE credential_id = $1)`, id).Scan(&known)
+	return known, err
+}
+
 func insertPasskey(ctx context.Context, q db.Querier, pk Passkey, principal uuid.UUID, cred *webauthn.Credential) (bool, error) {
 	body, err := json.Marshal(*cred)
 	if err != nil {
 		return false, err
 	}
-	if _, err := q.Exec(ctx, `
+	n, err := q.Exec(ctx, `
 		INSERT INTO auth_passkeys (id, principal_id, credential_id, label, data, created_at)
-		VALUES ($1, $2, $3, $4, ($5::text)::jsonb, $6)`,
-		pk.ID, principal, cred.ID, pk.Label, string(body), pk.CreatedAt); err != nil {
+		VALUES ($1, $2, $3, $4, ($5::text)::jsonb, $6)
+		ON CONFLICT (credential_id) DO NOTHING`,
+		pk.ID, principal, cred.ID, pk.Label, string(body), pk.CreatedAt)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return n == 1, nil
 }
 
 func passkeyLabel(raw string, now time.Time) (string, bool) {
