@@ -1,0 +1,358 @@
+package authkit_test
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/sylly-mika/authkit"
+	"github.com/sylly-mika/authkit/authkittest"
+	"github.com/sylly-mika/authkit/db"
+)
+
+var regOrigins = map[authkit.Audience][]string{"staff": {staffOrigin}, "client": {clientOrigin}}
+
+func regWorld(t *testing.T, origins map[authkit.Audience][]string) *world {
+	return newWorld(t, func(c *authkit.Config) {
+		c.Passkeys = authkit.PasskeyRules{RPID: "localhost", Origins: origins, CeremonyTTL: 2 * time.Minute, Reauth: 5 * time.Minute, Max: 10}
+		c.RevokeOnPasswordChange = authkit.RevokeOthers
+	})
+}
+
+func regUser(w *world, login string) (uuid.UUID, authkit.Result) {
+	w.t.Helper()
+	id := w.user(login, "the right password")
+	return id, w.signIn(login, "the right password")
+}
+
+func regBegin(w *world, c *authkit.Claims) authkit.Result {
+	w.t.Helper()
+	return w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.BeginPasskeyRegistration(w.ctx, q, c, authkit.Meta{IP: "203.0.113.7", UserAgent: "UA-1"})
+	})
+}
+
+func regFinish(w *world, c *authkit.Claims, id string, resp []byte, label string) authkit.Result {
+	w.t.Helper()
+	return w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.FinishPasskeyRegistration(w.ctx, q, c, id, resp, label, authkit.Meta{IP: "203.0.113.7", UserAgent: "UA-1"})
+	})
+}
+
+func regAuthn(origin string) *authkittest.Authenticator {
+	return authkittest.NewAuthenticator("localhost", origin)
+}
+
+func regCreate(t *testing.T, a *authkittest.Authenticator, cer *authkit.Ceremony) []byte {
+	t.Helper()
+	resp, err := a.Create(cer.Options)
+	if err != nil {
+		t.Fatalf("create the authenticator's response: %v", err)
+	}
+	return resp
+}
+
+func regPasskeys(w *world, id uuid.UUID) int {
+	w.t.Helper()
+	return w.count(`SELECT count(*) FROM auth_passkeys WHERE principal_id = $1`, id)
+}
+
+func regCeremonies(w *world, id uuid.UUID) (all, spent int) {
+	w.t.Helper()
+	if err := w.d.Row(w.t, `SELECT count(*), count(*) FILTER (WHERE used_at IS NOT NULL) FROM auth_passkey_ceremonies WHERE principal_id = $1`, id).Scan(&all, &spent); err != nil {
+		w.t.Fatal(err)
+	}
+	return all, spent
+}
+
+func regAdded(w *world, id uuid.UUID) int {
+	w.t.Helper()
+	return w.count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'passkey_added'`, id)
+}
+
+func regRefused(t *testing.T, res authkit.Result, want error) {
+	t.Helper()
+	if !errors.Is(res.Refusal, want) || res.Passkey != nil {
+		t.Fatalf("result = refusal %v, passkey stored %v; want refused %v", res.Refusal, res.Passkey != nil, want)
+	}
+}
+
+type regOptions struct {
+	PublicKey struct {
+		Selection struct {
+			ResidentKey      string `json:"residentKey"`
+			UserVerification string `json:"userVerification"`
+		} `json:"authenticatorSelection"`
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+		Exclude []struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		} `json:"excludeCredentials"`
+	} `json:"publicKey"`
+}
+
+func regParse(t *testing.T, cer *authkit.Ceremony) regOptions {
+	t.Helper()
+	var o regOptions
+	if err := json.Unmarshal(cer.Options, &o); err != nil {
+		t.Fatalf("parse the options: %v", err)
+	}
+	return o
+}
+
+func TestAddAPasskey(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	if begin.Refusal != nil || begin.Ceremony == nil {
+		t.Fatalf("begin: refusal %v, ceremony given %v", begin.Refusal, begin.Ceremony != nil)
+	}
+	if begin.Ceremony.ID == "" {
+		t.Fatal("begin: the ceremony has no id")
+	}
+	if want := w.clock.Now().Add(2 * time.Minute); !begin.Ceremony.ExpiresAt.Equal(want) {
+		t.Fatalf("ExpiresAt = %v, want %v", begin.Ceremony.ExpiresAt, want)
+	}
+	o := regParse(t, begin.Ceremony)
+	if o.PublicKey.Selection.ResidentKey != "required" || o.PublicKey.Selection.UserVerification != "required" {
+		t.Fatalf("authenticatorSelection = %q/%q, want required/required", o.PublicKey.Selection.ResidentKey, o.PublicKey.Selection.UserVerification)
+	}
+	if want := base64.RawURLEncoding.EncodeToString(id[:]); o.PublicKey.User.ID != want {
+		t.Fatal("user.id is not the principal's id bytes")
+	}
+	finish := regFinish(w, c, begin.Ceremony.ID, regCreate(t, regAuthn(staffOrigin), begin.Ceremony), "Laptop")
+	if finish.Refusal != nil || finish.Passkey == nil {
+		t.Fatalf("finish: refusal %v, passkey given %v", finish.Refusal, finish.Passkey != nil)
+	}
+	if finish.Passkey.Label != "Laptop" || !finish.Passkey.CreatedAt.Equal(w.clock.Now()) || finish.Passkey.LastUsedAt != nil {
+		t.Fatalf("passkey = %q, created %v, last used %v", finish.Passkey.Label, finish.Passkey.CreatedAt, finish.Passkey.LastUsedAt)
+	}
+	if n := regPasskeys(w, id); n != 1 {
+		t.Fatalf("auth_passkeys rows = %d, want 1", n)
+	}
+	var label string
+	var created time.Time
+	var unused bool
+	if err := w.d.Row(t, `SELECT label, created_at, last_used_at IS NULL FROM auth_passkeys WHERE principal_id = $1`, id).Scan(&label, &created, &unused); err != nil {
+		t.Fatal(err)
+	}
+	if label != "Laptop" || !created.Equal(w.clock.Now()) || !unused {
+		t.Fatalf("row = label %q, created %v, last_used_at null %v", label, created, unused)
+	}
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 1 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 spent", all, spent)
+	}
+}
+
+func TestAddingAPasskeyRecordsPasskeyAdded(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	if n := regAdded(w, id); n != 0 {
+		t.Fatalf("passkey_added events after begin = %d, want 0", n)
+	}
+	finish := regFinish(w, c, begin.Ceremony.ID, regCreate(t, regAuthn(staffOrigin), begin.Ceremony), "Laptop")
+	if finish.Refusal != nil {
+		t.Fatalf("finish refused: %v", finish.Refusal)
+	}
+	if n := regAdded(w, id); n != 1 {
+		t.Fatalf("passkey_added events = %d, want 1", n)
+	}
+	var source, userAgent string
+	var sessionID uuid.UUID
+	if err := w.d.Row(t, `SELECT source, session_id, user_agent FROM auth_events WHERE principal_id = $1 AND result = 'passkey_added'`, id).Scan(&source, &sessionID, &userAgent); err != nil {
+		t.Fatal(err)
+	}
+	if source != authkit.SourcePasskeyRegister || sessionID != c.SessionID || userAgent != "UA-1" {
+		t.Fatalf("event = source %q, session %v, user agent %q", source, sessionID, userAgent)
+	}
+}
+
+func TestACeremonyFinishesOnce(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	first := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	second := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	if r := regFinish(w, c, begin.Ceremony.ID, first, "Laptop"); r.Refusal != nil {
+		t.Fatalf("first finish refused: %v", r.Refusal)
+	}
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, second, "Phone"), authkit.ErrPasskeyInvalid)
+	if n := regPasskeys(w, id); n != 1 {
+		t.Fatalf("auth_passkeys rows = %d, want 1", n)
+	}
+}
+
+func TestAResponseWithoutUserVerificationIsRefused(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	a := regAuthn(staffOrigin)
+	a.NoUV = true
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, regCreate(t, a, begin.Ceremony), "Laptop"), authkit.ErrPasskeyInvalid)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if n := regAdded(w, id); n != 0 {
+		t.Fatalf("passkey_added events = %d, want 0", n)
+	}
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 1 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 spent", all, spent)
+	}
+}
+
+func TestAFailedFinishBurnsTheCeremony(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, []byte("{"), "Laptop"), authkit.ErrPasskeyInvalid)
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 1 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 spent", all, spent)
+	}
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, regCreate(t, regAuthn(staffOrigin), begin.Ceremony), "Laptop"), authkit.ErrPasskeyInvalid)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+}
+
+func TestAnotherSessionCannotFinishTheCeremony(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, s1 := regUser(w, "ada@example.invalid")
+	s2 := w.signIn("ada@example.invalid", "the right password")
+	c1, c2 := w.claims(s1), w.claims(s2)
+	begin := regBegin(w, c1)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	regRefused(t, regFinish(w, c2, begin.Ceremony.ID, resp, "Laptop"), authkit.ErrPasskeyInvalid)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 0 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 unspent", all, spent)
+	}
+	if r := regFinish(w, c1, begin.Ceremony.ID, resp, "Laptop"); r.Refusal != nil {
+		t.Fatalf("finish from the begin session refused: %v", r.Refusal)
+	}
+}
+
+func TestAnotherPrincipalCannotFinishTheCeremony(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	ada, ares := regUser(w, "ada@example.invalid")
+	c := w.claims(ares)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	bob, bres := regUser(w, "bob@example.invalid")
+	regRefused(t, regFinish(w, w.claims(bres), begin.Ceremony.ID, resp, "Laptop"), authkit.ErrPasskeyInvalid)
+	if n := regPasskeys(w, bob); n != 0 {
+		t.Fatalf("Bob's auth_passkeys rows = %d, want 0", n)
+	}
+	if n := regPasskeys(w, ada); n != 0 {
+		t.Fatalf("Ada's auth_passkeys rows = %d, want 0", n)
+	}
+	if all, spent := regCeremonies(w, ada); all != 1 || spent != 0 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 unspent", all, spent)
+	}
+}
+
+func TestACeremonyOfAnotherAudienceIsRefused(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	w.d.Exec(t, `UPDATE auth_passkey_ceremonies SET audience = 'client' WHERE principal_id = $1`, id)
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, resp, "Laptop"), authkit.ErrPasskeyInvalid)
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 0 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 unspent", all, spent)
+	}
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+}
+
+func TestALoginCeremonyCannotFinishARegistration(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	w.d.Exec(t, `UPDATE auth_passkey_ceremonies SET kind = 'login', principal_id = NULL, session_id = NULL WHERE principal_id = $1`, id)
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, resp, "Laptop"), authkit.ErrPasskeyInvalid)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if n := w.count(`SELECT count(*) FROM auth_passkey_ceremonies WHERE used_at IS NOT NULL`); n != 0 {
+		t.Fatalf("spent ceremonies = %d, want 0", n)
+	}
+}
+
+func TestAnotherAudiencesOriginIsRefused(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(clientOrigin), begin.Ceremony)
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, resp, "Laptop"), authkit.ErrPasskeyInvalid)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if n := regAdded(w, id); n != 0 {
+		t.Fatalf("passkey_added events = %d, want 0", n)
+	}
+}
+
+func TestAnAudienceWithoutOriginsIsRefused(t *testing.T) {
+	w := regWorld(t, map[authkit.Audience][]string{"client": {clientOrigin}})
+	id, res := regUser(w, "ada@example.invalid")
+	regRefused(t, regBegin(w, w.claims(res)), authkit.ErrPasskeyInvalid)
+	if all, _ := regCeremonies(w, id); all != 0 {
+		t.Fatalf("ceremonies = %d, want 0", all)
+	}
+}
+
+func TestPasskeyRegistrationNeedsPasskeysOn(t *testing.T) {
+	w := newWorld(t)
+	_, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	var begin, finish authkit.Result
+	var beginErr, finishErr error
+	if err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+		begin, beginErr = w.svc.BeginPasskeyRegistration(w.ctx, q, c, authkit.Meta{})
+		finish, finishErr = w.svc.FinishPasskeyRegistration(w.ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(beginErr, authkit.ErrPasskeysOff) || !reflect.ValueOf(begin).IsZero() {
+		t.Fatalf("begin = %v, %+v; want ErrPasskeysOff and a zero Result", beginErr, begin)
+	}
+	if !errors.Is(finishErr, authkit.ErrPasskeysOff) || !reflect.ValueOf(finish).IsZero() {
+		t.Fatalf("finish = %v, %+v; want ErrPasskeysOff and a zero Result", finishErr, finish)
+	}
+}
+
+func TestASyncedPasskeyIsAccepted(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	a := regAuthn(staffOrigin)
+	a.BackupEligible = true
+	if r := regFinish(w, c, begin.Ceremony.ID, regCreate(t, a, begin.Ceremony), "Laptop"); r.Refusal != nil {
+		t.Fatalf("finish refused: %v", r.Refusal)
+	}
+	if n := regPasskeys(w, id); n != 1 {
+		t.Fatalf("auth_passkeys rows = %d, want 1", n)
+	}
+}
