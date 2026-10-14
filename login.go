@@ -19,7 +19,7 @@ import (
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 
-// Login signs a principal in with its password (spec §3.2; P1 spec §7). By
+// Login signs a principal in with its password. By
 // default every attempt is counted before its verification: the hash slot
 // first (from ctx, or taken here), so a Busy refusal counts nothing; then the
 // login's throttle row, locked until the caller commits, is counted, and an
@@ -35,8 +35,7 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 	m = m.clean()
 	a := &attempt{aud: aud, key: Normalize(login), now: s.now(), m: m,
 		ev: events.Event{Audience: string(aud), Login: typedLogin(login), IP: m.IP, UserAgent: m.UserAgent}}
-	// A login longer than any account's is neither counted nor looked up: it
-	// is unknown, so no account escapes the throttle through it.
+	// WHY: a login longer than any account's is unknown, so no account escapes the throttle through it.
 	a.counted = utf8.RuneCountInString(a.key) <= maxLoginRunes
 	if !s.cfg.Throttle.CountAfterVerify {
 		held, release, err := s.hasher.Hold(ctx)
@@ -95,20 +94,17 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 	return s.signIn(ctx, q, a, p, hash, pw)
 }
 
-// attempt is one Login call's state.
 type attempt struct {
 	aud     Audience
-	key     string // the normalised login
-	counted bool   // false for a login too long to be any account's
+	key     string
+	counted bool
 	now     time.Time
 	m       Meta
 	ev      events.Event
 }
 
-// throttleKey is the auth_throttle key of a normalised login: its sha256 in
-// hex, so the table holds no logins, unless Throttle.PlainLoginKey. Turning
-// PlainLoginKey off on a running app orphans its counters; they lapse within
-// Lockout and Prune deletes them.
+// WHY: the key is the sha256 of the normalised login in hex, so the table holds no logins unless Throttle.PlainLoginKey is set.
+// WHY: turning PlainLoginKey off on a running app orphans its counters.
 func (s *Service) throttleKey(normalised string) string {
 	if s.cfg.Throttle.PlainLoginKey {
 		return normalised
@@ -117,8 +113,6 @@ func (s *Service) throttleKey(normalised string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// throttled counts the attempt (count-before) or reads the lock
-// (CountAfterVerify), and reports whether the login is locked.
 func (s *Service) throttled(ctx context.Context, q db.Querier, a *attempt) (time.Time, bool, error) {
 	switch {
 	case !a.counted:
@@ -129,9 +123,6 @@ func (s *Service) throttled(ctx context.Context, q db.Querier, a *attempt) (time
 	return throttle.Count(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle)
 }
 
-// refuseLocked logs an attempt on a locked login, verified by nobody. In the
-// count-before order its event names the principal when the login resolves
-// (spec §3.6); CountAfterVerify keeps v0.1's event, without one.
 func (s *Service) refuseLocked(ctx context.Context, q db.Querier, a *attempt, until time.Time) (Result, error) {
 	if !s.cfg.Throttle.CountAfterVerify {
 		p, err := s.principals.Lookup(ctx, q, a.key, a.aud)
@@ -149,8 +140,6 @@ func (s *Service) refuseLocked(ctx context.Context, q db.Querier, a *attempt, un
 	return Result{Refusal: ErrLocked{RetryAfter: until.Sub(a.now)}}, nil
 }
 
-// refuseFailed logs a failed verification; CountAfterVerify counts it here,
-// the count-before order counted it already.
 func (s *Service) refuseFailed(ctx context.Context, q db.Querier, a *attempt) (Result, error) {
 	if a.counted && s.cfg.Throttle.CountAfterVerify {
 		if err := throttle.Fail(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle); err != nil {
@@ -163,9 +152,7 @@ func (s *Service) refuseFailed(ctx context.Context, q db.Querier, a *attempt) (R
 	return Result{Refusal: ErrInvalidCredentials}, nil
 }
 
-// signIn finishes a verified attempt: Admit, the rehash, the session, the
-// counter cleared and signed_in. An Admit refusal leaves the counter as it
-// is: only a sign-in clears it.
+// WHY: an Admit refusal leaves the throttle counter as it is; only a sign-in clears it.
 func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Principal, hash, pw string) (Result, error) {
 	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: a.aud})
 	if err != nil {
@@ -197,8 +184,7 @@ func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Princi
 	return res, nil
 }
 
-// verify runs exactly one argon2id verification: against the stored hash, or
-// the dummy when there is none (spec §8.6).
+// WHY: every login spends one verification, against the dummy when there is no hash, so unknown logins take as long as known ones.
 func (s *Service) verify(ctx context.Context, hash string, has bool, pw string) (bool, error) {
 	if s.onVerify != nil {
 		s.onVerify()
@@ -209,9 +195,6 @@ func (s *Service) verify(ctx context.Context, hash string, has bool, pw string) 
 	return s.hasher.Verify(ctx, hash, pw)
 }
 
-// admit asks the app. A Refusal comes back as a value; any other error is an
-// infrastructure failure. The admission's claims are checked for reserved
-// names here, so a misbehaving app fails fast instead of minting.
 func (s *Service) admit(ctx context.Context, q db.Querier, p Proposal) (Admission, *Refusal, error) {
 	adm, err := s.principals.Admit(ctx, q, p)
 	var refusal *Refusal
@@ -230,8 +213,7 @@ func (s *Service) admit(ctx context.Context, q db.Querier, p Proposal) (Admissio
 	return adm, nil, nil
 }
 
-// record logs an event of source and hands it to Config.OnEvent on the same
-// querier, so the app's mirror of it commits or rolls back with it.
+// WHY: record hands the event to Config.OnEvent on the same querier, so the app's mirror of it commits or rolls back with it.
 func (s *Service) record(ctx context.Context, q db.Querier, now time.Time, source string, e events.Event) error {
 	id, err := token.ID(s.cfg.Rand)
 	if err != nil {
@@ -250,9 +232,6 @@ func (s *Service) record(ctx context.Context, q db.Querier, now time.Time, sourc
 	return nil
 }
 
-// openSession creates the principal's session, capped from now, and its
-// credential: an access and a refresh token (Bearer) or a session token
-// (Session mode), issued at the method's one now.
 func (s *Service) openSession(ctx context.Context, q db.Querier, p Principal, aud Audience, adm Admission, m Meta, now time.Time) (Result, error) {
 	id, err := token.ID(s.cfg.Rand)
 	if err != nil {
@@ -281,9 +260,7 @@ func (s *Service) openSession(ctx context.Context, q db.Querier, p Principal, au
 	return res, nil
 }
 
-// rehash re-encodes a password under the current parameters (spec §8.7),
-// unless the stored hash changed since Login read it. A full ceiling skips
-// it; the next sign-in tries again.
+// WHY: the rehash is skipped unless the stored hash is still the one Login read, so a change committed since the read wins.
 func (s *Service) rehash(ctx context.Context, q db.Querier, id uuid.UUID, old, pw string) error {
 	hash, err := s.hasher.Hash(ctx, pw)
 	if errors.Is(err, ErrBusy) {

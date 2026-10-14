@@ -12,7 +12,7 @@ var (
 	// ErrNoRows is what Row.Scan returns for an empty result, whatever the driver.
 	ErrNoRows = errors.New("db: no rows in result set")
 	// ErrTxRequired refuses a method that writes, locks or takes an advisory
-	// lock when it is handed a bare connection (spec §5 "Writes need a transaction").
+	// lock when it is handed a bare connection.
 	ErrTxRequired = errors.New("authkit: this method writes or locks and needs the caller's transaction")
 )
 

@@ -29,7 +29,7 @@ var (
 	ErrBusy          = password.ErrBusy
 )
 
-// ErrLocked refuses a login whose throttle is locked (spec §8.9).
+// ErrLocked refuses a login whose throttle is locked.
 type ErrLocked struct{ RetryAfter time.Duration }
 
 func (e ErrLocked) Error() string {
@@ -46,7 +46,7 @@ type (
 	Throttle     = throttle.Rules
 )
 
-// Sign-in event results (spec §6); an app adds its own through Refuse.
+// Sign-in event results; an app adds its own through Refuse.
 const (
 	ResultSignedIn      = "signed_in"
 	ResultSignedOut     = "signed_out"
@@ -62,7 +62,7 @@ const (
 	ResultPasswordChanged = "password_changed"
 )
 
-// Event.Source values: the Service method that recorded the event (spec §3.7).
+// Event.Source values: the Service method that recorded the event.
 const (
 	SourceLogin               = "login"
 	SourceOpenSession         = "open_session"

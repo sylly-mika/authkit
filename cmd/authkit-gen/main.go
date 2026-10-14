@@ -1,12 +1,12 @@
 // Command authkit-gen copies authkit's migrations into an app's golang-migrate
-// or goose directory, numbered after the app's own (spec §5.3, P3 spec §3.4):
+// or goose directory, numbered after the app's own:
 //
 //	go run github.com/sylly-mika/authkit/cmd/authkit-gen -principals users -out migrations
 //	go run github.com/sylly-mika/authkit/cmd/authkit-gen -format goose -principals administrators -out migrations
 //
 // authkit.lock (in the working directory by default) records what it wrote;
 // a second run writes only migrations a newer library added. Run the app's
-// own hash and order checks afterwards (ino-tasks: make migrate-hash, make migrate-check).
+// own hash and order checks afterwards.
 package main
 
 import (

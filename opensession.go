@@ -32,8 +32,6 @@ func (s *Service) OpenSession(ctx context.Context, q db.Querier, p Principal, au
 	return s.openSignedIn(ctx, q, SourceOpenSession, grant{p: p, aud: aud, adm: adm, m: m, now: now})
 }
 
-// grant is a sign-in Admit has allowed: whom, for which audience, with what
-// admission, from which request, at the method's one now.
 type grant struct {
 	p   Principal
 	aud Audience
@@ -42,8 +40,6 @@ type grant struct {
 	now time.Time
 }
 
-// openSignedIn opens g's session and logs signed_in from source: the sign-in
-// that OpenSession, CompleteReset and ChangePassword under RevokeAll end with.
 func (s *Service) openSignedIn(ctx context.Context, q db.Querier, source string, g grant) (Result, error) {
 	res, err := s.openSession(ctx, q, g.p, g.aud, g.adm, g.m, g.now)
 	if err != nil {

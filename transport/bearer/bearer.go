@@ -1,6 +1,6 @@
 // Package bearer is authkit's access-token transport: HS256 JWTs carrying
 // sub, sid, iss, aud (<issuer>:<audience>), iat and exp beside the app's own
-// claims, parsed strictly (spec §8.4).
+// claims, parsed strictly.
 package bearer
 
 import (
@@ -66,8 +66,7 @@ func (c *Codec) Mint(sub, sid uuid.UUID, audience string, app map[string]any) (s
 	return c.MintAt(c.now(), sub, sid, audience, app)
 }
 
-// MintAt is Mint issued at now, so a caller signs at its own one instant
-// (Decision P3).
+// MintAt is Mint issued at now, so a caller signs at its own one instant.
 func (c *Codec) MintAt(now time.Time, sub, sid uuid.UUID, audience string, app map[string]any) (string, time.Time, error) {
 	if err := CheckAppClaims(app); err != nil {
 		return "", time.Time{}, err

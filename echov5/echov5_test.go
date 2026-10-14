@@ -60,7 +60,6 @@ func (f *fixture) signIn(t *testing.T) (uuid.UUID, authkit.Result) {
 	return id, res
 }
 
-// run builds the chain by hand, as echo does, and returns its error.
 func run(header string, chain []echo.MiddlewareFunc, last echo.HandlerFunc) error {
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -133,8 +132,6 @@ func TestGuardAdmitsOnTheAppsQuerier(t *testing.T) {
 	}
 }
 
-// TestGuardRefusesEndedAndStaleSessions is spec §8.5 through the middleware.
-// The refusals are the bare sentinels, not wraps of them.
 func TestGuardRefusesEndedAndStaleSessions(t *testing.T) {
 	f := setup(t)
 	id, res := f.signIn(t)
@@ -149,8 +146,6 @@ func TestGuardRefusesEndedAndStaleSessions(t *testing.T) {
 	}
 }
 
-// TestGuardNeedsParseBearerBeforeIt: with a working querier, a chain without
-// ParseBearer is a server error, never a refusal (a 401 signs the SPA out).
 func TestGuardNeedsParseBearerBeforeIt(t *testing.T) {
 	f := setup(t)
 	id, res := f.signIn(t)
@@ -163,8 +158,6 @@ func TestGuardNeedsParseBearerBeforeIt(t *testing.T) {
 	}
 }
 
-// serverError reports whether err is a plain server error: none of the
-// middleware refusals, and nothing echo would render with a status of its own.
 func serverError(err error) bool {
 	for _, refusal := range []error{authkit.ErrMissingToken, authkit.ErrInvalidToken, authkit.ErrWrongAudience,
 		authkit.ErrSessionEnded, authkit.ErrStale} {
@@ -231,8 +224,6 @@ type failingRow struct{ err error }
 
 func (r failingRow) Scan(...any) error { return r.err }
 
-// TestGuardWrapsInfrastructureErrors: a failing database is neither a refusal
-// (the SPA signs out on 401) nor a pass, and echo renders it as a bare 500.
 func TestGuardWrapsInfrastructureErrors(t *testing.T) {
 	f := setup(t)
 	token := f.token(t, "staff")

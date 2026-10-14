@@ -51,10 +51,7 @@ func TestRefreshSlidesByTheAudiencesTTL(t *testing.T) {
 	}
 }
 
-// TestRefreshConcurrentOneWinner is spec §8.1 (†). A holder locks the
-// session row first, so all 16 refreshes are in flight before any can win:
-// with the lock they queue at LockForRefresh; without it (M1) they all read
-// the row and queue at Rotate, and the losers fail.
+// WHY: a holder locks the session row first, so all 16 refreshes are in flight before any can win.
 func TestRefreshConcurrentOneWinner(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -133,9 +130,6 @@ func TestALoserInsideTheGraceKeepsTheSession(t *testing.T) {
 	}
 }
 
-// The grace is inclusive (spec §8.1 "within ReuseGrace", §8.3 "older than"):
-// a token rotated away exactly ReuseGrace ago is a loser that writes nothing;
-// a microsecond later it is a replay.
 func TestTheGraceIsInclusive(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -155,7 +149,6 @@ func TestTheGraceIsInclusive(t *testing.T) {
 	}
 }
 
-// TestRefreshReuseAfterGraceRevokes is spec §8.3 (†).
 func TestRefreshReuseAfterGraceRevokes(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -176,8 +169,6 @@ func TestRefreshReuseAfterGraceRevokes(t *testing.T) {
 	}
 }
 
-// Concurrent replays of one rotated-away token queue on LockByPrevious's row
-// lock: one revokes and logs, the rest find the session ended.
 func TestConcurrentReplaysRevokeAndLogOnce(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -222,8 +213,6 @@ func TestConcurrentReplaysRevokeAndLogOnce(t *testing.T) {
 	}
 }
 
-// A replay of a session that reuse detection already revoked is a plain
-// refusal: it neither revokes again nor logs a second reuse_detected.
 func TestAReplayOfARevokedSessionWritesNothing(t *testing.T) {
 	w := newWorld(t)
 	id := w.user("ada@example.invalid", "the right password")

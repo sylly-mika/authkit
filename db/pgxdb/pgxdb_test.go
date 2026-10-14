@@ -28,7 +28,6 @@ func pool(t *testing.T, d *authkittest.DB) *pgxpool.Pool {
 	return p
 }
 
-// inTx runs fn in a pgx transaction and commits whatever a refusal wrote.
 func inTx(t *testing.T, p *pgxpool.Pool, fn func(q db.Querier) (authkit.Result, error)) authkit.Result {
 	t.Helper()
 	ctx := context.Background()
@@ -108,10 +107,6 @@ func TestQueryRowMapsNoRowsAndExecCountsRows(t *testing.T) {
 	})
 }
 
-// TestTheServiceRunsOverPgx drives every kind of statement authkit sends
-// (uuid, nullable uuid, bytea, timestamptz, interval, text arrays, UPDATE …
-// RETURNING, the throttle upsert) through pgx, in Session mode as BMParts
-// runs it, with an OnEvent that writes through Unwrap.
 func TestTheServiceRunsOverPgx(t *testing.T) {
 	d := authkittest.NewDB(t)
 	p, ctx := pool(t, d), context.Background()

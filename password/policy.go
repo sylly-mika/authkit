@@ -7,13 +7,13 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// Policy bounds a new password by its length in characters (spec §8.7).
+// Policy bounds a new password by its length in characters.
 type Policy struct {
 	MinRunes int
 	MaxRunes int
 }
 
-// DefaultPolicy is the spec's 10 to 256 characters.
+// DefaultPolicy is 10 to 256 characters.
 var DefaultPolicy = Policy{MinRunes: 10, MaxRunes: 256}
 
 // PolicyError is the refusal of a password the policy does not admit.

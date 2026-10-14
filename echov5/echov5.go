@@ -1,6 +1,6 @@
 // Package echov5 mounts authkit on echo v5. In Bearer mode ParseBearer and
-// Guard sit around the app's own connection middleware (ino-tasks:
-// WorkspaceRLS between them). In Session mode SessionCookie loads the
+// Guard sit around the app's own connection middleware. In Session mode
+// SessionCookie loads the
 // session, RequireSession and RequireOrigin guard each route, and HashSlot
 // holds a hash slot before the app's transaction. RateLimit is the per-IP
 // limiter for the auth routes. Refusals come back as authkit's sentinels for
@@ -50,7 +50,7 @@ func ParseBearer(s *authkit.Service, aud authkit.Audience) echo.MiddlewareFunc {
 }
 
 // Guard admits a request only while its session is open and Admit grants
-// exactly the token's claims (spec §8.5), checked on the querier the app
+// exactly the token's claims, checked on the querier the app
 // supplies for the request. It puts the Admission on the context. A refusal
 // is authkit.ErrSessionEnded or authkit.ErrStale itself; a missing
 // ParseBearer or querier, or a database failure, is any other error, for the

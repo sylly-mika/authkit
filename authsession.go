@@ -11,7 +11,7 @@ import (
 	"github.com/sylly-mika/authkit/session"
 )
 
-// AuthenticateSession is Session mode's check of one request (spec §3.5); it
+// AuthenticateSession is Session mode's check of one request; it
 // needs a transaction. The current token of an open session of aud whose
 // principal Admit still admits is accepted: last_seen_at and the idle expiry
 // slide at most once a minute, and a token older than RotateEvery is swapped
@@ -45,12 +45,7 @@ func (s *Service) AuthenticateSession(ctx context.Context, q db.Querier, aud Aud
 	return s.keepAlive(ctx, q, res, hash, now)
 }
 
-// previousToken answers a token that is no session's current one (spec §3.5
-// rules 2 and 3). The token a session rotated away within ReuseGrace comes
-// from a request that started before the rotation: admitted for this request
-// alone, nothing written. One rotated away earlier is a replay: the session
-// is revoked and the event logged, for the caller to commit. Only the
-// immediately previous token is recognised.
+// WHY: a token rotated away within ReuseGrace can belong to a request that began before the rotation, so it is admitted for that request alone; an older one is a replay.
 func (s *Service) previousToken(ctx context.Context, q db.Querier, aud Audience, hash []byte, m Meta, now time.Time) (Result, error) {
 	prev, err := session.LockByPrevious(ctx, q, hash)
 	if errors.Is(err, db.ErrNoRows) {
@@ -75,9 +70,7 @@ func (s *Service) previousToken(ctx context.Context, q db.Querier, aud Audience,
 	return Result{Refusal: ErrSessionEnded}, nil
 }
 
-// admitSession refuses a revoked or expired session and one whose principal
-// Admit no longer admits (spec §3.5 rules 4 and 5): cookie mode has no
-// refresh-and-retry, so each is ErrSessionEnded.
+// WHY: cookie mode has no refresh-and-retry, so each is ErrSessionEnded.
 func (s *Service) admitSession(ctx context.Context, q db.Querier, sess Session, now time.Time) (Result, error) {
 	if sess.RevokedAt != nil || !sess.ExpiresAt.After(now) {
 		return Result{Refusal: ErrSessionEnded}, nil
@@ -93,10 +86,7 @@ func (s *Service) admitSession(ctx context.Context, q db.Querier, sess Session, 
 	return Result{Principal: p, Session: &sess, Admission: &adm}, nil
 }
 
-// keepAlive rotates a token older than RotateEvery by compare-and-swap,
-// sliding with it, or else slides the idle expiry and stamps last_seen_at at
-// most once a minute (spec §3.5 rules 6 and 7). A request that loses the
-// swap to a concurrent one keeps its token for this request, as rule 2 does.
+// WHY: a request that loses the swap to a concurrent one must not fail; it keeps its token for this request.
 func (s *Service) keepAlive(ctx context.Context, q db.Querier, res Result, hash []byte, now time.Time) (Result, error) {
 	sess := res.Session
 	born := sess.CreatedAt

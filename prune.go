@@ -12,7 +12,7 @@ import (
 
 const retention = 30 * 24 * time.Hour
 
-// Prune deletes what no flow reads any more (spec §6): throttle counters
+// Prune deletes what no flow reads any more: throttle counters
 // whose window and lock have passed, sessions and one-time links dead for 30
 // days, and sign-in events older than EventRetention unless it is negative.
 // The app's worker runs it with no workspace bound.

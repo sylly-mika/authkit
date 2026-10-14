@@ -1,5 +1,5 @@
-// Package cookie is authkit's session-cookie transport for Session mode (P3
-// spec §3.5): the HttpOnly cookie that carries the session token, and the
+// Package cookie is authkit's session-cookie transport for Session mode: the
+// HttpOnly cookie that carries the session token, and the
 // Origin check that keeps another site from riding it.
 package cookie
 

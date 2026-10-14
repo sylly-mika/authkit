@@ -21,8 +21,6 @@ func (w *world) openSession(p authkit.Principal) authkit.Result {
 	})
 }
 
-// TestOpenSessionSignsInWhomTheAppAuthenticated is spec §3.5: Admit, a
-// capped session and signed_in from open_session.
 func TestOpenSessionSignsInWhomTheAppAuthenticated(t *testing.T) {
 	var c captured
 	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
@@ -54,8 +52,6 @@ func TestOpenSessionSignsInWhomTheAppAuthenticated(t *testing.T) {
 	}
 }
 
-// TestRevokeAllSessionsEndsEveryOpenSessionAndLogsEach: the revoked,
-// expired and another principal's sessions are left alone.
 func TestRevokeAllSessionsEndsEveryOpenSessionAndLogsEach(t *testing.T) {
 	var c captured
 	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
@@ -110,8 +106,6 @@ func TestHasCredential(t *testing.T) {
 	}
 }
 
-// TestCompleteResetSignsInInSessionMode is spec §3.5: every older session
-// ends, and the reset opens a new one.
 func TestCompleteResetSignsInInSessionMode(t *testing.T) {
 	var c captured
 	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
@@ -131,8 +125,6 @@ func TestCompleteResetSignsInInSessionMode(t *testing.T) {
 	}
 }
 
-// TestCompleteResetAsksAdmitBeforeItWrites: in Session mode a refused
-// principal's link is spent, the refusal logged, and nothing else written.
 func TestCompleteResetAsksAdmitBeforeItWrites(t *testing.T) {
 	var c captured
 	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
@@ -155,8 +147,6 @@ func TestCompleteResetAsksAdmitBeforeItWrites(t *testing.T) {
 	}
 }
 
-// TestMayCreateCredential is spec §3.1: by default a reset never gives a
-// principal its first password, neither at the request nor at the spend.
 func TestMayCreateCredential(t *testing.T) {
 	w := newWorld(t, defaults)
 	id := w.user("invited@example.invalid", "")
@@ -180,9 +170,6 @@ func TestMayCreateCredential(t *testing.T) {
 	}
 }
 
-// TestChangePasswordRevokeAllReopens is spec §3.5's ChangePassword+All:
-// every session ends, the change is logged against the caller's, and the
-// caller gets a new session, its cap counted afresh.
 func TestChangePasswordRevokeAllReopens(t *testing.T) {
 	var c captured
 	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent; cfg.RevokeOnPasswordChange = authkit.RevokeAll })
@@ -213,7 +200,6 @@ func TestChangePasswordRevokeAllReopens(t *testing.T) {
 	}
 }
 
-// TestChangePasswordRevokeAllAsksAdmitFirst: a refusal writes nothing.
 func TestChangePasswordRevokeAllAsksAdmitFirst(t *testing.T) {
 	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.RevokeOnPasswordChange = authkit.RevokeAll })
 	id := w.user("ada@example.invalid", "the old password")

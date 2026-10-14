@@ -12,9 +12,6 @@ import (
 	"github.com/sylly-mika/authkit/db/sqldb"
 )
 
-// sessionWorld is a Session-mode world at the v0.2 defaults, as BMParts runs
-// it: no issuer, no secret, 30 minutes idle, a 12-hour cap, a 15-minute
-// rotation.
 func sessionWorld(t *testing.T, tweaks ...func(*authkit.Config)) *world {
 	t.Helper()
 	session := func(c *authkit.Config) { c.Transport, c.Issuer, c.Secret = authkit.TransportSession, "", nil }
@@ -28,7 +25,6 @@ func (w *world) authenticateSession(aud authkit.Audience, raw string) authkit.Re
 	})
 }
 
-// sessionRow is a session's token hashes and expiry as stored.
 type sessionRow struct {
 	token, prev []byte
 	expires     time.Time
@@ -79,8 +75,6 @@ func TestAuthenticateSessionAdmitsTheCurrentToken(t *testing.T) {
 	}
 }
 
-// TestAuthenticateSessionRefusals is spec §3.5 rules 4 and 5: each is
-// ErrSessionEnded, and none writes.
 func TestAuthenticateSessionRefusals(t *testing.T) {
 	w := sessionWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -113,9 +107,6 @@ func TestAuthenticateSessionRefusals(t *testing.T) {
 	}
 }
 
-// TestAuthenticateSessionSlidesAtMostOnceAMinute is spec §3.5 rule 6: the
-// idle expiry and last_seen_at move together, in one UPDATE, at most once a
-// minute.
 func TestAuthenticateSessionSlidesAtMostOnceAMinute(t *testing.T) {
 	w := sessionWorld(t)
 	w.user("ada@example.invalid", "the right password")
@@ -146,9 +137,6 @@ func TestAuthenticateSessionSlidesAtMostOnceAMinute(t *testing.T) {
 	}
 }
 
-// TestAnIdleSessionEndsAndABusyOneEndsAtTheCap: 30 minutes without a
-// request end a session; a session used every 20 minutes lives until its
-// 12-hour cap and no longer, its rotations included.
 func TestAnIdleSessionEndsAndABusyOneEndsAtTheCap(t *testing.T) {
 	w := sessionWorld(t)
 	w.user("ada@example.invalid", "the right password")
@@ -177,7 +165,6 @@ func TestAnIdleSessionEndsAndABusyOneEndsAtTheCap(t *testing.T) {
 	}
 }
 
-// TestRotationSwapsTheTokenAfterRotateEvery is spec §3.5 rule 7.
 func TestRotationSwapsTheTokenAfterRotateEvery(t *testing.T) {
 	w := sessionWorld(t)
 	w.user("ada@example.invalid", "the right password")
@@ -215,9 +202,6 @@ func TestANegativeRotateEveryNeverRotates(t *testing.T) {
 	}
 }
 
-// TestThePreviousTokenWithinTheGrace is spec §3.5 rule 2: a request that
-// started before a rotation is admitted, with nothing written; a revoked
-// session or a refused principal still ends it.
 func TestThePreviousTokenWithinTheGrace(t *testing.T) {
 	w := sessionWorld(t)
 	id := w.user("ada@example.invalid", "the right password")
@@ -254,8 +238,6 @@ func TestThePreviousTokenWithinTheGrace(t *testing.T) {
 	}
 }
 
-// TestThePreviousTokenPastTheGraceRevokes is spec §3.5 rule 3: reuse
-// revokes the session and logs it, and the refusal's writes commit.
 func TestThePreviousTokenPastTheGraceRevokes(t *testing.T) {
 	var c captured
 	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
@@ -279,10 +261,7 @@ func TestThePreviousTokenPastTheGraceRevokes(t *testing.T) {
 	}
 }
 
-// TestConcurrentRotationsHaveOneWinner: every request of a burst at the
-// rotation age is admitted, exactly one swaps the token, and the losers
-// fail nothing (spec §3.5 rule 7, then rule 2). A holder keeps the row
-// locked until every request waits at the swap.
+// WHY: a holder keeps the row locked until every request waits at the swap, so the burst contends at once.
 func TestConcurrentRotationsHaveOneWinner(t *testing.T) {
 	w := sessionWorld(t)
 	w.user("ada@example.invalid", "the right password")
@@ -334,8 +313,6 @@ func TestConcurrentRotationsHaveOneWinner(t *testing.T) {
 	}
 }
 
-// TestEachTransportRefusesTheOthersMethods: calling a method of the other
-// transport is a wiring error, never a refusal.
 func TestEachTransportRefusesTheOthersMethods(t *testing.T) {
 	sw := sessionWorld(t)
 	id := sw.user("ada@example.invalid", "the right password")
@@ -360,8 +337,6 @@ func TestEachTransportRefusesTheOthersMethods(t *testing.T) {
 	}
 }
 
-// TestTheAccountMethodsTakeResultClaims: Logout, ListSessions and
-// RevokeSession run in Session mode on Result.Claims().
 func TestTheAccountMethodsTakeResultClaims(t *testing.T) {
 	w := sessionWorld(t)
 	id := w.user("ada@example.invalid", "the right password")

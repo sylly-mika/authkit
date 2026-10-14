@@ -35,7 +35,7 @@ func Normalize(app map[string]any) (map[string]any, error) {
 }
 
 // SameClaims reports whether the claims Admit grants now are exactly the app
-// claims a token presented (spec §5.1). An added, removed or changed claim is
+// claims a token presented. An added, removed or changed claim is
 // a stale token.
 func SameClaims(granted, presented map[string]any) (bool, error) {
 	norm, err := Normalize(granted)

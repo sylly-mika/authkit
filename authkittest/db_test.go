@@ -43,8 +43,6 @@ func TestEveryAuthTableHasForcedRLSAndAPrimaryKey(t *testing.T) {
 	}
 }
 
-// fkIndexCheck is ino-tasks' scripts/fk_index_check.sql without its fleet-size
-// guard: one row per foreign key whose columns lead no index.
 const fkIndexCheck = `
 WITH fks AS (
     SELECT c.conrelid, c.conname, c.conkey,
