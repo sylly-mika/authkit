@@ -185,6 +185,65 @@ func newWithPasskeys(p authkit.PasskeyRules) error {
 	return err
 }
 
+func newWithSecondFactors(r authkit.SecondFactorRules) error {
+	cfg := passkeyBase
+	cfg.SecondFactors = r
+	_, err := authkit.New(cfg, authkittest.NewPrincipals())
+	return err
+}
+
+func TestNewAcceptsSecondFactorRules(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	for name, r := range map[string]authkit.SecondFactorRules{
+		"off":         {},
+		"key only":    {Key: key},
+		"upper bound": {Key: key, Issuer: "Ino Tasks", ChallengeTTL: time.Hour, EmailCodeTTL: time.Hour, SetupTTL: time.Hour, ResendEvery: 10 * time.Minute, Reauth: 10 * time.Minute, MaxTries: 10, MaxSends: 20, RecoveryCodes: 16},
+		"lower bound": {Key: key, ChallengeTTL: time.Second, EmailCodeTTL: time.Second, SetupTTL: time.Second, ResendEvery: time.Second, Reauth: time.Second, MaxTries: 1, MaxSends: 1, RecoveryCodes: 8},
+	} {
+		if err := newWithSecondFactors(r); err != nil {
+			t.Errorf("%s: New refused a valid SecondFactors: %v", name, err)
+		}
+	}
+}
+
+func TestNewRefusesSecondFactorRulesOutOfRange(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	with := func(f func(*authkit.SecondFactorRules)) authkit.SecondFactorRules {
+		r := authkit.SecondFactorRules{Key: key}
+		f(&r)
+		return r
+	}
+	const prefix = "authkit: Config.SecondFactors."
+	for name, c := range map[string]struct {
+		r    authkit.SecondFactorRules
+		want string
+	}{
+		"Key 31 bytes":          {authkit.SecondFactorRules{Key: key[:31]}, prefix + "Key must be 32 bytes, not 31"},
+		"Key 33 bytes":          {authkit.SecondFactorRules{Key: append(append([]byte{}, key...), 'x')}, prefix + "Key must be 32 bytes, not 33"},
+		"Key 16 bytes":          {authkit.SecondFactorRules{Key: key[:16]}, prefix + "Key must be 32 bytes, not 16"},
+		"Issuer colon":          {with(func(r *authkit.SecondFactorRules) { r.Issuer = "Ino:Tasks" }), prefix + `Issuer "Ino:Tasks" must not contain a colon`},
+		"ChallengeTTL negative": {with(func(r *authkit.SecondFactorRules) { r.ChallengeTTL = -time.Second }), prefix + "ChallengeTTL must be in (0, 1h], not -1s"},
+		"EmailCodeTTL over 1h":  {with(func(r *authkit.SecondFactorRules) { r.EmailCodeTTL = time.Hour + time.Second }), prefix + "EmailCodeTTL must be in (0, 1h], not 1h0m1s"},
+		"SetupTTL negative":     {with(func(r *authkit.SecondFactorRules) { r.SetupTTL = -time.Second }), prefix + "SetupTTL must be in (0, 1h], not -1s"},
+		"ResendEvery over 10m":  {with(func(r *authkit.SecondFactorRules) { r.ResendEvery = 11 * time.Minute }), prefix + "ResendEvery must be in (0, 10m], not 11m0s"},
+		"Reauth negative":       {with(func(r *authkit.SecondFactorRules) { r.Reauth = -time.Second }), prefix + "Reauth must be in (0, 10m], not -1s"},
+		"MaxTries -1":           {with(func(r *authkit.SecondFactorRules) { r.MaxTries = -1 }), prefix + "MaxTries must be in [1, 10], not -1"},
+		"MaxTries 11":           {with(func(r *authkit.SecondFactorRules) { r.MaxTries = 11 }), prefix + "MaxTries must be in [1, 10], not 11"},
+		"MaxSends -1":           {with(func(r *authkit.SecondFactorRules) { r.MaxSends = -1 }), prefix + "MaxSends must be in [1, 20], not -1"},
+		"MaxSends 21":           {with(func(r *authkit.SecondFactorRules) { r.MaxSends = 21 }), prefix + "MaxSends must be in [1, 20], not 21"},
+		"RecoveryCodes 7":       {with(func(r *authkit.SecondFactorRules) { r.RecoveryCodes = 7 }), prefix + "RecoveryCodes must be in [8, 16], not 7"},
+		"RecoveryCodes 17":      {with(func(r *authkit.SecondFactorRules) { r.RecoveryCodes = 17 }), prefix + "RecoveryCodes must be in [8, 16], not 17"},
+	} {
+		err := newWithSecondFactors(c.r)
+		if err == nil || err.Error() != c.want {
+			t.Errorf("%s: New = %v, want %q", name, err, c.want)
+		}
+		if err != nil && strings.Contains(err.Error(), string(key)) {
+			t.Errorf("%s: New's error carries the key: <redacted>", name)
+		}
+	}
+}
+
 func oneOrigin(rpid, origin string) authkit.PasskeyRules {
 	return authkit.PasskeyRules{RPID: rpid, Origins: map[authkit.Audience][]string{"staff": {origin}}}
 }
