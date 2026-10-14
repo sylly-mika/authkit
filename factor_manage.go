@@ -285,3 +285,14 @@ func (s *Service) issueRecoveryCodes(ctx context.Context, q db.Querier, keys fac
 	}
 	return codes, nil
 }
+
+// DisableSecondFactor is a stub.
+func (s *Service) DisableSecondFactor(ctx context.Context, q db.Querier, c *Claims, kind FactorKind, proof FactorProof, m Meta) (Result, error) {
+	if err := db.RequireTx(q); err != nil {
+		return Result{}, err
+	}
+	if len(s.cfg.SecondFactors.Key) == 0 {
+		return Result{Refusal: ErrSecondFactorsOff}, nil
+	}
+	return Result{}, nil
+}

@@ -94,6 +94,17 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 		"BeginTOTPSetup":          func() error { _, err := w.svc.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
 		"ConfirmTOTP":             func() error { _, err := w.svc.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
 		"RegenerateRecoveryCodes": func() error { _, err := w.svc.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
+		"BeginEmailCodeSetup":     func() error { _, err := w.svc.BeginEmailCodeSetup(ctx, q, c, authkit.Meta{}); return err },
+		"ConfirmEmailCode": func() error {
+			_, err := w.svc.ConfirmEmailCode(ctx, q, c, "x", authkit.Meta{})
+			return err
+		},
+		"RequestEmailProof": func() error { _, err := w.svc.RequestEmailProof(ctx, q, c, authkit.Meta{}); return err },
+		"DisableSecondFactor": func() error {
+			_, err := w.svc.DisableSecondFactor(ctx, q, c, authkit.FactorTOTP, authkit.FactorProof{}, authkit.Meta{})
+			return err
+		},
+		"MintEmailCode": func() error { _, err := w.svc.MintEmailCode(ctx, q, uuid.New()); return err },
 		"OpenSessionFrom": func() error {
 			_, err := w.svc.OpenSessionFrom(ctx, q, res.Session.ID, p, "staff", authkit.Meta{})
 			return err
