@@ -27,7 +27,9 @@ import (
 // the lookup, exactly one argon2id verification, Admit, the session, the
 // counter cleared and signed_in. Throttle.CountAfterVerify is v0.1's order:
 // check the lock, verify, count a failure. Its refusals return normally after
-// writing their throttle count and event.
+// writing their throttle count and event. A principal holding a confirmed
+// second factor gets Result.SecondStep instead of a session; VerifySecondStep
+// completes the sign-in.
 func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, pw string, m Meta) (Result, error) {
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
@@ -165,10 +167,20 @@ func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Princi
 		}
 		return Result{Refusal: refusal.Err}, nil
 	}
+	methods, err := s.secondFactorMethods(ctx, q, p.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(methods) > 0 && len(s.cfg.SecondFactors.Key) == 0 {
+		return Result{Refusal: ErrSecondFactorsOff}, nil
+	}
 	if s.hasher.NeedsRehash(hash) {
 		if err := s.rehash(ctx, q, p.ID, hash, pw); err != nil {
 			return Result{}, err
 		}
+	}
+	if len(methods) > 0 {
+		return s.issueSecondStep(ctx, q, SourceLogin, p, a.aud, "login", s.throttleKey(a.key), methods, adm.ScopeID, a.m, a.now)
 	}
 	res, err := s.openSession(ctx, q, p, a.aud, adm, a.m, a.now, "")
 	if err != nil {
