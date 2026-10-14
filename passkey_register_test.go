@@ -441,3 +441,107 @@ func TestARefusedLabelKeepsTheCeremony(t *testing.T) {
 		t.Fatalf("auth_passkeys rows = %d, want 1", n)
 	}
 }
+
+func TestBeginNeedsAPassword(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	w.d.Exec(t, `DELETE FROM auth_credentials WHERE principal_id = $1`, id)
+	regRefused(t, regBegin(w, w.claims(res)), authkit.ErrNoPassword)
+	if all, _ := regCeremonies(w, id); all != 0 {
+		t.Fatalf("ceremonies = %d, want 0", all)
+	}
+}
+
+func TestFinishNeedsAPassword(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	w.d.Exec(t, `DELETE FROM auth_credentials WHERE principal_id = $1`, id)
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, resp, "Laptop"), authkit.ErrNoPassword)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 0 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 unspent", all, spent)
+	}
+}
+
+func TestBeginAtTheEdgeOfTheReauthWindow(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	_, res := regUser(w, "ada@example.invalid")
+	w.clock.Advance(5 * time.Minute)
+	if begin := regBegin(w, w.claims(res)); begin.Refusal != nil || begin.Ceremony == nil {
+		t.Fatalf("begin: refusal %v, ceremony given %v", begin.Refusal, begin.Ceremony != nil)
+	}
+}
+
+func TestBeginAfterTheReauthWindow(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	w.clock.Advance(5*time.Minute + time.Second)
+	regRefused(t, regBegin(w, w.claims(res)), authkit.ErrReauthRequired)
+	if all, _ := regCeremonies(w, id); all != 0 {
+		t.Fatalf("ceremonies = %d, want 0", all)
+	}
+}
+
+func TestFinishAfterTheReauthWindow(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	w.clock.Advance(4 * time.Minute)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	w.clock.Advance(time.Minute + time.Second)
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, resp, "Laptop"), authkit.ErrReauthRequired)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 0 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 unspent", all, spent)
+	}
+}
+
+func TestChangingThePasswordRestartsTheReauthWindow(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	_, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	w.clock.Advance(6 * time.Minute)
+	changed := w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.ChangePassword(w.ctx, q, c, "the right password", "another password", authkit.Meta{})
+	})
+	if changed.Refusal != nil || changed.Session == nil || changed.Session.ID != c.SessionID {
+		t.Fatalf("change password: refusal %v, the session was kept %v", changed.Refusal, changed.Session != nil && changed.Session.ID == c.SessionID)
+	}
+	if begin := regBegin(w, c); begin.Refusal != nil || begin.Ceremony == nil {
+		t.Fatalf("begin: refusal %v, ceremony given %v", begin.Refusal, begin.Ceremony != nil)
+	}
+}
+
+func TestASwitchedSessionKeepsItsSignInTime(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	_, res := regUser(w, "ada@example.invalid")
+	w.clock.Advance(6 * time.Minute)
+	switched := w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.OpenSessionFrom(w.ctx, q, res.Session.ID, res.Principal, "staff", authkit.Meta{})
+	})
+	if switched.Refusal != nil || switched.Session == nil {
+		t.Fatalf("switch: refusal %v, session given %v", switched.Refusal, switched.Session != nil)
+	}
+	regRefused(t, regBegin(w, w.claims(switched)), authkit.ErrReauthRequired)
+}
+
+func TestBeginOnAnEndedSession(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.Logout(w.ctx, q, c, authkit.Meta{})
+	})
+	regRefused(t, regBegin(w, c), authkit.ErrReauthRequired)
+	if all, _ := regCeremonies(w, id); all != 0 {
+		t.Fatalf("ceremonies = %d, want 0", all)
+	}
+}

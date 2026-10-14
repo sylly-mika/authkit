@@ -29,6 +29,13 @@ func (s *Service) BeginPasskeyRegistration(ctx context.Context, q db.Querier, c 
 		return Result{}, ErrPasskeysOff
 	}
 	now := s.now()
+	_, has, err := credentialOf(ctx, q, c.Subject)
+	if err != nil {
+		return Result{}, err
+	}
+	if !has {
+		return Result{Refusal: ErrNoPassword}, nil
+	}
 	sess, ok, err := s.freshSession(ctx, q, c, now)
 	if err != nil {
 		return Result{}, err
@@ -77,6 +84,13 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, q db.Querier, c
 		return Result{Refusal: ErrPasskeyLabel}, nil
 	}
 	now := s.now()
+	_, has, err := lockCredential(ctx, q, c.Subject)
+	if err != nil {
+		return Result{}, err
+	}
+	if !has {
+		return Result{Refusal: ErrNoPassword}, nil
+	}
 	sess, ok, err := s.freshSession(ctx, q, c, now)
 	if err != nil {
 		return Result{}, err
@@ -137,6 +151,9 @@ func (s *Service) freshSession(ctx context.Context, q db.Querier, c *Claims, now
 	}
 	if err != nil {
 		return session.Session{}, false, err
+	}
+	if now.Sub(sess.AuthenticatedAt) > s.cfg.Passkeys.Reauth {
+		return session.Session{}, false, nil
 	}
 	return sess, true, nil
 }
