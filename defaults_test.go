@@ -7,6 +7,17 @@ import (
 	"github.com/sylly-mika/authkit/password"
 )
 
+func TestWithDefaultsFillPasskeyRules(t *testing.T) {
+	p := withDefaults(Config{}).Passkeys
+	if p.RPName != "authkit" || p.CeremonyTTL != 2*time.Minute || p.Reauth != 5*time.Minute || p.Max != 10 || p.RPID != "" || p.Origins != nil {
+		t.Errorf("withDefaults(Config{}).Passkeys = %+v, want RPName authkit, CeremonyTTL 2m, Reauth 5m, Max 10", p)
+	}
+	kept := withDefaults(Config{Passkeys: PasskeyRules{RPName: "ino-tasks", CeremonyTTL: time.Minute, Reauth: 3 * time.Minute, Max: 4}}).Passkeys
+	if kept.RPName != "ino-tasks" || kept.CeremonyTTL != time.Minute || kept.Reauth != 3*time.Minute || kept.Max != 4 {
+		t.Errorf("withDefaults kept Passkeys = %+v, want the set values", kept)
+	}
+}
+
 func TestWithDefaultsAreTheSpecs(t *testing.T) {
 	c := withDefaults(Config{})
 	if c.Transport != TransportBearer || c.AccessTTL != 15*time.Minute || c.RefreshTTL != 0 ||
