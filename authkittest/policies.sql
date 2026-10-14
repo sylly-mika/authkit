@@ -75,4 +75,22 @@ CREATE POLICY auth_throttle_auth ON auth_throttle FOR ALL
     USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
     WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
 
+ALTER TABLE auth_passkeys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_passkeys FORCE  ROW LEVEL SECURITY;
+CREATE POLICY auth_passkeys_auth ON auth_passkeys FOR ALL
+    USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
+    WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
+CREATE POLICY auth_passkeys_self ON auth_passkeys FOR ALL
+    USING (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid)
+    WITH CHECK (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid);
+
+ALTER TABLE auth_passkey_ceremonies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_passkey_ceremonies FORCE  ROW LEVEL SECURITY;
+CREATE POLICY auth_passkey_ceremonies_auth ON auth_passkey_ceremonies FOR ALL
+    USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
+    WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
+CREATE POLICY auth_passkey_ceremonies_self ON auth_passkey_ceremonies FOR ALL
+    USING (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid)
+    WITH CHECK (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid);
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authkit_app;
