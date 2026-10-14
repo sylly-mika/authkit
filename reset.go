@@ -66,7 +66,9 @@ func (s *Service) RequestReset(ctx context.Context, q db.Querier, aud Audience, 
 // the spend and logs its result, nothing more. Then the credential, every
 // session revoked (password_reset), the login's throttle cleared, and
 // password_set or password_reset logged. Session mode then signs the
-// principal in (Result.SessionToken); Bearer mode signs nobody in.
+// principal in (Result.SessionToken); Bearer mode signs nobody in. A
+// principal holding a confirmed second factor gets Result.SecondStep in both
+// transports instead of a session; the factors and recovery codes stay.
 // It also deletes every passkey of the principal, reports the count in
 // Result.PasskeysRemoved and logs passkeys_reset when there were any.
 func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience, raw, pw string, m Meta) (Result, error) {
@@ -109,8 +111,15 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if !had && !s.cfg.Reset.MayCreateCredential {
 		return Result{Refusal: ErrTokenUnknown}, nil
 	}
+	methods, err := s.secondFactorMethods(ctx, q, p.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(methods) > 0 && len(s.cfg.SecondFactors.Key) == 0 {
+		return Result{Refusal: ErrSecondFactorsOff}, nil
+	}
 	g := grant{p: p, aud: aud, m: m, now: now}
-	if s.cfg.Transport == TransportSession {
+	if s.cfg.Transport == TransportSession || len(methods) > 0 {
 		var refusal *Refusal
 		if g.adm, refusal, err = s.admit(ctx, q, Proposal{Principal: p, Audience: aud}); err != nil {
 			return Result{}, err
@@ -149,6 +158,14 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 			Result: ResultPasskeysReset, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
 			return Result{}, err
 		}
+	}
+	if len(methods) > 0 {
+		res, err := s.issueSecondStep(ctx, q, SourceCompleteReset, p, aud, "reset", s.throttleKey(Normalize(p.Login)), methods, g.adm.ScopeID, m, now)
+		if err != nil {
+			return Result{}, err
+		}
+		res.PasskeysRemoved = removed
+		return res, nil
 	}
 	if s.cfg.Transport != TransportSession {
 		return Result{Principal: p, PasskeysRemoved: removed}, nil
