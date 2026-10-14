@@ -67,6 +67,8 @@ func (s *Service) RequestReset(ctx context.Context, q db.Querier, aud Audience, 
 // session revoked (password_reset), the login's throttle cleared, and
 // password_set or password_reset logged. Session mode then signs the
 // principal in (Result.SessionToken); Bearer mode signs nobody in.
+// It also deletes every passkey of the principal, reports the count in
+// Result.PasskeysRemoved and logs passkeys_reset when there were any.
 func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience, raw, pw string, m Meta) (Result, error) {
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
@@ -127,6 +129,10 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if err := session.RevokeAll(ctx, q, p.ID, ReasonPasswordReset, now); err != nil {
 		return Result{}, err
 	}
+	removed, err := deleteAllPasskeys(ctx, q, p.ID)
+	if err != nil {
+		return Result{}, err
+	}
 	if err := throttle.Clear(ctx, q, s.throttleKey(Normalize(p.Login)), string(aud)); err != nil {
 		return Result{}, err
 	}
@@ -138,10 +144,21 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 		Result: result, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
 		return Result{}, err
 	}
-	if s.cfg.Transport != TransportSession {
-		return Result{Principal: p}, nil
+	if removed > 0 {
+		if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+			Result: ResultPasskeysReset, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+			return Result{}, err
+		}
 	}
-	return s.openSignedIn(ctx, q, SourceCompleteReset, g)
+	if s.cfg.Transport != TransportSession {
+		return Result{Principal: p, PasskeysRemoved: removed}, nil
+	}
+	res, err := s.openSignedIn(ctx, q, SourceCompleteReset, g)
+	if err != nil {
+		return Result{}, err
+	}
+	res.PasskeysRemoved = removed
+	return res, nil
 }
 
 // PadSince sleeps until floor has passed since start. The app's

@@ -45,7 +45,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "HasCredential", "OneTime.CreatedSince", "OneTime.Peek"}
+	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "ListPasskeys", "HasCredential", "OneTime.CreatedSince", "OneTime.Peek"}
 	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword", "AcquireHashSlot"}
 )
 
@@ -77,8 +77,24 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.svc.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
 			return err
 		},
-		"VerifyPassword": func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
-		"OpenSession":    func() error { _, err := w.svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"VerifyPassword":    func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
+		"OpenSession":       func() error { _, err := w.svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"BeginPasskeyLogin": func() error { _, err := w.svc.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
+		"FinishPasskeyLogin": func() error {
+			_, err := w.svc.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
+			return err
+		},
+		"BeginPasskeyRegistration": func() error { _, err := w.svc.BeginPasskeyRegistration(ctx, q, c, authkit.Meta{}); return err },
+		"FinishPasskeyRegistration": func() error {
+			_, err := w.svc.FinishPasskeyRegistration(ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
+			return err
+		},
+		"RenamePasskey": func() error { _, err := w.svc.RenamePasskey(ctx, q, c, uuid.New(), "x"); return err },
+		"DeletePasskey": func() error { _, err := w.svc.DeletePasskey(ctx, q, c, uuid.New(), authkit.Meta{}); return err },
+		"OpenSessionFrom": func() error {
+			_, err := w.svc.OpenSessionFrom(ctx, q, res.Session.ID, p, "staff", authkit.Meta{})
+			return err
+		},
 		"RevokeAllSessions": func() error {
 			_, err := w.svc.RevokeAllSessions(ctx, q, id, authkit.ReasonAdmin, authkit.Meta{})
 			return err
@@ -115,9 +131,11 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 }
 
 func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
-	w := newWorld(t)
+	w := newWorld(t, withPasskeys)
 	id := w.user("ada@example.invalid", "the right password")
 	res := w.signIn("ada@example.invalid", "the right password")
+	pk := w.addStoredPasskey(id, "Laptop", false)
+	w.addStoredPasskey(w.user("bob@example.invalid", "x"), "Bob key", false)
 	q, c := sqldb.Conn(w.pinned(id)), w.claims(res)
 	if got, err := w.svc.Authenticate(w.ctx, q, c); err != nil || got.Refusal != nil {
 		t.Errorf("Authenticate = %v, %v", got.Refusal, err)
@@ -130,6 +148,9 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	}
 	if has, err := w.svc.HasCredential(w.ctx, q, id); err != nil || !has {
 		t.Errorf("HasCredential = %v, %v", has, err)
+	}
+	if list, err := w.svc.ListPasskeys(w.ctx, q, id); err != nil || len(list) != 1 || list[0].ID != pk {
+		t.Errorf("ListPasskeys = %d passkeys, %v, want the one passkey %s", len(list), err, pk)
 	}
 }
 

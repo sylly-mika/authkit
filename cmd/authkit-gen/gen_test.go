@@ -38,7 +38,8 @@ func TestRunNumbersAfterTheAppsHighestMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if want := []string{"000009_authkit_core.up.sql", "000009_authkit_core.down.sql",
-		"000010_authkit_absolute_expiry.up.sql", "000010_authkit_absolute_expiry.down.sql"}; !slices.Equal(names(written), want) {
+		"000010_authkit_absolute_expiry.up.sql", "000010_authkit_absolute_expiry.down.sql",
+		"000011_authkit_passkeys.up.sql", "000011_authkit_passkeys.down.sql"}; !slices.Equal(names(written), want) {
 		t.Fatalf("wrote %v, want %v", names(written), want)
 	}
 }
@@ -68,7 +69,7 @@ func TestRunIsIdempotentThroughTheLock(t *testing.T) {
 	var l lockFile
 	b, _ := os.ReadFile(lock)
 	if err := json.Unmarshal(b, &l); err != nil || l.Library != "v0.1.0" || l.Principals != "users" ||
-		len(l.Migrations) != 2 || l.Migrations[0].ID != 1 || l.Migrations[0].Name != "core" || l.Migrations[0].File != "000004_authkit_core" ||
+		len(l.Migrations) != 3 || l.Migrations[0].ID != 1 || l.Migrations[0].Name != "core" || l.Migrations[0].File != "000004_authkit_core" ||
 		len(l.Migrations[0].SHA256) != 64 || l.Migrations[1].ID != 2 || l.Migrations[1].File != "000005_authkit_absolute_expiry" {
 		t.Fatalf("lock = %+v (%v)", l, err)
 	}
@@ -147,7 +148,8 @@ func TestRunRecordsTheVersionThatRanLast(t *testing.T) {
 func TestRunKeepsTheAppsDigitWidth(t *testing.T) {
 	dir, lock := appDir(t, "0007_saved_views.up.sql", "0007_saved_views.down.sql")
 	written, err := run(options{principals: "users", out: dir, lock: lock, version: "v0.1.0"})
-	if want := []string{"0008_authkit_core.up.sql", "0008_authkit_core.down.sql", "0009_authkit_absolute_expiry.up.sql", "0009_authkit_absolute_expiry.down.sql"}; err != nil ||
+	if want := []string{"0008_authkit_core.up.sql", "0008_authkit_core.down.sql", "0009_authkit_absolute_expiry.up.sql", "0009_authkit_absolute_expiry.down.sql",
+		"0010_authkit_passkeys.up.sql", "0010_authkit_passkeys.down.sql"}; err != nil ||
 		!slices.Equal(names(written), want) {
 		t.Fatalf("wrote %v (%v), want %v", names(written), err, want)
 	}
@@ -223,7 +225,7 @@ func TestRunWritesNothingWhenTheLockCannotBeWritten(t *testing.T) {
 func TestGooseNumbersAfterTheAppsHighestGooseFile(t *testing.T) {
 	dir, lock := appDir(t, "00020_supplier_offers_list_index.sql", "00021_audit_expiry.sql", "00022_backfill_units.go", "embed.go")
 	written, err := run(options{principals: "administrators", out: dir, lock: lock, format: "goose", version: "v0.2.0"})
-	if want := []string{"00023_authkit_core.sql", "00024_authkit_absolute_expiry.sql"}; err != nil || !slices.Equal(names(written), want) {
+	if want := []string{"00023_authkit_core.sql", "00024_authkit_absolute_expiry.sql", "00025_authkit_passkeys.sql"}; err != nil || !slices.Equal(names(written), want) {
 		t.Fatalf("wrote %v (%v), want %v", names(written), err, want)
 	}
 	up, _ := os.ReadFile(written[0])
@@ -239,7 +241,7 @@ func TestGooseNumbersAfterTheAppsHighestGooseFile(t *testing.T) {
 func TestGooseInAnEmptyDirectoryStartsAtOneWithFiveDigits(t *testing.T) {
 	dir, lock := appDir(t)
 	written, err := run(options{principals: "users", out: dir, lock: lock, format: "goose", version: "v0.2.0"})
-	if err != nil || !slices.Equal(names(written), []string{"00001_authkit_core.sql", "00002_authkit_absolute_expiry.sql"}) {
+	if err != nil || !slices.Equal(names(written), []string{"00001_authkit_core.sql", "00002_authkit_absolute_expiry.sql", "00003_authkit_passkeys.sql"}) {
 		t.Fatalf("wrote %v (%v)", names(written), err)
 	}
 }

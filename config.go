@@ -6,8 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"net/url"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/password"
 )
@@ -54,6 +59,22 @@ type EventRules struct {
 	ChangeLogsReset bool
 }
 
+// PasskeyRules configure passkey sign-in. A zero RPID switches passkeys off.
+type PasskeyRules struct {
+	// RPID is the relying party's domain, such as "example.com": no scheme, port or path.
+	RPID string
+	// RPName is the name the browser shows. Zero is "authkit".
+	RPName string
+	// Origins lists, per audience, the pages allowed to run a ceremony, as scheme://host[:port].
+	Origins map[Audience][]string
+	// CeremonyTTL is how long a begun ceremony may be finished. Zero is 2 minutes.
+	CeremonyTTL time.Duration
+	// Reauth is how recent a sign-in must be to add or remove a passkey. Zero is 5 minutes.
+	Reauth time.Duration
+	// Max is the most passkeys one principal may hold. Zero is 10.
+	Max int
+}
+
 // RevokeOnChange is which sessions ChangePassword revokes.
 type RevokeOnChange int
 
@@ -96,6 +117,8 @@ type Config struct {
 	ReuseGrace      time.Duration
 	Clock           Clock
 	Rand            io.Reader
+	// Passkeys configure passkey sign-in; the zero value leaves passkeys off.
+	Passkeys PasskeyRules
 }
 
 func withDefaults(c Config) Config {
@@ -116,6 +139,14 @@ func withDefaults(c Config) Config {
 	def(&c.EventRetention, 90*24*time.Hour)
 	def(&c.HashWait, 2*time.Second)
 	def(&c.ReuseGrace, 30*time.Second)
+	if c.Passkeys.RPName == "" {
+		c.Passkeys.RPName = "authkit"
+	}
+	def(&c.Passkeys.CeremonyTTL, 2*time.Minute)
+	def(&c.Passkeys.Reauth, 5*time.Minute)
+	if c.Passkeys.Max == 0 {
+		c.Passkeys.Max = 10
+	}
 	if c.Password == (password.Policy{}) {
 		c.Password = password.DefaultPolicy
 	}
@@ -172,7 +203,63 @@ func (c Config) check() error {
 			return fmt.Errorf("authkit: Config.%s must be positive, not %v", d.field, d.v)
 		}
 	}
+	if err := c.Passkeys.check(); err != nil {
+		return err
+	}
 	return c.checkSessions()
+}
+
+func (p PasskeyRules) check() error {
+	if p.RPID == "" {
+		if len(p.Origins) > 0 {
+			return errors.New("authkit: Config.Passkeys.Origins needs Config.Passkeys.RPID")
+		}
+		return nil
+	}
+	if err := protocol.ValidateRPID(p.RPID); err != nil {
+		return fmt.Errorf("authkit: Config.Passkeys.RPID %q is not a domain: %v", p.RPID, err)
+	}
+	if p.RPID != strings.ToLower(p.RPID) {
+		return fmt.Errorf("authkit: Config.Passkeys.RPID %q must be lower case", p.RPID)
+	}
+	if len(p.Origins) == 0 {
+		return errors.New("authkit: Config.Passkeys.Origins is empty")
+	}
+	seen := map[string]Audience{}
+	for _, aud := range slices.Sorted(maps.Keys(p.Origins)) {
+		if len(p.Origins[aud]) == 0 {
+			return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] is empty", aud)
+		}
+		for _, o := range p.Origins[aud] {
+			u, err := url.Parse(o)
+			if err != nil || u.Host == "" || o != u.Scheme+"://"+u.Host {
+				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q is not an origin (scheme://host[:port])", aud, o)
+			}
+			if u.Scheme != "https" && !(u.Scheme == "http" && p.RPID == "localhost") {
+				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q must use https", aud, o)
+			}
+			if host := u.Hostname(); host != p.RPID && !strings.HasSuffix(host, "."+p.RPID) {
+				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q is outside RPID %q", aud, o, p.RPID)
+			}
+			// WHY: a surface must not accept the other surface's page.
+			if prev, ok := seen[o]; ok && prev != aud {
+				return fmt.Errorf("authkit: Config.Passkeys.Origins %q is listed for both %q and %q", o, prev, aud)
+			}
+			seen[o] = aud
+		}
+	}
+	for _, d := range []struct {
+		field string
+		v     time.Duration
+	}{{"CeremonyTTL", p.CeremonyTTL}, {"Reauth", p.Reauth}} {
+		if d.v <= 0 || d.v > 10*time.Minute {
+			return fmt.Errorf("authkit: Config.Passkeys.%s must be in (0, 10m], not %v", d.field, d.v)
+		}
+	}
+	if p.Max < 1 || p.Max > 100 {
+		return fmt.Errorf("authkit: Config.Passkeys.Max must be in [1, 100], not %d", p.Max)
+	}
+	return nil
 }
 
 func (c Config) checkSessions() error {
