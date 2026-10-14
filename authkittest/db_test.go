@@ -3,6 +3,7 @@ package authkittest_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 	"github.com/sylly-mika/authkit/migrations"
 )
 
-var authTables = []string{"auth_schema", "auth_credentials", "auth_sessions", "auth_tokens", "auth_events", "auth_throttle", "auth_passkeys", "auth_passkey_ceremonies"}
+var authTables = []string{"auth_schema", "auth_credentials", "auth_sessions", "auth_tokens", "auth_events", "auth_throttle", "auth_passkeys", "auth_passkey_ceremonies", "auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes"}
 
 func TestTheAppRoleIsANonOwnerThatCannotBypassRLS(t *testing.T) {
 	d := authkittest.NewDB(t)
@@ -65,8 +66,8 @@ SELECT f.conrelid::regclass::text, f.conname
 func TestEveryForeignKeyHasALeadingIndex(t *testing.T) {
 	d := authkittest.NewDB(t)
 	var fks int
-	if err := d.Owner.QueryRow(`SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid::regclass::text LIKE 'auth\_%'`).Scan(&fks); err != nil || fks != 7 {
-		t.Fatalf("authkit declares %d foreign keys (%v), want 7: the check below would pass vacuously", fks, err)
+	if err := d.Owner.QueryRow(`SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid::regclass::text LIKE 'auth\_%'`).Scan(&fks); err != nil || fks != 11 {
+		t.Fatalf("authkit declares %d foreign keys (%v), want 11:the check below would pass vacuously", fks, err)
 	}
 	rows, err := d.Owner.Query(fkIndexCheck)
 	if err != nil {
@@ -93,6 +94,7 @@ func TestTokenHashesAreIndexedForEqualityLookups(t *testing.T) {
 		{"auth_sessions", "prev_token_hash", false},
 		{"auth_passkey_ceremonies", "ceremony_hash", true},
 		{"auth_passkeys", "credential_id", true},
+		{"auth_second_step_challenges", "challenge_hash", true},
 	} {
 		var found bool
 		if err := d.Owner.QueryRow(`
@@ -141,6 +143,24 @@ func TestTheDownMigrationsRemoveEverything(t *testing.T) {
 const insertPasskeySQL = `INSERT INTO auth_passkeys (id, principal_id, credential_id, label, data, created_at) VALUES ($1, $2, $3, $4, '{}', now())`
 
 const insertCeremonySQL = `INSERT INTO auth_passkey_ceremonies (id, ceremony_hash, kind, audience, principal_id, session_id, data, expires_at) VALUES ($1, $2, $3, 'staff', $4, $5, '{}', now() + interval '2 minutes')`
+
+const insertFactorSQL = `INSERT INTO auth_second_factors (principal_id, kind, secret, created_at) VALUES ($1, $2, $3, now())`
+
+const insertRecoveryCodeSQL = `INSERT INTO auth_recovery_codes (id, principal_id, code_hash, created_at) VALUES ($1, $2, $3, now())`
+
+const insertChallengeSQL = `INSERT INTO auth_second_step_challenges (id, challenge_hash, principal_id, audience, origin, throttle_key, created_at, expires_at) VALUES ($1, $2, $3, 'staff', $4, 'a@example.invalid', now(), now() + interval '10 minutes')`
+
+const insertEmailCodeSQL = `INSERT INTO auth_email_codes (id, principal_id, purpose, last_sent_at, expires_at) VALUES ($1, $2, $3, now(), now() + interval '10 minutes')`
+
+var secondFactorTables = []string{"auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes"}
+
+func seedSecondFactorRows(t *testing.T, d *authkittest.DB, p uuid.UUID) {
+	t.Helper()
+	wantOK(t, "a factor", exec(d, insertFactorSQL, p, "totp", []byte("sealed")))
+	wantOK(t, "a recovery code", exec(d, insertRecoveryCodeSQL, uuid.New(), p, hash()))
+	wantOK(t, "a challenge", exec(d, insertChallengeSQL, uuid.New(), hash(), p, "login"))
+	wantOK(t, "an email code", exec(d, insertEmailCodeSQL, uuid.New(), p, "sign_in"))
+}
 
 func pgCode(err error) string {
 	var pe *pq.Error
@@ -415,5 +435,295 @@ func TestTheDownMigration0003RestoresVersion2(t *testing.T) {
 	}
 	if err := d.Row(t, `SELECT to_regclass('auth_passkeys') IS NOT NULL, to_regclass('auth_passkey_ceremonies') IS NOT NULL`).Scan(&passkeysGone, &ceremoniesGone); err != nil || !passkeysGone || !ceremoniesGone {
 		t.Errorf("after the up: passkey tables present %v and %v (%v), want both", passkeysGone, ceremoniesGone, err)
+	}
+}
+
+func TestSecondFactorRowsKeepTheirShape(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a, b := d.NewPrincipal(t, "a@example.invalid"), d.NewPrincipal(t, "b@example.invalid")
+	wantOK(t, "a totp factor with a secret", exec(d, insertFactorSQL, a, "totp", []byte("sealed")))
+	wantOK(t, "an email factor without a secret", exec(d, insertFactorSQL, a, "email", nil))
+	wantCode(t, "a totp factor without a secret", exec(d, insertFactorSQL, b, "totp", nil), "23514")
+	wantCode(t, "an email factor with a secret", exec(d, insertFactorSQL, b, "email", []byte("sealed")), "23514")
+	wantCode(t, "an unknown kind", exec(d, insertFactorSQL, b, "sms", nil), "23514")
+	wantCode(t, "a second totp factor for A", exec(d, insertFactorSQL, a, "totp", []byte("other")), "23505")
+	if n := count(t, d, `SELECT count(*) FROM auth_second_factors`); n != 2 {
+		t.Errorf("auth_second_factors holds %d rows, want 2", n)
+	}
+}
+
+func TestRecoveryCodeHashesAreUniquePerPrincipal(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a, b := d.NewPrincipal(t, "a@example.invalid"), d.NewPrincipal(t, "b@example.invalid")
+	h := hash()
+	wantOK(t, "A's recovery code", exec(d, insertRecoveryCodeSQL, uuid.New(), a, h))
+	wantCode(t, "A's recovery code again", exec(d, insertRecoveryCodeSQL, uuid.New(), a, h), "23505")
+	wantOK(t, "B's recovery code with the same hash", exec(d, insertRecoveryCodeSQL, uuid.New(), b, h))
+	if n := count(t, d, `SELECT count(*) FROM auth_recovery_codes`); n != 2 {
+		t.Errorf("auth_recovery_codes holds %d rows, want 2", n)
+	}
+}
+
+func TestSecondStepChallengeRowsKeepTheirShape(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a, b := d.NewPrincipal(t, "a@example.invalid"), d.NewPrincipal(t, "b@example.invalid")
+	c1, h1 := uuid.New(), hash()
+	wantOK(t, "a login challenge", exec(d, insertChallengeSQL, c1, h1, a, "login"))
+	wantOK(t, "a reset challenge", exec(d, insertChallengeSQL, uuid.New(), hash(), a, "reset"))
+	wantCode(t, "a challenge for a passkey", exec(d, insertChallengeSQL, uuid.New(), hash(), a, "passkey"), "23514")
+	wantCode(t, "a challenge with a used hash", exec(d, insertChallengeSQL, uuid.New(), h1, b, "login"), "23505")
+	var tries int
+	if err := d.Row(t, `SELECT tries FROM auth_second_step_challenges WHERE id = $1`, c1).Scan(&tries); err != nil || tries != 0 {
+		t.Errorf("tries = %d (%v), want 0", tries, err)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_second_step_challenges`); n != 2 {
+		t.Errorf("auth_second_step_challenges holds %d rows, want 2", n)
+	}
+}
+
+func TestEmailCodeRowsKeepOnePerPurpose(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	e1 := uuid.New()
+	wantOK(t, "a sign-in code", exec(d, insertEmailCodeSQL, e1, a, "sign_in"))
+	var noHash bool
+	var tries, sends int
+	if err := d.Row(t, `SELECT code_hash IS NULL, tries, sends FROM auth_email_codes WHERE id = $1`, e1).Scan(&noHash, &tries, &sends); err != nil || !noHash || tries != 0 || sends != 1 {
+		t.Errorf("new code reads hash-less %v, tries %d, sends %d (%v), want true, 0, 1", noHash, tries, sends, err)
+	}
+	wantCode(t, "a second sign-in code", exec(d, insertEmailCodeSQL, uuid.New(), a, "sign_in"), "23505")
+	wantOK(t, "an enable code", exec(d, insertEmailCodeSQL, uuid.New(), a, "enable"))
+	wantCode(t, "a code for an unknown purpose", exec(d, insertEmailCodeSQL, uuid.New(), a, "reset"), "23514")
+	wantCode(t, "a proof code with the first code's id", exec(d, insertEmailCodeSQL, e1, a, "proof"), "23505")
+	if n := count(t, d, `SELECT count(*) FROM auth_email_codes`); n != 2 {
+		t.Errorf("auth_email_codes holds %d rows, want 2", n)
+	}
+}
+
+func TestSessionsAndEventsRecordTheSecondFactor(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	s := newSession(t, d, a)
+	var factor string
+	if err := d.Row(t, `SELECT second_factor FROM auth_sessions WHERE id = $1`, s).Scan(&factor); err != nil || factor != "" {
+		t.Errorf("a new session's second_factor = %q (%v), want empty", factor, err)
+	}
+	for _, f := range []string{"totp", "email", "recovery", "passkey"} {
+		wantOK(t, "a session with "+f, exec(d, `UPDATE auth_sessions SET second_factor = $2 WHERE id = $1`, s, f))
+	}
+	wantCode(t, "a session with sms", exec(d, `UPDATE auth_sessions SET second_factor = $2 WHERE id = $1`, s, "sms"), "23514")
+	const insertEvent = `INSERT INTO auth_events (id, at, principal_id, audience, result) VALUES ($1, now(), $2, 'staff', 'signed_in')`
+	plain := uuid.New()
+	wantOK(t, "an event without a factor", exec(d, insertEvent, plain, a))
+	if err := d.Row(t, `SELECT second_factor FROM auth_events WHERE id = $1`, plain).Scan(&factor); err != nil || factor != "" {
+		t.Errorf("an event without a factor reads %q (%v), want empty", factor, err)
+	}
+	wantOK(t, "an event with recovery", exec(d, `INSERT INTO auth_events (id, at, principal_id, audience, result, second_factor) VALUES ($1, now(), $2, 'staff', 'signed_in', 'recovery')`, uuid.New(), a))
+	wantCode(t, "an event with sms", exec(d, `INSERT INTO auth_events (id, at, principal_id, audience, result, second_factor) VALUES ($1, now(), $2, 'staff', 'signed_in', 'sms')`, uuid.New(), a), "23514")
+}
+
+func TestSecondFactorTablesHoldNoPlaintextColumn(t *testing.T) {
+	d := authkittest.NewDB(t)
+	rows, err := d.Owner.Query(`
+		SELECT concat_ws(' ', table_name || '.' || column_name, data_type, is_nullable, column_default)
+		  FROM information_schema.columns
+		 WHERE table_schema = 'public' AND (table_name = ANY($1) OR column_name = 'second_factor')
+		 ORDER BY table_name COLLATE "C", ordinal_position`, pq.Array(secondFactorTables))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, line)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"auth_email_codes.id uuid NO",
+		"auth_email_codes.principal_id uuid NO",
+		"auth_email_codes.purpose text NO",
+		"auth_email_codes.code_hash bytea YES",
+		"auth_email_codes.tries integer NO 0",
+		"auth_email_codes.sends integer NO 1",
+		"auth_email_codes.last_sent_at timestamp with time zone NO",
+		"auth_email_codes.expires_at timestamp with time zone NO",
+		"auth_events.second_factor text NO ''::text",
+		"auth_recovery_codes.id uuid NO",
+		"auth_recovery_codes.principal_id uuid NO",
+		"auth_recovery_codes.code_hash bytea NO",
+		"auth_recovery_codes.used_at timestamp with time zone YES",
+		"auth_recovery_codes.created_at timestamp with time zone NO",
+		"auth_second_factors.principal_id uuid NO",
+		"auth_second_factors.kind text NO",
+		"auth_second_factors.secret bytea YES",
+		"auth_second_factors.last_step bigint YES",
+		"auth_second_factors.created_at timestamp with time zone NO",
+		"auth_second_factors.confirmed_at timestamp with time zone YES",
+		"auth_second_step_challenges.id uuid NO",
+		"auth_second_step_challenges.challenge_hash bytea NO",
+		"auth_second_step_challenges.principal_id uuid NO",
+		"auth_second_step_challenges.audience text NO",
+		"auth_second_step_challenges.origin text NO",
+		"auth_second_step_challenges.throttle_key text NO",
+		"auth_second_step_challenges.tries integer NO 0",
+		"auth_second_step_challenges.created_at timestamp with time zone NO",
+		"auth_second_step_challenges.expires_at timestamp with time zone NO",
+		"auth_second_step_challenges.used_at timestamp with time zone YES",
+		"auth_sessions.second_factor text NO ''::text",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the second-factor columns are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestSecondFactorRowsGoWithTheirOwner(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a, b := d.NewPrincipal(t, "a@example.invalid"), d.NewPrincipal(t, "b@example.invalid")
+	seedSecondFactorRows(t, d, a)
+	seedSecondFactorRows(t, d, b)
+	d.Exec(t, `DELETE FROM users WHERE id = $1`, a)
+	for _, table := range secondFactorTables {
+		if n := count(t, d, `SELECT count(*) FROM `+table+` WHERE principal_id = $1`, a); n != 0 {
+			t.Errorf("%s holds %d rows of the deleted principal, want 0", table, n)
+		}
+		if n := count(t, d, `SELECT count(*) FROM `+table); n != 1 {
+			t.Errorf("%s holds %d rows after the delete, want 1", table, n)
+		}
+	}
+}
+
+func TestAPinnedPrincipalSeesOnlyItsOwnSecondFactors(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a, b := d.NewPrincipal(t, "a@example.invalid"), d.NewPrincipal(t, "b@example.invalid")
+	seedSecondFactorRows(t, d, a)
+	seedSecondFactorRows(t, d, b)
+	conn := d.Pinned(t, a, uuid.New(), "staff")
+	ctx := context.Background()
+	for _, c := range []struct {
+		table string
+		owner uuid.UUID
+		want  int
+	}{
+		{"auth_second_factors", a, 1},
+		{"auth_second_factors", b, 0},
+		{"auth_recovery_codes", a, 1},
+		{"auth_recovery_codes", b, 0},
+		{"auth_second_step_challenges", a, 0},
+		{"auth_second_step_challenges", b, 0},
+		{"auth_email_codes", a, 1},
+		{"auth_email_codes", b, 0},
+	} {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM `+c.table+` WHERE principal_id = $1`, c.owner).Scan(&n); err != nil || n != c.want {
+			t.Errorf("A counts %d rows of %s for %s (%v), want %d", n, c.table, c.owner, err, c.want)
+		}
+	}
+	res, err := conn.ExecContext(ctx, `UPDATE auth_second_factors SET last_step = 1 WHERE principal_id = $1`, b)
+	if err != nil {
+		t.Fatalf("A updates B's factor: SQLSTATE %q", pgCode(err))
+	}
+	if n, _ := res.RowsAffected(); n != 0 {
+		t.Errorf("A updated %d of B's factors, want 0", n)
+	}
+	_, err = conn.ExecContext(ctx, insertFactorSQL, b, "email", nil)
+	wantCode(t, "A adds a factor for B", err, "42501")
+	_, err = conn.ExecContext(ctx, insertRecoveryCodeSQL, uuid.New(), b, hash())
+	wantCode(t, "A adds a recovery code for B", err, "42501")
+	var lastStepNull bool
+	if err := d.Row(t, `SELECT last_step IS NULL FROM auth_second_factors WHERE principal_id = $1`, b).Scan(&lastStepNull); err != nil || !lastStepNull {
+		t.Errorf("B's factor has last_step NULL = %v (%v), want true", lastStepNull, err)
+	}
+}
+
+func TestTheAppRoleWithoutAWorkspaceReachesSecondFactorTables(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	ctx := context.Background()
+	h, e := hash(), uuid.New()
+	_, err := d.App.ExecContext(ctx, insertFactorSQL, a, "totp", []byte("sealed"))
+	wantOK(t, "the app adds a factor", err)
+	_, err = d.App.ExecContext(ctx, insertRecoveryCodeSQL, uuid.New(), a, hash())
+	wantOK(t, "the app adds a recovery code", err)
+	_, err = d.App.ExecContext(ctx, insertChallengeSQL, uuid.New(), h, a, "login")
+	wantOK(t, "the app adds a challenge", err)
+	_, err = d.App.ExecContext(ctx, insertEmailCodeSQL, e, a, "sign_in")
+	wantOK(t, "the app adds an email code", err)
+	res, err := d.App.ExecContext(ctx, `UPDATE auth_second_step_challenges SET tries = tries + 1 WHERE challenge_hash = $1`, h)
+	wantOK(t, "the app counts a challenge try", err)
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Errorf("the app counted tries on %d challenges, want 1", n)
+	}
+	res, err = d.App.ExecContext(ctx, `UPDATE auth_email_codes SET code_hash = $2 WHERE id = $1`, e, hash())
+	wantOK(t, "the app stores an email code hash", err)
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Errorf("the app stored %d email code hashes, want 1", n)
+	}
+	res, err = d.App.ExecContext(ctx, `DELETE FROM auth_recovery_codes WHERE principal_id = $1`, a)
+	wantOK(t, "the app deletes a recovery code", err)
+	if n, _ := res.RowsAffected(); n != 1 {
+		t.Errorf("the app deleted %d recovery codes, want 1", n)
+	}
+}
+
+func TestTheDownMigration0004RestoresVersion3(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	seedSecondFactorRows(t, d, a)
+	s := newSession(t, d, a)
+	d.Exec(t, `UPDATE auth_sessions SET second_factor = 'totp' WHERE id = $1`, s)
+	wantOK(t, "an event with a factor", exec(d, `INSERT INTO auth_events (id, at, principal_id, audience, result, second_factor) VALUES ($1, now(), $2, 'staff', 'signed_in', 'email')`, uuid.New(), a))
+	var m4 migrations.Migration
+	found := false
+	for _, m := range migrations.All() {
+		if m.ID == 4 {
+			m4, found = m, true
+		}
+	}
+	if !found {
+		t.Fatal("no migration 0004")
+	}
+	down, err := migrations.Render(m4.Down, "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Exec(t, down)
+	for _, table := range secondFactorTables {
+		var gone bool
+		if err := d.Row(t, `SELECT to_regclass($1) IS NULL`, table).Scan(&gone); err != nil || !gone {
+			t.Errorf("after the down: %s present (gone %v, %v), want absent", table, gone, err)
+		}
+	}
+	if n := count(t, d, `SELECT count(*) FROM information_schema.columns WHERE column_name = 'second_factor' AND table_name IN ('auth_sessions', 'auth_events')`); n != 0 {
+		t.Errorf("second_factor survives the down on %d tables", n)
+	}
+	if n := count(t, d, `SELECT version FROM auth_schema`); n != 3 {
+		t.Errorf("schema version after the down = %d, want 3", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_sessions WHERE id = $1`, s); n != 1 {
+		t.Errorf("the session survives the down %d times, want 1", n)
+	}
+	up, err := migrations.Render(m4.Up, "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Exec(t, up)
+	if n := count(t, d, `SELECT version FROM auth_schema`); n != 4 {
+		t.Errorf("schema version after the up = %d, want 4", n)
+	}
+	for _, table := range secondFactorTables {
+		var present bool
+		if err := d.Row(t, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&present); err != nil || !present {
+			t.Errorf("after the up: %s absent (present %v, %v), want present", table, present, err)
+		}
+	}
+	var factor string
+	if err := d.Row(t, `SELECT second_factor FROM auth_sessions WHERE id = $1`, s).Scan(&factor); err != nil || factor != "" {
+		t.Errorf("the session's second_factor after the up = %q (%v), want empty", factor, err)
 	}
 }
