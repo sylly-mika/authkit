@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.0
+
+Migration `0004_second_factors` adds the `auth_second_factors`, `auth_recovery_codes`, `auth_second_step_challenges` and `auth_email_codes` tables, and a `second_factor` column on `auth_sessions` and `auth_events`. The column is `''` until a session opens with a second factor. Apps regenerate their migrations with `authkit-gen`, and `CheckSchema` refuses a database below version 4. Each new table needs the app's RLS policies, as `auth_passkeys` does; the challenge and email-code tables are read only by the sign-in path and the mail worker.
+
 ## v0.3.0
 
 Passkeys. `Config.Passkeys` (type `PasskeyRules`) turns them on; an empty RP ID leaves them off, and every passkey method then returns `ErrPasskeysOff`. Sign-in with a passkey is `BeginPasskeyLogin` and `FinishPasskeyLogin`. Adding one is `BeginPasskeyRegistration` and `FinishPasskeyRegistration`. `ListPasskeys`, `RenamePasskey` and `DeletePasskey` manage them. `OpenSessionFrom` is `OpenSession` for a workspace switch: the new session keeps the authenticated time of the session it came from. A refused passkey step returns the refusal in `Result.Refusal`: `ErrPasskeyRejected`, `ErrReauthRequired`, `ErrPasskeyLimit`, `ErrPasskeyExists`, `ErrPasskeyInvalid`, `ErrPasskeyNotFound`, `ErrPasskeyLabel` and `ErrNoPassword`. `Result.Ceremony` carries a passkey begin's answer, `Result.Passkey` the passkey a registration or rename wrote, and `Result.PasskeysRemoved` the count a completed reset deleted. `Event.Source` names the Service method that recorded the event, and the passkey work adds the results `bad_passkey`, `passkey_added`, `passkey_removed` and `passkeys_reset`.
