@@ -15,6 +15,7 @@ import (
 	"github.com/sylly-mika/authkit/internal/token"
 )
 
+// Kind is the purpose of a ceremony: register or login.
 type Kind string
 
 const (
