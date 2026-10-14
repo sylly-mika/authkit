@@ -312,6 +312,44 @@ func TestAWrongSetupCodeWritesNothing(t *testing.T) {
 	}
 }
 
+func TestAWrongSetupCodeNeverFeedsTheLoginThrottle(t *testing.T) {
+	cases := map[string]func(w *world, c *authkit.Claims) func() authkit.Result{
+		"totp": func(w *world, c *authkit.Claims) func() authkit.Result {
+			setup := w.beginSetup(c)
+			code := []byte(totpCode(w.t, setup.Secret, w.clock.Now()))
+			code[5] = '0' + (code[5]-'0'+1)%10
+			return func() authkit.Result { return w.confirmSetup(c, string(code)) }
+		},
+		"email": func(w *world, c *authkit.Claims) func() authkit.Result {
+			b := w.beginEmail(c)
+			m, err := w.mint(b.EmailCode.ID)
+			if err != nil {
+				w.t.Fatalf("MintEmailCode: %v", err)
+			}
+			return func() authkit.Result { return w.confirmEmail(c, w.otherCode(m.Code)) }
+		},
+	}
+	for name, prepare := range cases {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t, withSecondFactors)
+			w.user("ada@example.invalid", "the right password")
+			c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+			wrong := prepare(w, c)
+			for i := 0; i < 5; i++ {
+				if r := wrong(); !errors.Is(r.Refusal, authkit.ErrBadCode) {
+					t.Fatalf("wrong try %d = %v, want ErrBadCode", i+1, r.Refusal)
+				}
+			}
+			if n := w.count(`SELECT count(*) FROM auth_throttle`); n != 0 {
+				t.Errorf("throttle rows = %d, want 0", n)
+			}
+			if res := w.login("staff", "ada@example.invalid", "the right password"); res.Refusal != nil {
+				t.Errorf("sign-in after five wrong setup codes = %v, want no refusal", res.Refusal)
+			}
+		})
+	}
+}
+
 func TestASetupEndsAfterSetupTTL(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
 	ada := w.user("ada@example.invalid", "the right password")

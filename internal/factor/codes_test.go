@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -116,17 +117,40 @@ func TestNewEmailCodeIsUniformSixDigits(t *testing.T) {
 }
 
 func TestFactorSourcesCompareInConstantTime(t *testing.T) {
-	for _, name := range []string{"keys.go", "totp.go", "codes.go"} {
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
 		src, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
 		for i, line := range strings.Split(string(src), "\n") {
-			for _, banned := range []string{"==", "bytes.Equal", "time.Now", "math/rand"} {
+			for _, banned := range []string{"bytes.Equal", "time.Now", "math/rand"} {
 				if strings.Contains(line, banned) {
 					t.Errorf("%s:%d uses %s; codes and hashes compare in constant time and time and randomness are injected", name, i+1, banned)
 				}
 			}
+			if comparesSecret(line) {
+				t.Errorf("%s:%d compares a code, hash, secret or token with ==; use subtle.ConstantTimeCompare or hmac.Equal", name, i+1)
+			}
 		}
 	}
+}
+
+func comparesSecret(line string) bool {
+	if !strings.Contains(line, "==") || strings.Contains(line, "== nil") {
+		return false
+	}
+	lower := strings.ToLower(line)
+	for _, word := range []string{"code", "hash", "secret", "token"} {
+		if strings.Contains(lower, word) {
+			return true
+		}
+	}
+	return false
 }
