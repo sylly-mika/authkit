@@ -241,7 +241,7 @@ func (p PasskeyRules) check() error {
 			if host := u.Hostname(); host != p.RPID && !strings.HasSuffix(host, "."+p.RPID) {
 				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q is outside RPID %q", aud, o, p.RPID)
 			}
-			// WHY: a surface must not accept the other surface's page (PK-2).
+			// WHY: a surface must not accept the other surface's page.
 			if prev, ok := seen[o]; ok && prev != aud {
 				return fmt.Errorf("authkit: Config.Passkeys.Origins %q is listed for both %q and %q", o, prev, aud)
 			}
