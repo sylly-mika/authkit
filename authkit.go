@@ -88,7 +88,7 @@ func (r *Refusal) Unwrap() error { return r.Err }
 func Refuse(result string, err error) error { return &Refusal{Result: result, Err: err} }
 
 // Clock is the Service's time source: every timestamp it writes or compares
-// comes from it.
+// comes from it. The Service truncates the time to microseconds, the database's precision.
 type Clock interface{ Now() time.Time }
 
 type systemClock struct{}
@@ -183,16 +183,18 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{cfg: cfg, principals: principals, hasher: hasher, links: onetime.New(cfg.Clock.Now, cfg.Rand), rps: rps}
+	s := &Service{cfg: cfg, principals: principals, hasher: hasher, rps: rps}
+	s.links = onetime.New(s.now, cfg.Rand)
 	if cfg.Transport == TransportBearer {
-		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, cfg.Clock.Now); err != nil {
+		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, s.now); err != nil {
 			return nil, err
 		}
 	}
 	return s, nil
 }
 
-func (s *Service) now() time.Time { return s.cfg.Clock.Now() }
+// WHY: PostgreSQL stores timestamptz at microseconds, so a value written and read back must compare the same in Go.
+func (s *Service) now() time.Time { return s.cfg.Clock.Now().Truncate(time.Microsecond) }
 
 // WHY: every expires_at predicate relies on this clamp to enforce the cap.
 func (s *Service) expiry(now time.Time, aud Audience, absolute *time.Time) time.Time {

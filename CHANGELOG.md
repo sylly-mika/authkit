@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.1
+
+Fix: the Service compares times at the database's microsecond precision; with a real clock, the first email code of a fresh row was refused as sent too soon about half the time.
+
 ## v0.4.0
 
 Migration `0004_second_factors` adds the `auth_second_factors`, `auth_recovery_codes`, `auth_second_step_challenges` and `auth_email_codes` tables, and a `second_factor` column on `auth_sessions` and `auth_events`. The column is `''` until a session opens with a second factor. Apps regenerate their migrations with `authkit-gen`, and `CheckSchema` refuses a database below version 4. Each new table needs the app's RLS policies, as `auth_passkeys` does; the challenge and email-code tables are read only by the sign-in path and the mail worker.
