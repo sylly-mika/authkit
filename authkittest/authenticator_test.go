@@ -2,6 +2,7 @@ package authkittest_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -217,4 +218,178 @@ func TestGetSignsWithTheNewestCredential(t *testing.T) {
 	if !bytes.Equal(got.ID, cred2.ID) {
 		t.Fatalf("returned credential is not the newest one")
 	}
+}
+
+func TestNoUVIsRefusedAtRegistration(t *testing.T) {
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	a.NoUV = true
+	rp := newRP(t, protocol.VerificationRequired)
+
+	_, err := register(t, rp, a, newUser())
+	refusedFor(t, err, "User verification required but flag not set")
+}
+
+func TestNoUVIsRefusedAtLogin(t *testing.T) {
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	rp := newRP(t, protocol.VerificationRequired)
+	u := newUser()
+
+	cred, err := register(t, rp, a, u)
+	if err != nil {
+		t.Fatalf("registration refused: <redacted>")
+	}
+	u.creds = []webauthn.Credential{*cred}
+
+	a.NoUV = true
+	_, _, err = signIn(t, rp, a, holder(u, nil))
+	refusedFor(t, err, "User verification required but flag not set")
+}
+
+func TestOriginKnobFailsTheOriginCheck(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		a := authkittest.NewAuthenticator(rpID, staffOrigin)
+		a.Origin = otherOrigin
+		rp := newRP(t, protocol.VerificationRequired)
+
+		_, err := register(t, rp, a, newUser())
+		refusedFor(t, err, "Error validating origin")
+	})
+	t.Run("get", func(t *testing.T) {
+		a := authkittest.NewAuthenticator(rpID, staffOrigin)
+		rp := newRP(t, protocol.VerificationRequired)
+		u := newUser()
+
+		cred, err := register(t, rp, a, u)
+		if err != nil {
+			t.Fatalf("registration refused: <redacted>")
+		}
+		u.creds = []webauthn.Credential{*cred}
+
+		a.Origin = otherOrigin
+		_, _, err = signIn(t, rp, a, holder(u, nil))
+		refusedFor(t, err, "Error validating origin")
+	})
+}
+
+func TestRPIDHashKnobFailsTheRPCheck(t *testing.T) {
+	other := sha256.Sum256([]byte("other.test"))
+	t.Run("create", func(t *testing.T) {
+		a := authkittest.NewAuthenticator(rpID, staffOrigin)
+		a.RPIDHash = other[:]
+		rp := newRP(t, protocol.VerificationRequired)
+
+		_, err := register(t, rp, a, newUser())
+		refusedFor(t, err, "RP Hash mismatch")
+	})
+	t.Run("get", func(t *testing.T) {
+		a := authkittest.NewAuthenticator(rpID, staffOrigin)
+		rp := newRP(t, protocol.VerificationRequired)
+		u := newUser()
+
+		cred, err := register(t, rp, a, u)
+		if err != nil {
+			t.Fatalf("registration refused: <redacted>")
+		}
+		u.creds = []webauthn.Credential{*cred}
+
+		a.RPIDHash = other[:]
+		_, _, err = signIn(t, rp, a, holder(u, nil))
+		refusedFor(t, err, "RP Hash mismatch")
+	})
+}
+
+func TestUserHandleKnobFailsTheOwnerCheck(t *testing.T) {
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	rp := newRP(t, protocol.VerificationRequired)
+	u := newUser()
+
+	cred, err := register(t, rp, a, u)
+	if err != nil {
+		t.Fatalf("registration refused: <redacted>")
+	}
+	u.creds = []webauthn.Credential{*cred}
+
+	other := newUser()
+	a.UserHandle = other.id
+	var seen [2][]byte
+	_, _, err = signIn(t, rp, a, holder(u, &seen))
+	refusedFor(t, err, "User handle and User ID do not match")
+	if !bytes.Equal(seen[0], cred.ID) {
+		t.Fatalf("handler was not called with the asserted credential id")
+	}
+	if !bytes.Equal(seen[1], other.id) {
+		t.Fatalf("handler was not called with the response's user handle")
+	}
+}
+
+func TestPasskeyLoginRefusesAUserWithoutTheCredential(t *testing.T) {
+	rp := newRP(t, protocol.VerificationRequired)
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	b := authkittest.NewAuthenticator(rpID, staffOrigin)
+	u := newUser()
+
+	credA, err := register(t, rp, a, u)
+	if err != nil {
+		t.Fatalf("registration on a refused: <redacted>")
+	}
+	credB, err := register(t, rp, b, u)
+	if err != nil {
+		t.Fatalf("registration on b refused: <redacted>")
+	}
+
+	stranger := &rpUser{id: u.id, creds: []webauthn.Credential{*credB}}
+	_, _, err = signIn(t, rp, a, holder(stranger, nil))
+	refusedFor(t, err, "Unable to find the credential")
+
+	owner := &rpUser{id: u.id, creds: []webauthn.Credential{*credA}}
+	if _, _, err := signIn(t, rp, a, holder(owner, nil)); err != nil {
+		t.Fatalf("owner refused: <redacted>")
+	}
+}
+
+func TestBadSignatureFailsTheSignatureCheck(t *testing.T) {
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	rp := newRP(t, protocol.VerificationRequired)
+	u := newUser()
+
+	cred, err := register(t, rp, a, u)
+	if err != nil {
+		t.Fatalf("registration refused: <redacted>")
+	}
+	u.creds = []webauthn.Credential{*cred}
+
+	a.BadSignature = true
+	_, _, err = signIn(t, rp, a, holder(u, nil))
+	refusedFor(t, err, "Error validating the assertion signature")
+
+	a.BadSignature = false
+	if _, _, err := signIn(t, rp, a, holder(u, nil)); err != nil {
+		t.Fatalf("login refused after the signature is fixed: <redacted>")
+	}
+}
+
+func TestBackupEligibleIsAcceptedAndPinned(t *testing.T) {
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	a.BackupEligible = true
+	rp := newRP(t, protocol.VerificationRequired)
+	u := newUser()
+
+	cred, err := register(t, rp, a, u)
+	if err != nil {
+		t.Fatalf("registration refused: <redacted>")
+	}
+	if !cred.Flags.BackupEligible || !cred.Flags.BackupState {
+		t.Fatalf("backup flags not kept on the registered credential")
+	}
+	u.creds = []webauthn.Credential{*cred}
+
+	_, got, err := signIn(t, rp, a, holder(u, nil))
+	if err != nil {
+		t.Fatalf("login refused: <redacted>")
+	}
+	u.creds = []webauthn.Credential{*got}
+
+	a.BackupEligible = false
+	_, _, err = signIn(t, rp, a, holder(u, nil))
+	refusedFor(t, err, "Backup Eligible flag inconsistency")
 }

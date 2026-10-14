@@ -153,6 +153,13 @@ func (a *Authenticator) Get(optionsJSON []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("authkittest: sign: %w", err)
 	}
+	if a.BadSignature {
+		sig[len(sig)-1] ^= 0x01
+	}
+	handle := cred.userHandle
+	if a.UserHandle != nil {
+		handle = a.UserHandle
+	}
 
 	return json.Marshal(getResponse{
 		ID:                      b64(cred.id),
@@ -163,7 +170,7 @@ func (a *Authenticator) Get(optionsJSON []byte) ([]byte, error) {
 			ClientDataJSON:    b64(clientJSON),
 			AuthenticatorData: b64(authData),
 			Signature:         b64(sig),
-			UserHandle:        b64(cred.userHandle),
+			UserHandle:        b64(handle),
 		},
 	})
 }
@@ -237,7 +244,13 @@ func (a *Authenticator) authData(create bool) []byte {
 }
 
 func (a *Authenticator) flags(create bool) byte {
-	f := byte(0x01 | 0x04)
+	f := byte(0x01)
+	if !a.NoUV {
+		f |= 0x04
+	}
+	if a.BackupEligible {
+		f |= 0x08 | 0x10
+	}
 	if create {
 		f |= 0x40
 	}
@@ -245,6 +258,9 @@ func (a *Authenticator) flags(create bool) byte {
 }
 
 func (a *Authenticator) rpHash() []byte {
+	if a.RPIDHash != nil {
+		return a.RPIDHash
+	}
 	sum := sha256.Sum256([]byte(a.rpID))
 	return sum[:]
 }
