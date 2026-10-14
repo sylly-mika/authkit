@@ -40,6 +40,8 @@ type Proposal struct {
 	Principal Principal
 	Audience  Audience
 	ScopeID   *uuid.UUID
+	// SecondFactor is the factor that completed the sign-in this admit is for: empty for a password alone.
+	SecondFactor FactorKind
 }
 
 // Admission is Admit's answer for a session it allows.

@@ -67,6 +67,7 @@ type grant struct {
 	m      Meta
 	now    time.Time
 	authAt time.Time
+	factor FactorKind
 }
 
 func (s *Service) openSignedIn(ctx context.Context, q db.Querier, source string, g grant) (Result, error) {
@@ -74,12 +75,12 @@ func (s *Service) openSignedIn(ctx context.Context, q db.Querier, source string,
 	if !g.authAt.IsZero() {
 		at = g.authAt
 	}
-	res, err := s.openSessionAt(ctx, q, g.p, g.aud, g.adm, g.m, g.now, at)
+	res, err := s.openSessionAt(ctx, q, g.p, g.aud, g.adm, g.m, g.now, at, g.factor)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := s.record(ctx, q, g.now, source, events.Event{PrincipalID: &g.p.ID, SessionID: &res.Session.ID, ScopeID: g.adm.ScopeID,
-		Audience: string(g.aud), Login: g.p.Login, Result: ResultSignedIn, IP: g.m.IP, UserAgent: g.m.UserAgent}); err != nil {
+		Audience: string(g.aud), Login: g.p.Login, Result: ResultSignedIn, IP: g.m.IP, UserAgent: g.m.UserAgent, SecondFactor: string(g.factor)}); err != nil {
 		return Result{}, err
 	}
 	return res, nil
