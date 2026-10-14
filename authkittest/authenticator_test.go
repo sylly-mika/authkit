@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -392,4 +393,108 @@ func TestBackupEligibleIsAcceptedAndPinned(t *testing.T) {
 	a.BackupEligible = false
 	_, _, err = signIn(t, rp, a, holder(u, nil))
 	refusedFor(t, err, "Backup Eligible flag inconsistency")
+}
+
+func TestCounterAdvancesAfterEachResponse(t *testing.T) {
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	a.SetCounter(5)
+	rp := newRP(t, protocol.VerificationRequired)
+	u := newUser()
+
+	cred, err := register(t, rp, a, u)
+	if err != nil {
+		t.Fatalf("registration refused: <redacted>")
+	}
+	if cred.Authenticator.SignCount != 5 {
+		t.Fatalf("registration sign count %d, want 5", cred.Authenticator.SignCount)
+	}
+	u.creds = []webauthn.Credential{*cred}
+
+	_, got, err := signIn(t, rp, a, holder(u, nil))
+	if err != nil {
+		t.Fatalf("first login refused: <redacted>")
+	}
+	if got.Authenticator.SignCount != 6 || got.Authenticator.CloneWarning {
+		t.Fatalf("first login sign count %d clone warning %v, want 6 and false", got.Authenticator.SignCount, got.Authenticator.CloneWarning)
+	}
+	u.creds = []webauthn.Credential{*got}
+
+	_, got, err = signIn(t, rp, a, holder(u, nil))
+	if err != nil {
+		t.Fatalf("second login refused: <redacted>")
+	}
+	if got.Authenticator.SignCount != 7 || got.Authenticator.CloneWarning {
+		t.Fatalf("second login sign count %d clone warning %v, want 7 and false", got.Authenticator.SignCount, got.Authenticator.CloneWarning)
+	}
+}
+
+func TestCounterSetBackwardsRaisesCloneWarning(t *testing.T) {
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	a.SetCounter(5)
+	rp := newRP(t, protocol.VerificationRequired)
+	u := newUser()
+
+	cred, err := register(t, rp, a, u)
+	if err != nil {
+		t.Fatalf("registration refused: <redacted>")
+	}
+	u.creds = []webauthn.Credential{*cred}
+	_, got, err := signIn(t, rp, a, holder(u, nil))
+	if err != nil {
+		t.Fatalf("login refused: <redacted>")
+	}
+	u.creds = []webauthn.Credential{*got}
+
+	assertion, _, err := rp.BeginDiscoverableLogin()
+	if err != nil {
+		t.Fatalf("BeginDiscoverableLogin: <redacted>")
+	}
+	opts, err := json.Marshal(assertion)
+	if err != nil {
+		t.Fatalf("marshal assertion options: <redacted>")
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.SetCounter(3)
+	}()
+	if _, err := a.Get(opts); err != nil {
+		t.Fatalf("Get: <redacted>")
+	}
+	wg.Wait()
+
+	_, got, err = signIn(t, rp, a, holder(u, nil))
+	if err != nil {
+		t.Fatalf("login after the counter went backwards refused: <redacted>")
+	}
+	if !got.Authenticator.CloneWarning {
+		t.Fatalf("no clone warning after the sign count went backwards")
+	}
+}
+
+func TestZeroCounterStaysZero(t *testing.T) {
+	a := authkittest.NewAuthenticator(rpID, staffOrigin)
+	rp := newRP(t, protocol.VerificationRequired)
+	u := newUser()
+
+	cred, err := register(t, rp, a, u)
+	if err != nil {
+		t.Fatalf("registration refused: <redacted>")
+	}
+	if cred.Authenticator.SignCount != 0 {
+		t.Fatalf("registration sign count %d, want 0", cred.Authenticator.SignCount)
+	}
+	u.creds = []webauthn.Credential{*cred}
+
+	for i := 0; i < 2; i++ {
+		_, got, err := signIn(t, rp, a, holder(u, nil))
+		if err != nil {
+			t.Fatalf("login %d refused: <redacted>", i+1)
+		}
+		if got.Authenticator.SignCount != 0 || got.Authenticator.CloneWarning {
+			t.Fatalf("login %d sign count %d clone warning %v, want 0 and false", i+1, got.Authenticator.SignCount, got.Authenticator.CloneWarning)
+		}
+		u.creds = []webauthn.Credential{*got}
+	}
 }

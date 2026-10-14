@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -240,7 +241,16 @@ type getResponseBody struct {
 func (a *Authenticator) authData(create bool) []byte {
 	b := append([]byte{}, a.rpHash()...)
 	b = append(b, a.flags(create))
-	return append(b, 0, 0, 0, 0)
+	return binary.BigEndian.AppendUint32(b, a.nextCount())
+}
+
+// WHY: a zero counter stays zero, as a synced passkey reports it; go-webauthn exempts a both-zero pair from the clone check.
+func (a *Authenticator) nextCount() uint32 {
+	n := a.Counter
+	if n > 0 {
+		a.Counter++
+	}
+	return n
 }
 
 func (a *Authenticator) flags(create bool) byte {
