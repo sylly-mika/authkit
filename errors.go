@@ -36,19 +36,38 @@ func (e ErrLocked) Error() string {
 	return fmt.Sprintf("authkit: too many failed sign-ins; retry in %s", e.RetryAfter)
 }
 
+// ErrResendTooSoon refuses a new emailed code asked for too soon after the last.
+type ErrResendTooSoon struct{ RetryAfter time.Duration }
+
+func (e ErrResendTooSoon) Error() string {
+	return fmt.Sprintf("authkit: a code was sent moments ago; retry in %s", e.RetryAfter)
+}
+
 // ErrPasskeysOff is the error of every passkey method while Config.Passkeys.RPID is empty.
 var ErrPasskeysOff = errors.New("authkit: passkeys are off")
 
 // Passkey refusals, returned in Result.Refusal.
 var (
 	ErrPasskeyRejected = errors.New("authkit: the passkey was not accepted")
-	ErrReauthRequired  = errors.New("authkit: sign in again to change passkeys")
+	ErrReauthRequired  = errors.New("authkit: sign in again to change sign-in methods")
 	ErrPasskeyLimit    = errors.New("authkit: the principal holds the most passkeys allowed")
 	ErrPasskeyExists   = errors.New("authkit: the passkey is registered already")
 	ErrPasskeyInvalid  = errors.New("authkit: the passkey registration is not valid")
 	ErrPasskeyNotFound = errors.New("authkit: no such passkey")
 	ErrPasskeyLabel    = errors.New("authkit: a passkey label is 1 to 64 characters, without control characters")
 	ErrNoPassword      = errors.New("authkit: the account needs a password before a passkey")
+)
+
+// Second-factor refusals, returned in Result.Refusal.
+var (
+	ErrSecondFactorsOff = errors.New("authkit: second factors are off")
+	ErrBadCode          = errors.New("authkit: the code is not valid")
+	ErrChallengeEnded   = errors.New("authkit: the second-step challenge has ended; sign in again")
+	ErrCodeEnded        = errors.New("authkit: the emailed code has ended; ask for a new one")
+	ErrFactorExists     = errors.New("authkit: the second factor is on already")
+	ErrFactorNotFound   = errors.New("authkit: no such second factor")
+	ErrSetupExpired     = errors.New("authkit: the setup has expired; start it again")
+	ErrNoRecoveryCodes  = errors.New("authkit: no recovery codes are left")
 )
 
 // Aliases of the sub-packages' types an app meets through the Service.
@@ -79,6 +98,12 @@ const (
 	ResultPasskeyAdded    = "passkey_added"
 	ResultPasskeyRemoved  = "passkey_removed"
 	ResultPasskeysReset   = "passkeys_reset"
+
+	ResultSecondStepRequired       = "second_step_required"
+	ResultBadCode                  = "bad_code"
+	ResultFactorAdded              = "factor_added"
+	ResultFactorRemoved            = "factor_removed"
+	ResultRecoveryCodesRegenerated = "recovery_codes_regenerated"
 )
 
 // Event.Source values: the Service method that recorded the event.
@@ -97,6 +122,8 @@ const (
 	SourcePasskeyLogin        = "passkey_login"
 	SourcePasskeyRegister     = "passkey_register"
 	SourceDeletePasskey       = "delete_passkey"
+	SourceSecondStep          = "second_step"
+	SourceSecondFactor        = "second_factor"
 	SourceRequestReset        = "request_reset" // RequestReset records no event; reserved
 )
 

@@ -126,6 +126,16 @@ type Result struct {
 	Passkey *Passkey
 	// PasskeysRemoved is how many passkeys a completed reset deleted.
 	PasskeysRemoved int
+	// SecondStep is set instead of a session when the sign-in needs a second factor.
+	SecondStep *SecondStep
+	// TOTPSetup is BeginTOTPSetup's answer.
+	TOTPSetup *TOTPSetup
+	// EmailCode names an emailed code the app must send.
+	EmailCode *EmailCodeRequest
+	// RecoveryCodes are new recovery codes, shown once.
+	RecoveryCodes []string
+	// RecoveryCodesLeft is set when a recovery code was spent.
+	RecoveryCodesLeft *int
 }
 
 // Claims is the session the Result names, as the account methods take it
