@@ -30,7 +30,8 @@ go get github.com/sylly-mika/authkit@v0.2.0
 
 PostgreSQL 17. The library owns the `auth_*` tables (`auth_schema`,
 `auth_credentials`, `auth_sessions`, `auth_tokens`, `auth_events`,
-`auth_throttle`); the app owns its principals table, whose `id` is a uuid.
+`auth_throttle`, `auth_passkeys`, `auth_passkey_ceremonies`); the app owns
+its principals table, whose `id` is a uuid.
 
 The caller owns transactions and RLS: authkit never opens a transaction and
 never binds an RLS setting. Every `Service` method runs on the `db.Querier` the
@@ -191,12 +192,64 @@ token turns into reuse after `ReuseGrace` and the session ends.
 ## Events
 
 `Event.Source` names the method that recorded an event (`authkit.SourceLogin`,
-`SourceChangePassword`, ...). It is set on the value `OnEvent` receives and is
-not stored. `Config.OnEvent(ctx, q, e)` runs straight after authkit records an
+`SourceChangePassword`, ...). It is stored in `auth_events.source` and returned by `ListEvents`; rows written
+before v0.3.0 read `""`. `Config.OnEvent(ctx, q, e)` runs straight after authkit records an
 event, on the same querier, so in the same transaction; its error fails the
 method. `ChangePassword` logs the new result `password_changed`
 (`ResultPasswordChanged`). `Prune` also deletes events older than
 `EventRetention`.
+
+## Passkeys
+
+Passkeys are an alternative sign-in: a principal may add passkeys and sign in
+with one instead of the password, which keeps working and stays the recovery
+path. They are off until `Config.Passkeys.RPID` is set; every passkey method
+then returns `ErrPasskeysOff`.
+
+`Config.Passkeys` (`PasskeyRules`): `RPID` (a host, no scheme or port),
+`RPName` (default `authkit`), `Origins` per audience (`https`, or `http` only
+for `localhost`; each host equals `RPID` or ends in `.` + `RPID`),
+`CeremonyTTL` (default 2m), `Reauth` (default 5m) and `Max` (default 10). A
+ceremony made for one audience fails on another's origin. The RP ID is final
+once a passkey exists: changing it orphans every passkey.
+
+Migration `0003_passkeys` adds `auth_passkeys` and `auth_passkey_ceremonies`,
+the column `auth_events.source` and the revoke reason `passkey_removed`. Give
+both tables the same RLS as `auth_credentials`.
+
+- Sign-in: `BeginPasskeyLogin` returns a `Ceremony` (id, browser options,
+  expiry); `FinishPasskeyLogin` spends it, checks the assertion, asks `Admit`
+  and opens a session like `Login`, logging `signed_in` with source
+  `passkey_login`. Every refusal is `ErrPasskeyRejected`; a known credential
+  that fails logs `bad_passkey`. The password throttle is not used.
+- Adding: `BeginPasskeyRegistration` and `FinishPasskeyRegistration` need a
+  password on the account (`ErrNoPassword`), a sign-in within `Reauth`
+  (`ErrReauthRequired`) and fewer than `Max` passkeys (`ErrPasskeyLimit`);
+  they log `passkey_added`.
+- `ListPasskeys` lists the principal's passkeys; `RenamePasskey` changes a
+  label (1 to 64 characters, `ErrPasskeyLabel`) and needs no recent sign-in;
+  `DeletePasskey` needs a sign-in within `Reauth`, revokes the principal's
+  other sessions (`passkey_removed`) and logs `passkey_removed`. Another
+  principal's passkey is `ErrPasskeyNotFound`, like an unknown one.
+- `CompleteReset` deletes every passkey of the principal, reports the count in
+  `Result.PasskeysRemoved` and logs `passkeys_reset` when there were any.
+  `ChangePassword` leaves passkeys alone.
+
+The other new exported names: `OpenSessionFrom` (a session that copies
+`authenticated_at` from another session of the same principal and audience,
+for the workspace switch; that other session may be revoked or expired);
+`Ceremony` and `Passkey` (the values above); the errors `ErrPasskeyExists` (the
+credential is already registered) and `ErrPasskeyInvalid` (the audience has no
+relying party, or the ceremony cannot be spent); the sources
+`SourcePasskeyLogin` (`passkey_login`), `SourcePasskeyRegister`
+(`passkey_register`) and `SourceDeletePasskey` (`delete_passkey`); the results
+`ResultBadPasskey` (`bad_passkey`), `ResultPasskeyAdded` (`passkey_added`),
+`ResultPasskeyRemoved` (`passkey_removed`) and `ResultPasskeysReset`
+(`passkeys_reset`); and the reason `ReasonPasskeyRemoved`
+(`passkey_removed`).
+
+`authkittest.NewAuthenticator(rpID, origin)` is a software authenticator for
+tests: `Create` and `Get` answer the options JSON with browser-shaped JSON.
 
 ## Upgrading from v0.1
 
