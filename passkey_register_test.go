@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -351,6 +352,90 @@ func TestASyncedPasskeyIsAccepted(t *testing.T) {
 	a.BackupEligible = true
 	if r := regFinish(w, c, begin.Ceremony.ID, regCreate(t, a, begin.Ceremony), "Laptop"); r.Refusal != nil {
 		t.Fatalf("finish refused: %v", r.Refusal)
+	}
+	if n := regPasskeys(w, id); n != 1 {
+		t.Fatalf("auth_passkeys rows = %d, want 1", n)
+	}
+}
+
+func regLabel(w *world, id uuid.UUID) string {
+	w.t.Helper()
+	var label string
+	if err := w.d.Row(w.t, `SELECT label FROM auth_passkeys WHERE principal_id = $1`, id).Scan(&label); err != nil {
+		w.t.Fatal(err)
+	}
+	return label
+}
+
+func TestAnEmptyLabelBecomesTheDate(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	finish := regFinish(w, c, begin.Ceremony.ID, regCreate(t, regAuthn(staffOrigin), begin.Ceremony), "   ")
+	if finish.Refusal != nil || finish.Passkey == nil {
+		t.Fatalf("finish: refusal %v, passkey given %v", finish.Refusal, finish.Passkey != nil)
+	}
+	if want := "Passkey 2040-01-01"; regLabel(w, id) != want || finish.Passkey.Label != want {
+		t.Fatalf("label = %q, want %q", regLabel(w, id), want)
+	}
+}
+
+func TestALabelWithAControlCharacterIsRefused(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	finish := regFinish(w, c, begin.Ceremony.ID, regCreate(t, regAuthn(staffOrigin), begin.Ceremony), "Lap\ttop")
+	regRefused(t, finish, authkit.ErrPasskeyLabel)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+	if n := regAdded(w, id); n != 0 {
+		t.Fatalf("passkey_added events = %d, want 0", n)
+	}
+}
+
+func TestA65RuneLabelIsRefused(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	finish := regFinish(w, c, begin.Ceremony.ID, regCreate(t, regAuthn(staffOrigin), begin.Ceremony), strings.Repeat("é", 65))
+	regRefused(t, finish, authkit.ErrPasskeyLabel)
+	if n := regPasskeys(w, id); n != 0 {
+		t.Fatalf("auth_passkeys rows = %d, want 0", n)
+	}
+}
+
+func TestALabelIsCountedInRunes(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	label := strings.Repeat("é", 64)
+	finish := regFinish(w, c, begin.Ceremony.ID, regCreate(t, regAuthn(staffOrigin), begin.Ceremony), label)
+	if finish.Refusal != nil || finish.Passkey == nil {
+		t.Fatalf("finish: refusal %v, passkey given %v", finish.Refusal, finish.Passkey != nil)
+	}
+	if got := regLabel(w, id); got != label {
+		t.Fatalf("stored label is %d bytes, want the 128-byte label of 64 runes", len(got))
+	}
+}
+
+func TestARefusedLabelKeepsTheCeremony(t *testing.T) {
+	w := regWorld(t, regOrigins)
+	id, res := regUser(w, "ada@example.invalid")
+	c := w.claims(res)
+	begin := regBegin(w, c)
+	resp := regCreate(t, regAuthn(staffOrigin), begin.Ceremony)
+	regRefused(t, regFinish(w, c, begin.Ceremony.ID, resp, "a\nb"), authkit.ErrPasskeyLabel)
+	if all, spent := regCeremonies(w, id); all != 1 || spent != 0 {
+		t.Fatalf("ceremonies = %d, spent %d; want 1 unspent", all, spent)
+	}
+	retry := regFinish(w, c, begin.Ceremony.ID, resp, "Laptop")
+	if retry.Refusal != nil || retry.Passkey == nil {
+		t.Fatalf("retry: refusal %v, passkey given %v", retry.Refusal, retry.Passkey != nil)
 	}
 	if n := regPasskeys(w, id); n != 1 {
 		t.Fatalf("auth_passkeys rows = %d, want 1", n)

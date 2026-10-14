@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -69,6 +72,10 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, q db.Querier, c
 		return Result{}, ErrPasskeysOff
 	}
 	m = m.clean()
+	label, ok := passkeyLabel(label, s.now())
+	if !ok {
+		return Result{Refusal: ErrPasskeyLabel}, nil
+	}
 	now := s.now()
 	sess, ok, err := s.freshSession(ctx, q, c, now)
 	if err != nil {
@@ -146,4 +153,20 @@ func insertPasskey(ctx context.Context, q db.Querier, pk Passkey, principal uuid
 		return false, err
 	}
 	return true, nil
+}
+
+func passkeyLabel(raw string, now time.Time) (string, bool) {
+	l := strings.TrimSpace(raw)
+	if l == "" {
+		return "Passkey " + now.UTC().Format("2006-01-02"), true
+	}
+	if utf8.RuneCountInString(l) > 64 {
+		return "", false
+	}
+	for _, r := range l {
+		if unicode.IsControl(r) {
+			return "", false
+		}
+	}
+	return l, true
 }
