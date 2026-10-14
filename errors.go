@@ -36,6 +36,21 @@ func (e ErrLocked) Error() string {
 	return fmt.Sprintf("authkit: too many failed sign-ins; retry in %s", e.RetryAfter)
 }
 
+// ErrPasskeysOff is the error of every passkey method while Config.Passkeys.RPID is empty.
+var ErrPasskeysOff = errors.New("authkit: passkeys are off")
+
+// Passkey refusals, returned in Result.Refusal.
+var (
+	ErrPasskeyRejected = errors.New("authkit: the passkey was not accepted")
+	ErrReauthRequired  = errors.New("authkit: sign in again to change passkeys")
+	ErrPasskeyLimit    = errors.New("authkit: the principal holds the most passkeys allowed")
+	ErrPasskeyExists   = errors.New("authkit: the passkey is registered already")
+	ErrPasskeyInvalid  = errors.New("authkit: the passkey registration is not valid")
+	ErrPasskeyNotFound = errors.New("authkit: no such passkey")
+	ErrPasskeyLabel    = errors.New("authkit: a passkey label is 1 to 64 characters, without control characters")
+	ErrNoPassword      = errors.New("authkit: the account needs a password before a passkey")
+)
+
 // Aliases of the sub-packages' types an app meets through the Service.
 type (
 	ErrTokenGone = onetime.ErrGone
@@ -60,6 +75,10 @@ const (
 	ResultReuseDetected = "reuse_detected"
 	// ResultPasswordChanged is ChangePassword's, unless Events.ChangeLogsReset.
 	ResultPasswordChanged = "password_changed"
+	ResultBadPasskey      = "bad_passkey"
+	ResultPasskeyAdded    = "passkey_added"
+	ResultPasskeyRemoved  = "passkey_removed"
+	ResultPasskeysReset   = "passkeys_reset"
 )
 
 // Event.Source values: the Service method that recorded the event.
@@ -75,6 +94,9 @@ const (
 	SourceRevokeAll           = "revoke_all"
 	SourceRefresh             = "refresh"
 	SourceAuthenticateSession = "authenticate_session"
+	SourcePasskeyLogin        = "passkey_login"
+	SourcePasskeyRegister     = "passkey_register"
+	SourceDeletePasskey       = "delete_passkey"
 	SourceRequestReset        = "request_reset" // RequestReset records no event; reserved
 )
 
@@ -87,6 +109,8 @@ const (
 	ReasonReuseDetected   = "reuse_detected"
 	// ReasonAdmin is RevokeAllSessions on an admin's or the app's behalf.
 	ReasonAdmin = "admin"
+	// ReasonPasskeyRemoved is DeletePasskey's: it ends the principal's other sessions.
+	ReasonPasskeyRemoved = "passkey_removed"
 )
 
 // PurposeReset is the one-time-link purpose of RequestReset and CompleteReset.

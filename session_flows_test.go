@@ -215,3 +215,147 @@ func TestChangePasswordRevokeAllAsksAdmitFirst(t *testing.T) {
 		t.Fatal("a refused change wrote")
 	}
 }
+
+func TestOpenSessionFromKeepsTheSignInTime(t *testing.T) {
+	var c captured
+	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	id := w.user("ada@example.invalid", "the right password")
+	p := authkit.Principal{ID: id, Login: "ada@example.invalid"}
+	t0 := w.clock.Now()
+	first := w.signIn("ada@example.invalid", "the right password")
+	w.clock.Advance(3 * time.Minute)
+	now := w.clock.Now()
+	res := w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.OpenSessionFrom(w.ctx, q, first.Session.ID, p, "staff", authkit.Meta{IP: "192.0.2.7", UserAgent: "authkit-test"})
+	})
+	if res.Refusal != nil || res.SessionToken == "" || res.Session.ID == first.Session.ID || !res.Session.AuthenticatedAt.Equal(t0) {
+		t.Fatalf("OpenSessionFrom = %+v; want a new session that keeps authenticated_at %v", res, t0)
+	}
+	if w.count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND authenticated_at = $2 AND created_at = $3 AND absolute_expires_at = $4`,
+		res.Session.ID, t0, now, now.Add(12*time.Hour)) != 1 {
+		t.Fatal("the new row must keep the old authenticated_at and count its other times from now")
+	}
+	if w.count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL AND authenticated_at = $2`, first.Session.ID, t0) != 1 {
+		t.Fatal("OpenSessionFrom must leave the session it copies from open and unchanged")
+	}
+	if c.pairs[len(c.pairs)-1] != "open_session/signed_in" || w.count(`SELECT count(*) FROM auth_events WHERE session_id = $1 AND ip = '192.0.2.7'`, res.Session.ID) != 1 {
+		t.Fatalf("events = %v; want the switch logged as open_session/signed_in", c.pairs)
+	}
+	if got := w.authenticateSession("staff", res.SessionToken); got.Refusal != nil {
+		t.Fatalf("the switched session's token = %v", got.Refusal)
+	}
+}
+
+func TestOpenSessionFromRefusesAnotherPrincipalsSession(t *testing.T) {
+	var c captured
+	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	adaID := w.user("ada@example.invalid", "the right password")
+	ada := authkit.Principal{ID: adaID, Login: "ada@example.invalid"}
+	w.signIn("ada@example.invalid", "the right password")
+	w.user("bob@example.invalid", "the right password")
+	bobs := w.signIn("bob@example.invalid", "the right password").Session.ID
+	before := w.count(`SELECT count(*) FROM auth_sessions`)
+	ev := w.count(`SELECT count(*) FROM auth_events`)
+	c.pairs = nil
+	for _, from := range []uuid.UUID{bobs, uuid.New()} {
+		err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+			_, err := w.svc.OpenSessionFrom(w.ctx, q, from, ada, "staff", authkit.Meta{})
+			return err
+		})
+		if err == nil || !strings.Contains(err.Error(), "the session is not the principal's") {
+			t.Fatalf("OpenSessionFrom(%v) = %v; want a refusal that the session is not the principal's", from, err)
+		}
+	}
+	if w.count(`SELECT count(*) FROM auth_sessions`) != before || w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1`, adaID) != 1 {
+		t.Fatal("a refused OpenSessionFrom must open no session")
+	}
+	if w.count(`SELECT count(*) FROM auth_events`) != ev || len(c.pairs) != 0 {
+		t.Fatalf("a refused OpenSessionFrom must record no event; saw %v", c.pairs)
+	}
+}
+
+func TestOpenSessionFromAsksAdmit(t *testing.T) {
+	var c captured
+	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	carolID := w.user("carol@example.invalid", "the right password")
+	carol := authkit.Principal{ID: carolID, Login: "carol@example.invalid"}
+	first := w.signIn("carol@example.invalid", "the right password")
+	errDeactivated := errors.New("app: deactivated")
+	w.p.Refuse(carolID, errDeactivated)
+	c.pairs = nil
+	res := w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.OpenSessionFrom(w.ctx, q, first.Session.ID, carol, "staff", authkit.Meta{})
+	})
+	if res.Refusal != errDeactivated || res.Session != nil || res.SessionToken != "" {
+		t.Fatalf("OpenSessionFrom of a refused principal = %+v; want the app's refusal", res)
+	}
+	if w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1`, carolID) != 1 {
+		t.Fatal("a refused OpenSessionFrom must open no session")
+	}
+	if !slices.Equal(c.pairs, []string{"open_session/no_membership"}) {
+		t.Fatalf("events = %v; want the refusal logged", c.pairs)
+	}
+}
+
+func TestOpenSessionFromAcceptsAnEndedSession(t *testing.T) {
+	w := sessionWorld(t)
+	id := w.user("ada@example.invalid", "the right password")
+	p := authkit.Principal{ID: id, Login: "ada@example.invalid"}
+	t0 := w.clock.Now()
+	first := w.signIn("ada@example.invalid", "the right password")
+	w.d.Exec(t, `UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'logout' WHERE id = $1`, first.Session.ID, t0)
+	w.clock.Advance(time.Minute)
+	res := w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.OpenSessionFrom(w.ctx, q, first.Session.ID, p, "staff", authkit.Meta{})
+	})
+	if res.Refusal != nil || res.SessionToken == "" {
+		t.Fatalf("OpenSessionFrom of an ended session = %+v; want a session", res)
+	}
+	if w.count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND authenticated_at = $2`, res.Session.ID, t0) != 1 {
+		t.Fatal("the new session must keep the ended session's authenticated_at")
+	}
+	if got := w.authenticateSession("staff", res.SessionToken); got.Refusal != nil {
+		t.Fatalf("the switched session's token = %v", got.Refusal)
+	}
+}
+
+func TestRevokeAllSessionsTakesPasskeyRemoved(t *testing.T) {
+	var c captured
+	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	id := w.user("ada@example.invalid", "the right password")
+	w.signIn("ada@example.invalid", "the right password")
+	w.signIn("ada@example.invalid", "the right password")
+	c.pairs = nil
+	if res := w.inAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.svc.RevokeAllSessions(w.ctx, q, id, authkit.ReasonPasskeyRemoved, authkit.Meta{})
+	}); res.Refusal != nil {
+		t.Fatalf("RevokeAllSessions = %v", res.Refusal)
+	}
+	if w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoke_reason = 'passkey_removed'`, id) != 2 {
+		t.Fatal("want both open sessions revoked for passkey_removed")
+	}
+	if !slices.Equal(c.pairs, []string{"revoke_all/revoked", "revoke_all/revoked"}) {
+		t.Fatalf("events = %v; want one revoked per session", c.pairs)
+	}
+}
+
+func TestOpenSessionFromRefusesAnotherAudience(t *testing.T) {
+	var c captured
+	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	id := w.user("ada@example.invalid", "the right password")
+	ada := authkit.Principal{ID: id, Login: "ada@example.invalid"}
+	first := w.signIn("ada@example.invalid", "the right password")
+	before := w.count(`SELECT count(*) FROM auth_sessions`)
+	ev := w.count(`SELECT count(*) FROM auth_events`)
+	c.pairs = nil
+	err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+		_, err := w.svc.OpenSessionFrom(w.ctx, q, first.Session.ID, ada, "portal", authkit.Meta{})
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "the session is not the principal's") {
+		t.Fatalf("OpenSessionFrom into another audience = %v; want a refusal", err)
+	}
+	if w.count(`SELECT count(*) FROM auth_sessions`) != before || w.count(`SELECT count(*) FROM auth_events`) != ev || len(c.pairs) != 0 {
+		t.Fatalf("a refused OpenSessionFrom must write nothing; events %v", c.pairs)
+	}
+}
