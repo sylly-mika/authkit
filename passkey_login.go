@@ -87,7 +87,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audi
 	if err != nil {
 		return Result{}, err
 	}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: FactorPasskey})
 	if err != nil {
 		return Result{}, err
 	}
@@ -97,7 +97,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audi
 		}
 		return Result{Refusal: refusal.Err}, nil
 	}
-	res, err := s.openSession(ctx, q, p, aud, adm, m, now)
+	res, err := s.openSession(ctx, q, p, aud, adm, m, now, FactorPasskey)
 	if err != nil {
 		return Result{}, err
 	}
@@ -108,7 +108,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audi
 	if _, err := q.Exec(ctx, "UPDATE auth_passkeys SET data = $2, last_used_at = $3 WHERE id = $1", hit.id, string(data), now); err != nil {
 		return Result{}, err
 	}
-	if err := s.record(ctx, q, now, SourcePasskeyLogin, events.Event{PrincipalID: &p.ID, SessionID: &res.Session.ID, ScopeID: adm.ScopeID, Audience: string(aud), Login: p.Login, Result: ResultSignedIn, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+	if err := s.record(ctx, q, now, SourcePasskeyLogin, events.Event{PrincipalID: &p.ID, SessionID: &res.Session.ID, ScopeID: adm.ScopeID, Audience: string(aud), Login: p.Login, Result: ResultSignedIn, IP: m.IP, UserAgent: m.UserAgent, SecondFactor: string(FactorPasskey)}); err != nil {
 		return Result{}, err
 	}
 	return res, nil

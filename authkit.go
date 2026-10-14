@@ -40,6 +40,8 @@ type Proposal struct {
 	Principal Principal
 	Audience  Audience
 	ScopeID   *uuid.UUID
+	// SecondFactor is the factor that completed the sign-in this admit is for: empty for a password alone.
+	SecondFactor FactorKind
 }
 
 // Admission is Admit's answer for a session it allows.
@@ -126,6 +128,16 @@ type Result struct {
 	Passkey *Passkey
 	// PasskeysRemoved is how many passkeys a completed reset deleted.
 	PasskeysRemoved int
+	// SecondStep is set instead of a session when the sign-in needs a second factor.
+	SecondStep *SecondStep
+	// TOTPSetup is BeginTOTPSetup's answer.
+	TOTPSetup *TOTPSetup
+	// EmailCode names an emailed code the app must send.
+	EmailCode *EmailCodeRequest
+	// RecoveryCodes are new recovery codes, shown once.
+	RecoveryCodes []string
+	// RecoveryCodesLeft is set when a recovery code was spent.
+	RecoveryCodesLeft *int
 }
 
 // Claims is the session the Result names, as the account methods take it

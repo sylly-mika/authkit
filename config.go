@@ -75,6 +75,30 @@ type PasskeyRules struct {
 	Max int
 }
 
+// SecondFactorRules configure two-factor sign-in. An empty Key switches second factors off.
+type SecondFactorRules struct {
+	// Key is 32 random bytes that seal authenticator secrets and key the code hashes. Empty is off.
+	Key []byte
+	// Issuer names the app in authenticator apps. Zero is "authkit".
+	Issuer string
+	// ChallengeTTL is how long a password sign-in's second step may be finished. Zero is 10 minutes.
+	ChallengeTTL time.Duration
+	// EmailCodeTTL is how long an emailed code is valid. Zero is 10 minutes.
+	EmailCodeTTL time.Duration
+	// SetupTTL is how long a begun authenticator setup may be confirmed. Zero is 15 minutes.
+	SetupTTL time.Duration
+	// ResendEvery is the least time between two emailed codes. Zero is 60 seconds.
+	ResendEvery time.Duration
+	// Reauth is how recent a sign-in must be to change sign-in methods. Zero is 5 minutes.
+	Reauth time.Duration
+	// MaxTries is how many wrong codes end a second step or an emailed code. Zero is 5.
+	MaxTries int
+	// MaxSends is how many times one emailed code may be sent. Zero is 5.
+	MaxSends int
+	// RecoveryCodes is how many recovery codes one set holds. Zero is 10.
+	RecoveryCodes int
+}
+
 // RevokeOnChange is which sessions ChangePassword revokes.
 type RevokeOnChange int
 
@@ -119,6 +143,8 @@ type Config struct {
 	Rand            io.Reader
 	// Passkeys configure passkey sign-in; the zero value leaves passkeys off.
 	Passkeys PasskeyRules
+	// SecondFactors configure two-factor sign-in; the zero value leaves it off.
+	SecondFactors SecondFactorRules
 }
 
 func withDefaults(c Config) Config {
@@ -146,6 +172,23 @@ func withDefaults(c Config) Config {
 	def(&c.Passkeys.Reauth, 5*time.Minute)
 	if c.Passkeys.Max == 0 {
 		c.Passkeys.Max = 10
+	}
+	if c.SecondFactors.Issuer == "" {
+		c.SecondFactors.Issuer = "authkit"
+	}
+	def(&c.SecondFactors.ChallengeTTL, 10*time.Minute)
+	def(&c.SecondFactors.EmailCodeTTL, 10*time.Minute)
+	def(&c.SecondFactors.SetupTTL, 15*time.Minute)
+	def(&c.SecondFactors.ResendEvery, time.Minute)
+	def(&c.SecondFactors.Reauth, 5*time.Minute)
+	if c.SecondFactors.MaxTries == 0 {
+		c.SecondFactors.MaxTries = 5
+	}
+	if c.SecondFactors.MaxSends == 0 {
+		c.SecondFactors.MaxSends = 5
+	}
+	if c.SecondFactors.RecoveryCodes == 0 {
+		c.SecondFactors.RecoveryCodes = 10
 	}
 	if c.Password == (password.Policy{}) {
 		c.Password = password.DefaultPolicy
@@ -206,7 +249,46 @@ func (c Config) check() error {
 	if err := c.Passkeys.check(); err != nil {
 		return err
 	}
+	if err := c.SecondFactors.check(); err != nil {
+		return err
+	}
 	return c.checkSessions()
+}
+
+func (r SecondFactorRules) check() error {
+	if len(r.Key) != 0 && len(r.Key) != 32 {
+		return fmt.Errorf("authkit: Config.SecondFactors.Key must be 32 bytes, not %d", len(r.Key))
+	}
+	// WHY: the otpauth label is Issuer:account; a colon in the issuer splits it wrongly in authenticator apps.
+	if strings.Contains(r.Issuer, ":") {
+		return fmt.Errorf("authkit: Config.SecondFactors.Issuer %q must not contain a colon", r.Issuer)
+	}
+	for _, d := range []struct {
+		field string
+		v     time.Duration
+	}{{"ChallengeTTL", r.ChallengeTTL}, {"EmailCodeTTL", r.EmailCodeTTL}, {"SetupTTL", r.SetupTTL}} {
+		if d.v <= 0 || d.v > time.Hour {
+			return fmt.Errorf("authkit: Config.SecondFactors.%s must be in (0, 1h], not %v", d.field, d.v)
+		}
+	}
+	for _, d := range []struct {
+		field string
+		v     time.Duration
+	}{{"ResendEvery", r.ResendEvery}, {"Reauth", r.Reauth}} {
+		if d.v <= 0 || d.v > 10*time.Minute {
+			return fmt.Errorf("authkit: Config.SecondFactors.%s must be in (0, 10m], not %v", d.field, d.v)
+		}
+	}
+	if r.MaxTries < 1 || r.MaxTries > 10 {
+		return fmt.Errorf("authkit: Config.SecondFactors.MaxTries must be in [1, 10], not %d", r.MaxTries)
+	}
+	if r.MaxSends < 1 || r.MaxSends > 20 {
+		return fmt.Errorf("authkit: Config.SecondFactors.MaxSends must be in [1, 20], not %d", r.MaxSends)
+	}
+	if r.RecoveryCodes < 8 || r.RecoveryCodes > 16 {
+		return fmt.Errorf("authkit: Config.SecondFactors.RecoveryCodes must be in [8, 16], not %d", r.RecoveryCodes)
+	}
+	return nil
 }
 
 func (p PasskeyRules) check() error {

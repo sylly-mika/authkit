@@ -30,7 +30,7 @@ go get github.com/sylly-mika/authkit@v0.2.0
 
 PostgreSQL 17. The library owns the `auth_*` tables (`auth_schema`,
 `auth_credentials`, `auth_sessions`, `auth_tokens`, `auth_events`,
-`auth_throttle`, `auth_passkeys`, `auth_passkey_ceremonies`); the app owns
+`auth_throttle`, `auth_passkeys`, `auth_passkey_ceremonies`, `auth_second_factors`, `auth_recovery_codes`, `auth_second_step_challenges`, `auth_email_codes`); the app owns
 its principals table, whose `id` is a uuid.
 
 The caller owns transactions and RLS: authkit never opens a transaction and
@@ -100,6 +100,7 @@ anywhere else.
 | `HashConcurrency` / `HashWait` | 4 / 2 s | |
 | `ReuseGrace` | 30 s | |
 | `OnEvent` | nil | see Events |
+| `SecondFactors` | off (empty `Key`) | see Second factors |
 
 The session defaults follow NIST SP 800-63B (rev 3) at AAL2: sign in again
 after 30 minutes of inactivity and at least every 12 hours.
@@ -134,6 +135,8 @@ kit.AcquireHashSlot(ctx)`. `release` is never nil; call it when the request
 ends. `res.Refusal` is `ErrBusy`; `err` is only `ctx`'s. Under `ctx2`,
 `Login`, `VerifyPassword`, `ChangePassword`, `CompleteReset` and `SetPassword`
 use that slot and take no other. Without it, each method takes a slot itself.
+
+With second factors on, a correct password of a principal holding a confirmed factor opens no session: `Login` and `CompleteReset` run `Admit`, then return `Result.SecondStep` (a challenge token, its expiry and the methods). `VerifySecondStep` counts each wrong code on the login's throttle row and on the challenge; a locked login is refused `ErrLocked` before any code is checked.
 
 ## Session mode with echo v5
 
@@ -250,6 +253,20 @@ relying party, or the ceremony cannot be spent); the sources
 
 `authkittest.NewAuthenticator(rpID, origin)` is a software authenticator for
 tests: `Create` and `Get` answer the options JSON with browser-shaped JSON.
+
+## Second factors
+
+`Config.SecondFactors.Key` (32 bytes, kept with `Secret`) turns on an authenticator app (TOTP) and a 6-digit emailed code. It seals TOTP secrets and keys the code and recovery-code hashes; a lost or changed key makes every TOTP factor and recovery code fail, and authkit has no rotation. Without a key every second-factor method refuses `ErrSecondFactorsOff`, and `Login` refuses a principal that holds a confirmed factor the same way rather than sign in on the password alone. Limits: `ChallengeTTL` 10 min, `EmailCodeTTL` 10 min, `SetupTTL` 15 min, `ResendEvery` 60 s, `MaxSends` 5, `MaxTries` 5, `Reauth` 5 min, `RecoveryCodes` 10.
+
+Managing factors needs a sign-in within `Reauth` (`ErrReauthRequired`): `SecondFactorStatus`, `BeginTOTPSetup` and `ConfirmTOTP`, `BeginEmailCodeSetup` and `ConfirmEmailCode`, `RequestEmailProof`, `DisableSecondFactor` (with a current code from any factor or a recovery code) and `RegenerateRecoveryCodes`. The first confirmed factor returns the recovery codes once. Factor changes end no sessions.
+
+Second step: `VerifySecondStep(aud, token, method, code)` with method `totp`, `email` or `recovery` opens the session. For email, `SendSecondStepEmail(aud, token)` returns `Result.EmailCode` (an id and expiry) and `Result.Principal`; a new request replaces the previous code, at most one per `ResendEvery` and `MaxSends` while a code lives. Enqueue the id, never a code: your mail worker calls `MintEmailCode(id)` at send time and mails `EmailCodeMail.Code`. A code is single use and dies after `MaxTries` wrong tries.
+
+`Proposal.SecondFactor` tells `Admit` how the session was secured: `""` for a password alone, `totp`, `email`, `recovery`, or `passkey` for a passkey sign-in (no second step follows a passkey). `Refresh`, `Authenticate`, `AuthenticateSession`, `OpenSessionFrom` (a workspace switch keeps the factor) and a `ChangePassword` that reopens the session pass the session's value, so an app can require a second factor per scope by refusing or flagging in `Admit`. `auth_sessions.second_factor` and `auth_events.second_factor` store it; a second-step sign-in logs `signed_in` with source `second_step`.
+
+A password reset keeps the factors and the recovery codes and returns the second step instead of a session.
+
+Names: `ErrSecondFactorsOff`, `ErrBadCode`, `ErrChallengeEnded`, `ErrCodeEnded`, `ErrResendTooSoon`, `ErrFactorNotFound`, `ErrFactorExists`, `ErrSetupExpired`, `ErrNoRecoveryCodes`, `FactorKind`, `FactorTOTP`, `FactorEmail`, `FactorRecovery`, `FactorPasskey`, `SecondFactorRules`, `SecondStep`, `EmailCodeRequest`, `EmailCodeMail`, `ResultSecondStepRequired`, `ResultBadCode`, `ResultLocked`, `ResultFactorAdded`, `ResultFactorRemoved`, `ResultRecoveryCodesRegenerated`, `SourceSecondStep`, `SourceSecondFactor`, `Config.SecondFactors`, `Proposal.SecondFactor`, `Session.SecondFactor`, `Result.SecondStep`, `Result.EmailCode`, `Result.RecoveryCodesLeft`.
 
 ## Upgrading from v0.1
 

@@ -64,8 +64,8 @@ func TestGooseRoundTrip(t *testing.T) {
 		if _, err := p.Up(ctx); err != nil {
 			t.Fatalf("goose up (round %d): %v", i+1, err)
 		}
-		if v, capped := schema(t, d); v != 3 || !capped {
-			t.Fatalf("after goose up: auth_schema %d, absolute_expires_at %v; want 3 and the column", v, capped)
+		if v, capped := schema(t, d); v != 4 || !capped {
+			t.Fatalf("after goose up: auth_schema %d, absolute_expires_at %v; want 4 and the column", v, capped)
 		}
 		if _, err := p.DownTo(ctx, 0); err != nil {
 			t.Fatalf("goose down (round %d): %v", i+1, err)
@@ -91,8 +91,8 @@ func TestGolangMigrateRoundTrip(t *testing.T) {
 		if err := m.Up(); err != nil {
 			t.Fatalf("migrate up (round %d): %v", i+1, err)
 		}
-		if v, capped := schema(t, d); v != 3 || !capped {
-			t.Fatalf("after migrate up: auth_schema %d, absolute_expires_at %v; want 3 and the column", v, capped)
+		if v, capped := schema(t, d); v != 4 || !capped {
+			t.Fatalf("after migrate up: auth_schema %d, absolute_expires_at %v; want 4 and the column", v, capped)
 		}
 		if err := m.Down(); err != nil {
 			t.Fatalf("migrate down (round %d): %v", i+1, err)

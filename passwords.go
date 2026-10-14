@@ -83,7 +83,8 @@ func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, c
 
 // WHY: Admit runs before any write, so a refusal leaves the credential and the sessions as they were.
 func (s *Service) changeRevokingAll(ctx context.Context, q db.Querier, g grant, sess Session, hash string) (Result, error) {
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: g.p, Audience: g.aud, ScopeID: sess.ScopeID})
+	g.factor = FactorKind(sess.SecondFactor)
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: g.p, Audience: g.aud, ScopeID: sess.ScopeID, SecondFactor: g.factor})
 	if err != nil {
 		return Result{}, err
 	}

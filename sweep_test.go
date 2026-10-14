@@ -45,7 +45,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "ListPasskeys", "HasCredential", "OneTime.CreatedSince", "OneTime.Peek"}
+	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "ListPasskeys", "HasCredential", "SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
 	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword", "AcquireHashSlot"}
 )
 
@@ -77,8 +77,16 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.svc.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
 			return err
 		},
-		"VerifyPassword":    func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
-		"OpenSession":       func() error { _, err := w.svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"VerifyPassword": func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
+		"OpenSession":    func() error { _, err := w.svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"VerifySecondStep": func() error {
+			_, err := w.svc.VerifySecondStep(ctx, q, "staff", "x", authkit.FactorTOTP, "123456", authkit.Meta{})
+			return err
+		},
+		"SendSecondStepEmail": func() error {
+			_, err := w.svc.SendSecondStepEmail(ctx, q, "staff", "x", authkit.Meta{})
+			return err
+		},
 		"BeginPasskeyLogin": func() error { _, err := w.svc.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
 		"FinishPasskeyLogin": func() error {
 			_, err := w.svc.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
@@ -89,8 +97,22 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.svc.FinishPasskeyRegistration(ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
 			return err
 		},
-		"RenamePasskey": func() error { _, err := w.svc.RenamePasskey(ctx, q, c, uuid.New(), "x"); return err },
-		"DeletePasskey": func() error { _, err := w.svc.DeletePasskey(ctx, q, c, uuid.New(), authkit.Meta{}); return err },
+		"RenamePasskey":           func() error { _, err := w.svc.RenamePasskey(ctx, q, c, uuid.New(), "x"); return err },
+		"DeletePasskey":           func() error { _, err := w.svc.DeletePasskey(ctx, q, c, uuid.New(), authkit.Meta{}); return err },
+		"BeginTOTPSetup":          func() error { _, err := w.svc.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
+		"ConfirmTOTP":             func() error { _, err := w.svc.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
+		"RegenerateRecoveryCodes": func() error { _, err := w.svc.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
+		"BeginEmailCodeSetup":     func() error { _, err := w.svc.BeginEmailCodeSetup(ctx, q, c, authkit.Meta{}); return err },
+		"ConfirmEmailCode": func() error {
+			_, err := w.svc.ConfirmEmailCode(ctx, q, c, "x", authkit.Meta{})
+			return err
+		},
+		"RequestEmailProof": func() error { _, err := w.svc.RequestEmailProof(ctx, q, c, authkit.Meta{}); return err },
+		"DisableSecondFactor": func() error {
+			_, err := w.svc.DisableSecondFactor(ctx, q, c, authkit.FactorTOTP, authkit.FactorProof{}, authkit.Meta{})
+			return err
+		},
+		"MintEmailCode": func() error { _, err := w.svc.MintEmailCode(ctx, q, uuid.New()); return err },
 		"OpenSessionFrom": func() error {
 			_, err := w.svc.OpenSessionFrom(ctx, q, res.Session.ID, p, "staff", authkit.Meta{})
 			return err
@@ -131,11 +153,16 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 }
 
 func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
-	w := newWorld(t, withPasskeys)
+	w := newWorld(t, withPasskeys, withSecondFactors)
 	id := w.user("ada@example.invalid", "the right password")
 	res := w.signIn("ada@example.invalid", "the right password")
 	pk := w.addStoredPasskey(id, "Laptop", false)
-	w.addStoredPasskey(w.user("bob@example.invalid", "x"), "Bob key", false)
+	bob := w.user("bob@example.invalid", "x")
+	w.addStoredPasskey(bob, "Bob key", false)
+	w.d.Exec(w.t, "INSERT INTO auth_second_factors (principal_id, kind, secret, last_step, created_at, confirmed_at) VALUES ($1, 'totp', $2, NULL, $3, $3)", id, []byte{1}, w.clock.Now())
+	w.seedRecoveryCodes(id, 2)
+	w.d.Exec(w.t, "INSERT INTO auth_second_factors (principal_id, kind, secret, last_step, created_at, confirmed_at) VALUES ($1, 'email', NULL, NULL, $2, $2)", bob, w.clock.Now())
+	w.seedRecoveryCodes(bob, 5)
 	q, c := sqldb.Conn(w.pinned(id)), w.claims(res)
 	if got, err := w.svc.Authenticate(w.ctx, q, c); err != nil || got.Refusal != nil {
 		t.Errorf("Authenticate = %v, %v", got.Refusal, err)
@@ -151,6 +178,9 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	}
 	if list, err := w.svc.ListPasskeys(w.ctx, q, id); err != nil || len(list) != 1 || list[0].ID != pk {
 		t.Errorf("ListPasskeys = %d passkeys, %v, want the one passkey %s", len(list), err, pk)
+	}
+	if status, err := w.svc.SecondFactorStatus(w.ctx, q, c); err != nil || status != (authkit.FactorStatus{TOTP: true, RecoveryCodesLeft: 2}) {
+		t.Errorf("SecondFactorStatus = %+v, %v, want the TOTP factor on with 2 recovery codes", status, err)
 	}
 }
 

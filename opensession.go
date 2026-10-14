@@ -20,7 +20,7 @@ func (s *Service) OpenSession(ctx context.Context, q db.Querier, p Principal, au
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}
-	return s.openFor(ctx, q, p, aud, m, time.Time{})
+	return s.openFor(ctx, q, p, aud, m, time.Time{}, "")
 }
 
 var errNotFromSession = errors.New("authkit: OpenSessionFrom: the session is not the principal's, or is for another audience")
@@ -40,13 +40,13 @@ func (s *Service) OpenSessionFrom(ctx context.Context, q db.Querier, from uuid.U
 	if prev.Audience != string(aud) {
 		return Result{}, errNotFromSession
 	}
-	return s.openFor(ctx, q, p, aud, m, prev.AuthenticatedAt)
+	return s.openFor(ctx, q, p, aud, m, prev.AuthenticatedAt, FactorKind(prev.SecondFactor))
 }
 
-func (s *Service) openFor(ctx context.Context, q db.Querier, p Principal, aud Audience, m Meta, authAt time.Time) (Result, error) {
+func (s *Service) openFor(ctx context.Context, q db.Querier, p Principal, aud Audience, m Meta, authAt time.Time, factor FactorKind) (Result, error) {
 	m = m.clean()
 	now := s.now()
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: factor})
 	if err != nil {
 		return Result{}, err
 	}
@@ -57,7 +57,7 @@ func (s *Service) openFor(ctx context.Context, q db.Querier, p Principal, aud Au
 		}
 		return Result{Refusal: refusal.Err}, nil
 	}
-	return s.openSignedIn(ctx, q, SourceOpenSession, grant{p: p, aud: aud, adm: adm, m: m, now: now, authAt: authAt})
+	return s.openSignedIn(ctx, q, SourceOpenSession, grant{p: p, aud: aud, adm: adm, m: m, now: now, authAt: authAt, factor: factor})
 }
 
 type grant struct {
@@ -67,6 +67,7 @@ type grant struct {
 	m      Meta
 	now    time.Time
 	authAt time.Time
+	factor FactorKind
 }
 
 func (s *Service) openSignedIn(ctx context.Context, q db.Querier, source string, g grant) (Result, error) {
@@ -74,12 +75,12 @@ func (s *Service) openSignedIn(ctx context.Context, q db.Querier, source string,
 	if !g.authAt.IsZero() {
 		at = g.authAt
 	}
-	res, err := s.openSessionAt(ctx, q, g.p, g.aud, g.adm, g.m, g.now, at)
+	res, err := s.openSessionAt(ctx, q, g.p, g.aud, g.adm, g.m, g.now, at, g.factor)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := s.record(ctx, q, g.now, source, events.Event{PrincipalID: &g.p.ID, SessionID: &res.Session.ID, ScopeID: g.adm.ScopeID,
-		Audience: string(g.aud), Login: g.p.Login, Result: ResultSignedIn, IP: g.m.IP, UserAgent: g.m.UserAgent}); err != nil {
+		Audience: string(g.aud), Login: g.p.Login, Result: ResultSignedIn, IP: g.m.IP, UserAgent: g.m.UserAgent, SecondFactor: string(g.factor)}); err != nil {
 		return Result{}, err
 	}
 	return res, nil

@@ -93,4 +93,37 @@ CREATE POLICY auth_passkey_ceremonies_self ON auth_passkey_ceremonies FOR ALL
     USING (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid)
     WITH CHECK (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid);
 
+ALTER TABLE auth_second_factors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_second_factors FORCE  ROW LEVEL SECURITY;
+CREATE POLICY auth_second_factors_auth ON auth_second_factors FOR ALL
+    USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
+    WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
+CREATE POLICY auth_second_factors_self ON auth_second_factors FOR ALL
+    USING (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid)
+    WITH CHECK (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid);
+
+ALTER TABLE auth_recovery_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_recovery_codes FORCE  ROW LEVEL SECURITY;
+CREATE POLICY auth_recovery_codes_auth ON auth_recovery_codes FOR ALL
+    USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
+    WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
+CREATE POLICY auth_recovery_codes_self ON auth_recovery_codes FOR ALL
+    USING (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid)
+    WITH CHECK (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid);
+
+ALTER TABLE auth_second_step_challenges ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_second_step_challenges FORCE  ROW LEVEL SECURITY;
+CREATE POLICY auth_second_step_challenges_auth ON auth_second_step_challenges FOR ALL
+    USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
+    WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
+
+ALTER TABLE auth_email_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_email_codes FORCE  ROW LEVEL SECURITY;
+CREATE POLICY auth_email_codes_auth ON auth_email_codes FOR ALL
+    USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
+    WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
+CREATE POLICY auth_email_codes_self ON auth_email_codes FOR ALL
+    USING (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid)
+    WITH CHECK (principal_id = NULLIF(current_setting('app.user_id', true), '')::uuid);
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authkit_app;
