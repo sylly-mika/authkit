@@ -43,6 +43,9 @@ var (
 	ErrSignInToLink    = errors.New("oidc: sign in to the existing account, then link")
 	ErrIdentityUnknown = errors.New("oidc: no account holds this identity")
 	ErrIdentityTaken   = errors.New("oidc: the identity is linked already")
+	ErrLastCredential  = errors.New("oidc: the account would have no way to sign in")
+	ErrNotLinked       = errors.New("oidc: the provider is not linked")
+	ErrTicketUnknown   = errors.New("oidc: the sign-up ticket is unknown or ended")
 	ErrUnknownProvider = errors.New("oidc: no such provider")
 )
 
