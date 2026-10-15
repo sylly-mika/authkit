@@ -1,10 +1,11 @@
 package password
 
 import (
-	"fmt"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/sylly-mika/authkit/internal/pwerr"
 )
 
 // Policy bounds a new password by its length in characters.
@@ -17,18 +18,7 @@ type Policy struct {
 var DefaultPolicy = Policy{MinRunes: 10, MaxRunes: 256}
 
 // PolicyError is the refusal of a password the policy does not admit.
-type PolicyError struct {
-	MinRunes int
-	MaxRunes int
-	TooLong  bool
-}
-
-func (e PolicyError) Error() string {
-	if e.TooLong {
-		return fmt.Sprintf("authkit: a password has at most %d characters", e.MaxRunes)
-	}
-	return fmt.Sprintf("authkit: a password has at least %d characters", e.MinRunes)
-}
+type PolicyError = pwerr.PolicyError
 
 // Check refuses, as a PolicyError, a password whose NFC form is shorter or
 // longer than the policy allows.

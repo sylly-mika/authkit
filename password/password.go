@@ -16,6 +16,8 @@ import (
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/text/unicode/norm"
+
+	"github.com/sylly-mika/authkit/internal/pwerr"
 )
 
 // Params are argon2id's costs. Memory is in KiB.
@@ -31,7 +33,7 @@ type Params struct {
 var Default = Params{Memory: 19 * 1024, Time: 2, Threads: 1, SaltLen: 16, KeyLen: 32}
 
 var (
-	ErrBusy      = errors.New("authkit: too many password hashes at once")
+	ErrBusy      = pwerr.ErrBusy
 	ErrMalformed = errors.New("authkit: the stored hash is not an argon2id PHC string")
 )
 

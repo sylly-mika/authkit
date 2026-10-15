@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/sylly-mika/authkit/internal/events"
+	"github.com/sylly-mika/authkit/internal/pwerr"
 	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/onetime"
-	"github.com/sylly-mika/authkit/password"
 	"github.com/sylly-mika/authkit/session"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
@@ -26,7 +26,7 @@ var (
 	ErrInvalidToken  = bearer.ErrInvalid
 	ErrWrongAudience = bearer.ErrWrongAudience
 	ErrTokenUnknown  = onetime.ErrUnknown
-	ErrBusy          = password.ErrBusy
+	ErrBusy          = pwerr.ErrBusy
 )
 
 // ErrLocked refuses a login whose throttle is locked.
@@ -73,7 +73,7 @@ var (
 // Aliases of the sub-packages' types an app meets through the Service.
 type (
 	ErrTokenGone = onetime.ErrGone
-	PolicyError  = password.PolicyError
+	PolicyError  = pwerr.PolicyError
 	Claims       = bearer.Claims
 	Session      = session.Session
 	Event        = events.Event
