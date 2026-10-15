@@ -12,8 +12,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit"
+	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/authkittest/oidcfake"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/db/sqldb"
 	"github.com/sylly-mika/authkit/internal/kittest"
 	"github.com/sylly-mika/authkit/oidc"
 )
@@ -469,4 +471,228 @@ func TestLinkTaken(t *testing.T) {
 			t.Fatalf("spent link ceremonies = %d, want 1", n)
 		}
 	})
+}
+
+func TestUnlinkLastCredential(t *testing.T) {
+	t.Run("only", func(t *testing.T) {
+		e := acctSetup(t)
+		id, cl := e.oidcOnly("ada@example.invalid", "g-ada")
+		if err := e.unlink(cl, "google"); !errors.Is(err, oidc.ErrLastCredential) {
+			t.Fatalf("unlink the only identity = %v, want ErrLastCredential", err)
+		}
+		if n := e.identityRows(id); n != 1 {
+			t.Fatalf("identities = %d, want 1", n)
+		}
+		if n := e.sessions(id); n != 1 {
+			t.Fatalf("sessions = %d, want 1", n)
+		}
+	})
+	t.Run("identity", func(t *testing.T) {
+		e := acctSetup(t)
+		id, cl := e.oidcOnly("ada@example.invalid", "g-ada")
+		e.addIdentity(id, "apple", "a-1", "")
+		if err := e.unlink(cl, "google"); err != nil {
+			t.Fatalf("unlink google = %v", err)
+		}
+		if err := e.unlink(cl, "apple"); !errors.Is(err, oidc.ErrLastCredential) {
+			t.Fatalf("unlink the last identity = %v, want ErrLastCredential", err)
+		}
+		got := e.identities(id)
+		if len(got) != 1 || got[0].Provider != "apple" {
+			t.Fatalf("identities = %+v, want [apple]", got)
+		}
+	})
+	t.Run("passkey", func(t *testing.T) {
+		e := acctSetup(t)
+		id, cl := e.oidcOnly("ada@example.invalid", "g-ada")
+		e.w.SeedPasskey(id, authkittest.NewAuthenticator("localhost", kittest.StaffOrigin))
+		if err := e.unlink(cl, "google"); err != nil {
+			t.Fatalf("unlink with a passkey = %v, want nil", err)
+		}
+		if n := e.identityRows(id); n != 0 {
+			t.Fatalf("identities = %d, want 0", n)
+		}
+	})
+	t.Run("password", func(t *testing.T) {
+		e := acctSetup(t)
+		ada := e.w.User("ada@example.invalid", "a long password 1")
+		e.addIdentity(ada, "google", "g-ada", "")
+		cl := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+		if err := e.unlink(cl, "google"); err != nil {
+			t.Fatalf("unlink with a password = %v, want nil", err)
+		}
+		if n := e.identityRows(ada); n != 0 {
+			t.Fatalf("identities = %d, want 0", n)
+		}
+	})
+}
+
+func TestUnlinkRevokesOthers(t *testing.T) {
+	e := acctSetup(t)
+	ada := e.w.User("ada@example.invalid", "a long password 1")
+	e.addIdentity(ada, "google", "g-ada", "ada.g@example.invalid")
+	cl1 := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+	cl2 := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+	if err := e.unlink(cl1, "google"); err != nil {
+		t.Fatalf("unlink = %v", err)
+	}
+	if n := e.w.Count("SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL", cl1.SessionID); n != 1 {
+		t.Fatalf("the unlinking session is open = %d, want 1", n)
+	}
+	if n := e.w.Count("SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoke_reason = 'identity_removed'", cl2.SessionID); n != 1 {
+		t.Fatalf("the other session revoked with identity_removed = %d, want 1", n)
+	}
+	if n := e.identityRows(ada); n != 0 {
+		t.Fatalf("identities = %d, want 0", n)
+	}
+	if n := e.w.Count("SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'identity_unlinked' AND source = 'oidc'", ada); n != 1 {
+		t.Fatalf("identity_unlinked events = %d, want 1", n)
+	}
+	res, _ := e.signIn("google", e.gUser("g-ada", "ada.g@example.invalid"))
+	if !errors.Is(res.Refusal, oidc.ErrIdentityUnknown) || res.Session != nil {
+		t.Fatalf("sign-in after unlink = %+v; want ErrIdentityUnknown and no session", res)
+	}
+}
+
+func TestUnlinkRefusals(t *testing.T) {
+	e := acctSetup(t)
+	ada := e.w.User("ada@example.invalid", "a long password 1")
+	e.addIdentity(ada, "google", "g-ada", "ada.g@example.invalid")
+	cl := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+	if err := e.unlink(cl, "apple"); !errors.Is(err, oidc.ErrNotLinked) {
+		t.Fatalf("unlink an unlinked provider = %v, want ErrNotLinked", err)
+	}
+	if err := e.unlink(cl, "nope"); !errors.Is(err, oidc.ErrNotLinked) {
+		t.Fatalf("unlink an unknown provider = %v, want ErrNotLinked", err)
+	}
+	e.w.Clock.Advance(5*time.Minute + time.Second)
+	if err := e.unlink(cl, "google"); !errors.Is(err, authkit.ErrReauthRequired) {
+		t.Fatalf("unlink with a stale session = %v, want ErrReauthRequired", err)
+	}
+	if n := e.identityRows(ada); n != 1 {
+		t.Fatalf("identities = %d, want 1", n)
+	}
+	if n := e.w.Count("SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'identity_unlinked'", ada); n != 0 {
+		t.Fatalf("identity_unlinked events = %d, want 0", n)
+	}
+}
+
+func TestUnlinkConcurrent(t *testing.T) {
+	e := acctSetup(t)
+	id, cl := e.oidcOnly("ada@example.invalid", "g-ada")
+	e.addIdentity(id, "apple", "a-1", "")
+	ctx := e.w.Ctx
+	tx1, err := e.w.D.App.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx1.Rollback()
+	if err := e.m.Unlink(ctx, sqldb.Tx(tx1), cl, "google", acctMeta); err != nil {
+		t.Fatalf("first unlink = %v", err)
+	}
+	second := make(chan error, 1)
+	go func() { second <- e.unlink(cl, "apple") }()
+	e.w.D.WaitForLockWaiters(e.w.T, 1)
+	if err := tx1.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; !errors.Is(err, oidc.ErrLastCredential) {
+		t.Fatalf("second unlink = %v, want ErrLastCredential", err)
+	}
+	got := e.identities(id)
+	if len(got) != 1 || got[0].Provider != "apple" {
+		t.Fatalf("identities = %+v, want [apple]", got)
+	}
+}
+
+func TestResetThenOIDCIsUnknown(t *testing.T) {
+	e := acctSetup(t)
+	ada := e.w.User("ada@example.invalid", "a long password 1")
+	e.addIdentity(ada, "google", "g-ada", "ada.g@example.invalid")
+	res, _ := e.signIn("google", e.gUser("g-ada", "ada.g@example.invalid"))
+	if res.Session == nil || res.Principal.ID != ada {
+		t.Fatalf("sign-in before the reset = %+v; want a session for %v", res, ada)
+	}
+	ctx := e.w.Ctx
+	var reset authkit.Result
+	if err := e.w.D.InAuthTx(ctx, func(q db.Querier) error {
+		var err error
+		reset, err = e.w.Svc.Password.RequestReset(ctx, q, "staff", "ada@example.invalid")
+		return err
+	}); err != nil || reset.TokenID == nil {
+		t.Fatalf("request reset = %+v, %v; want a token", reset, err)
+	}
+	var raw string
+	if err := e.w.D.InGlobalSystemTx(ctx, func(q db.Querier) error {
+		m, err := e.w.Svc.OneTime().Mint(ctx, q, *reset.TokenID)
+		raw = m.Raw
+		return err
+	}); err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if err := e.w.D.InAuthTx(ctx, func(q db.Querier) error {
+		res, err := e.w.Svc.Password.CompleteReset(ctx, q, "staff", raw, "another long password", acctMeta)
+		if err == nil && res.Refusal != nil {
+			return res.Refusal
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("complete reset: %v", err)
+	}
+	res, su := e.signIn("google", e.gUser("g-ada", "ada.g@example.invalid"))
+	if !errors.Is(res.Refusal, oidc.ErrIdentityUnknown) || su == nil || res.Session != nil {
+		t.Fatalf("sign-in after the reset = %+v, sign-up %+v; want ErrIdentityUnknown and no session", res, su)
+	}
+	if n := e.identityRows(ada); n != 0 {
+		t.Fatalf("identities = %d, want 0", n)
+	}
+}
+
+func TestAccountNeedsTx(t *testing.T) {
+	t.Run("sign-up", func(t *testing.T) {
+		e := acctSetup(t)
+		ada := e.w.User("ada@example.invalid", "a long password 1")
+		_, su := e.signIn("google", e.gUser("g-bare", "bare@example.invalid"))
+		bare := sqldb.Conn(e.w.Pinned(ada))
+		if _, err := e.m.SignUp(e.w.Ctx, bare, su.Ticket, ada, acctAud, acctMeta); !errors.Is(err, db.ErrTxRequired) {
+			t.Fatalf("SignUp on a bare connection = %v, want ErrTxRequired", err)
+		}
+		if _, err := e.ticket(su.Ticket); err != nil {
+			t.Fatalf("the ticket after a refused SignUp = %v, want still open", err)
+		}
+	})
+	t.Run("link", func(t *testing.T) {
+		e := acctSetup(t)
+		ada := e.w.User("ada@example.invalid", "a long password 1")
+		cl := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+		bare := sqldb.Conn(e.w.Pinned(ada))
+		if _, err := e.m.Link(e.w.Ctx, bare, cl, "google", acctMeta); !errors.Is(err, db.ErrTxRequired) {
+			t.Fatalf("Link on a bare connection = %v, want ErrTxRequired", err)
+		}
+		if n := e.w.Count("SELECT count(*) FROM auth_ceremonies WHERE kind = 'link'"); n != 0 {
+			t.Fatalf("link ceremonies = %d, want 0", n)
+		}
+	})
+	t.Run("unlink", func(t *testing.T) {
+		e := acctSetup(t)
+		ada := e.w.User("ada@example.invalid", "a long password 1")
+		e.addIdentity(ada, "google", "g-ada", "")
+		cl := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+		bare := sqldb.Conn(e.w.Pinned(ada))
+		if err := e.m.Unlink(e.w.Ctx, bare, cl, "google", acctMeta); !errors.Is(err, db.ErrTxRequired) {
+			t.Fatalf("Unlink on a bare connection = %v, want ErrTxRequired", err)
+		}
+		if n := e.identityRows(ada); n != 1 {
+			t.Fatalf("identities = %d, want 1", n)
+		}
+	})
+	e := acctSetup(t)
+	ada := e.w.User("ada@example.invalid", "a long password 1")
+	bare := sqldb.Conn(e.w.Pinned(ada))
+	if _, err := e.m.Ticket(e.w.Ctx, bare, "junk"); !errors.Is(err, oidc.ErrTicketUnknown) {
+		t.Fatalf("Ticket on a bare connection = %v, want ErrTicketUnknown", err)
+	}
+	if _, err := e.m.Identities(e.w.Ctx, bare, ada); err != nil {
+		t.Fatalf("Identities on a bare connection = %v, want nil", err)
+	}
 }

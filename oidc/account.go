@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -105,7 +106,68 @@ func (m *Module) Link(ctx context.Context, q db.Querier, cl *authkit.Claims, pro
 
 // Unlink removes the caller's identity at provider and ends the caller's other sessions.
 func (m *Module) Unlink(ctx context.Context, q db.Querier, cl *authkit.Claims, provider string, meta authkit.Meta) error {
-	return errors.ErrUnsupported
+	q = m.core.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return err
+	}
+	now := m.core.Now()
+	// WHY: this lock orders Unlink against passkey Delete, ChangePassword and CompleteReset; without it two Unlinks from two sessions deadlock in RevokeOthers.
+	var one int
+	err := q.QueryRow(ctx, `SELECT 1 FROM auth_credentials WHERE principal_id = $1 FOR UPDATE`, cl.Subject).Scan(&one)
+	hasPassword := err == nil
+	if err != nil && !errors.Is(err, db.ErrNoRows) {
+		return err
+	}
+	// WHY: the identity rows are locked here, before the checks, so a second Unlink waits and then decides on the rows that are left.
+	providers, err := lockIdentities(ctx, q, cl.Subject)
+	if err != nil {
+		return err
+	}
+	sess, ok, err := m.core.Fresh(ctx, q, cl, m.rules.Reauth, now)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return authkit.ErrReauthRequired
+	}
+	if !slices.Contains(providers, provider) {
+		return ErrNotLinked
+	}
+	if len(providers) == 1 && !hasPassword {
+		var passkeys int
+		if err := q.QueryRow(ctx, `SELECT count(*) FROM auth_passkeys WHERE principal_id = $1`, cl.Subject).Scan(&passkeys); err != nil {
+			return err
+		}
+		if passkeys == 0 {
+			return ErrLastCredential
+		}
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM auth_identities WHERE principal_id = $1 AND provider = $2`, cl.Subject, provider); err != nil {
+		return err
+	}
+	if err := m.core.RevokeOthers(ctx, q, cl.Subject, cl.SessionID, authkit.ReasonIdentityRemoved, now); err != nil {
+		return err
+	}
+	m2 := meta.Clean()
+	return m.core.Record(ctx, q, authkit.SourceOIDC, authkit.Event{At: now, PrincipalID: &cl.Subject, SessionID: &cl.SessionID, ScopeID: sess.ScopeID,
+		Audience: cl.Audience, Result: authkit.ResultIdentityUnlinked, IP: m2.IP, UserAgent: m2.UserAgent})
+}
+
+func lockIdentities(ctx context.Context, q db.Querier, principal uuid.UUID) ([]string, error) {
+	rows, err := q.Query(ctx, `SELECT provider FROM auth_identities WHERE principal_id = $1 ORDER BY provider FOR UPDATE`, principal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // Identities lists the principal's linked provider identities, oldest first.
