@@ -22,7 +22,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/internal/ceremony"
 	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/factor"
 	"github.com/sylly-mika/authkit/internal/throttle"
@@ -286,7 +285,8 @@ func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 			return err
 		}
 	}
-	if _, err := ceremony.Prune(ctx, q, now.Add(-ceremonyRetention)); err != nil {
+	// WHY: the same DELETE as ceremony.Prune, so the core does not import the passkey ceremony package.
+	if _, err := q.Exec(ctx, `DELETE FROM auth_passkey_ceremonies WHERE expires_at < $1`, now.Add(-ceremonyRetention)); err != nil {
 		return err
 	}
 	if _, err := factor.PruneChallenges(ctx, q, now.Add(-ceremonyRetention)); err != nil {
