@@ -19,7 +19,7 @@ type Sessions interface {
 	AuthenticateSession(ctx context.Context, q db.Querier, aud authkit.Audience, raw string, m authkit.Meta) (authkit.Result, error)
 }
 
-// HashSlots is what HashSlot needs; *authkit.Service implements it.
+// HashSlots is what HashSlot needs; *password.Module implements it.
 type HashSlots interface {
 	AcquireHashSlot(ctx context.Context) (context.Context, func(), authkit.Result, error)
 }

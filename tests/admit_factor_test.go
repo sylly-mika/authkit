@@ -172,7 +172,7 @@ func TestPasskeyLoginRecordsThePasskeyFactor(t *testing.T) {
 }
 
 func TestChangePasswordRevokingAllKeepsTheSecondFactor(t *testing.T) {
-	w := withFactorClaim(newWorld(t, func(c *kittest.Rules) { c.RevokeOnPasswordChange = authkit.RevokeAll }))
+	w := withFactorClaim(newWorld(t, func(c *kittest.Rules) { c.Password.RevokeOnPasswordChange = authkit.RevokeAll }))
 	login := "ada@example.invalid"
 	id := w.User(login, pw)
 	res := w.SignIn(login, pw)

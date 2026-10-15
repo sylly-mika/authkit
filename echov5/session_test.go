@@ -27,21 +27,26 @@ type sessionFixture struct {
 	p     *authkittest.Principals
 	clock *authkittest.Clock
 	svc   *authkit.Service
+	pw    *password.Module
 	txs   int
 }
 
-func sessionSetup(t *testing.T, tweak func(*authkit.Config)) *sessionFixture {
+func sessionSetup(t *testing.T, tweak func(*password.Config)) *sessionFixture {
 	t.Helper()
 	f := &sessionFixture{d: authkittest.NewDB(t), p: authkittest.NewPrincipals(), clock: authkittest.NewClock()}
-	cfg := authkit.Config{Transport: authkit.TransportSession, Hashing: cheap, Clock: f.clock, Rand: authkittest.Rand(5)}
+	pwc := password.Config{Hashing: cheap}
+	cfg := authkit.Config{Transport: authkit.TransportSession, Clock: f.clock, Rand: authkittest.Rand(5)}
 	if tweak != nil {
-		tweak(&cfg)
+		tweak(&pwc)
 	}
 	svc, err := authkit.New(cfg, f.p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.svc = svc
+	if f.pw, err = password.New(svc, pwc); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 
@@ -61,7 +66,7 @@ func (f *sessionFixture) signIn(t *testing.T) (uuid.UUID, authkit.Result) {
 	var res authkit.Result
 	if err := f.d.InAuthTx(context.Background(), func(q db.Querier) error {
 		var err error
-		res, err = f.svc.Login(context.Background(), q, "admin", "ada@example.invalid", "the right password", authkit.Meta{})
+		res, err = f.pw.Login(context.Background(), q, "admin", "ada@example.invalid", "the right password", authkit.Meta{})
 		return err
 	}); err != nil || res.Refusal != nil {
 		t.Fatalf("sign in: %v %v", err, res.Refusal)
@@ -204,12 +209,12 @@ func TestRequireOriginRefusesAForeignMutation(t *testing.T) {
 }
 
 func TestHashSlotHoldsASlotForTheRequest(t *testing.T) {
-	f := sessionSetup(t, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
+	f := sessionSetup(t, func(c *password.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
 	f.signIn(t)
 	login := func(c *echo.Context) error {
 		ctx := c.Request().Context()
 		return f.d.InAuthTx(ctx, func(q db.Querier) error {
-			res, err := f.svc.Login(ctx, q, "admin", "ada@example.invalid", "the right password", authkit.Meta{})
+			res, err := f.pw.Login(ctx, q, "admin", "ada@example.invalid", "the right password", authkit.Meta{})
 			if err == nil && res.Refusal != nil {
 				return res.Refusal
 			}
@@ -217,14 +222,14 @@ func TestHashSlotHoldsASlotForTheRequest(t *testing.T) {
 		})
 	}
 	req := httptest.NewRequest(http.MethodPost, "/admin/auth/login", nil)
-	if _, err := serve(req, []echo.MiddlewareFunc{echov5.HashSlot(f.svc)}, login); err != nil {
+	if _, err := serve(req, []echo.MiddlewareFunc{echov5.HashSlot(f.pw)}, login); err != nil {
 		t.Fatalf("a login under HashSlot with a ceiling of one = %v", err)
 	}
-	_, release, res, err := f.svc.AcquireHashSlot(context.Background())
+	_, release, res, err := f.pw.AcquireHashSlot(context.Background())
 	if err != nil || res.Refusal != nil {
 		t.Fatalf("the slot was not released after the request: %v, %v", res.Refusal, err)
 	}
-	if _, err := serve(req, []echo.MiddlewareFunc{echov5.HashSlot(f.svc)}, func(*echo.Context) error {
+	if _, err := serve(req, []echo.MiddlewareFunc{echov5.HashSlot(f.pw)}, func(*echo.Context) error {
 		t.Error("a request reached the handler with the ceiling full")
 		return nil
 	}); err != authkit.ErrBusy {

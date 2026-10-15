@@ -25,7 +25,7 @@ var regOrigins = map[authkit.Audience][]string{"staff": {kittest.StaffOrigin}, "
 func regWorld(t *testing.T, origins map[authkit.Audience][]string) *world {
 	return newWorld(t, func(c *kittest.Rules) {
 		c.Passkeys = authkit.PasskeyRules{RPID: "localhost", Origins: origins, CeremonyTTL: 2 * time.Minute, Reauth: 5 * time.Minute, Max: 10}
-		c.RevokeOnPasswordChange = authkit.RevokeOthers
+		c.Password.RevokeOnPasswordChange = authkit.RevokeOthers
 	})
 }
 
@@ -514,7 +514,7 @@ func TestChangingThePasswordRestartsTheReauthWindow(t *testing.T) {
 	c := w.Claims(res)
 	w.Clock.Advance(6 * time.Minute)
 	changed := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ChangePassword(w.Ctx, q, c, "the right password", "another password", authkit.Meta{})
+		return w.Svc.Password.ChangePassword(w.Ctx, q, c, "the right password", "another password", authkit.Meta{})
 	})
 	if changed.Refusal != nil || changed.Session == nil || changed.Session.ID != c.SessionID {
 		t.Fatalf("change password: refusal %v, the session was kept %v", changed.Refusal, changed.Session != nil && changed.Session.ID == c.SessionID)

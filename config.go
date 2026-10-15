@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/password"
 )
 
 // Transport is how a Service's sessions travel. The zero value is Bearer.
@@ -121,26 +120,17 @@ type Config struct {
 	// Deprecated: RefreshTTL is Session.IdleTTL's v0.1 name. When it is set it wins.
 	RefreshTTL    time.Duration
 	RefreshTTLFor map[Audience]time.Duration // a per-audience IdleTTL
-	ResetTTL      time.Duration
-	ResetFloor    time.Duration
-	Reset         ResetRules
-	Password      password.Policy
-	Hashing       password.Params
 	Throttle      Throttle
-	// RevokeOnPasswordChange: RevokeOthers (zero) or RevokeAll.
-	RevokeOnPasswordChange RevokeOnChange
-	Events                 EventRules
+	Events        EventRules
 	// EventRetention is how long Prune keeps auth_events rows. Zero is 90
 	// days; negative keeps them forever.
 	EventRetention time.Duration
 	// OnEvent runs straight after authkit records an event, on the same
 	// querier, so in the same transaction. Its error fails the method. Nil is none.
-	OnEvent         func(ctx context.Context, q db.Querier, e Event) error
-	HashConcurrency int
-	HashWait        time.Duration
-	ReuseGrace      time.Duration
-	Clock           Clock
-	Rand            io.Reader
+	OnEvent    func(ctx context.Context, q db.Querier, e Event) error
+	ReuseGrace time.Duration
+	Clock      Clock
+	Rand       io.Reader
 	// Passkeys configure passkey sign-in; the zero value leaves passkeys off.
 	Passkeys PasskeyRules
 	// SecondFactors configure two-factor sign-in; the zero value leaves it off.
@@ -160,10 +150,7 @@ func withDefaults(c Config) Config {
 	def(&c.Session.IdleTTL, 30*time.Minute)
 	def(&c.Session.AbsoluteTTL, 12*time.Hour)
 	def(&c.Session.RotateEvery, 15*time.Minute)
-	def(&c.ResetTTL, time.Hour)
-	def(&c.ResetFloor, 500*time.Millisecond)
 	def(&c.EventRetention, 90*24*time.Hour)
-	def(&c.HashWait, 2*time.Second)
 	def(&c.ReuseGrace, 30*time.Second)
 	if c.Passkeys.RPName == "" {
 		c.Passkeys.RPName = "authkit"
@@ -190,20 +177,11 @@ func withDefaults(c Config) Config {
 	if c.SecondFactors.RecoveryCodes == 0 {
 		c.SecondFactors.RecoveryCodes = 10
 	}
-	if c.Password == (password.Policy{}) {
-		c.Password = password.DefaultPolicy
-	}
-	if c.Hashing == (password.Params{}) {
-		c.Hashing = password.Default
-	}
 	if c.Throttle.Failures == 0 {
 		c.Throttle.Failures = 5
 	}
 	def(&c.Throttle.Window, 15*time.Minute)
 	def(&c.Throttle.Lockout, 15*time.Minute)
-	if c.HashConcurrency == 0 {
-		c.HashConcurrency = 4
-	}
 	if c.Clock == nil {
 		c.Clock = systemClock{}
 	}
@@ -229,19 +207,13 @@ func (c Config) check() error {
 	if t := c.Throttle; t.Failures < 1 || t.Window <= 0 || t.Lockout <= 0 {
 		return fmt.Errorf("authkit: Config.Throttle needs a positive limit, window and lockout: %+v", t)
 	}
-	if p := c.Password; p.MinRunes < 1 || p.MaxRunes < p.MinRunes {
-		return fmt.Errorf("authkit: Config.Password needs 1 <= MinRunes <= MaxRunes: %+v", p)
-	}
 	if c.RefreshTTL < 0 {
 		return fmt.Errorf("authkit: Config.RefreshTTL must be positive, not %v", c.RefreshTTL)
-	}
-	if c.RevokeOnPasswordChange != RevokeOthers && c.RevokeOnPasswordChange != RevokeAll {
-		return fmt.Errorf("authkit: Config.RevokeOnPasswordChange %d is neither RevokeOthers nor RevokeAll", c.RevokeOnPasswordChange)
 	}
 	for _, d := range []struct {
 		field string
 		v     time.Duration
-	}{{"Session.IdleTTL", c.Session.IdleTTL}, {"ResetTTL", c.ResetTTL}, {"ResetFloor", c.ResetFloor}, {"HashWait", c.HashWait}, {"ReuseGrace", c.ReuseGrace}} {
+	}{{"Session.IdleTTL", c.Session.IdleTTL}, {"ReuseGrace", c.ReuseGrace}} {
 		if d.v <= 0 {
 			return fmt.Errorf("authkit: Config.%s must be positive, not %v", d.field, d.v)
 		}

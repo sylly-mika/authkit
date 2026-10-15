@@ -46,10 +46,10 @@ func TestEveryEventNamesItsSource(t *testing.T) {
 	w.changePassword(conn, w.Claims(first), "the old password", "the new password")
 	w.logout(conn, w.Claims(first))
 	w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.SetPassword(w.Ctx, q, invited, "staff", "a first password", authkit.Meta{})
+		return w.Svc.Password.SetPassword(w.Ctx, q, invited, "staff", "a first password", authkit.Meta{})
 	})
 	w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.VerifyPassword(w.Ctx, q, invited, "staff", "a wrong password", authkit.Meta{})
+		return w.Svc.Password.VerifyPassword(w.Ctx, q, invited, "staff", "a wrong password", authkit.Meta{})
 	})
 	w.completeReset(w.mintLink(*w.requestReset("ada@example.invalid").TokenID), "the reset password")
 	third := w.SignIn("ada@example.invalid", "the reset password")
@@ -140,7 +140,7 @@ func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 	}
 	rollback := errors.New("the handler failed")
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-		if _, err := w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{}); err != nil {
+		if _, err := w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{}); err != nil {
 			return err
 		}
 		return rollback
@@ -159,7 +159,7 @@ func TestAnOnEventErrorFailsTheMethod(t *testing.T) {
 	w.User("ada@example.invalid", "the right password")
 	for _, pw := range []string{"the right password", "a wrong password"} {
 		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-			_, err := w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", pw, authkit.Meta{})
+			_, err := w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", pw, authkit.Meta{})
 			return err
 		})
 		if !errors.Is(err, down) {

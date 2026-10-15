@@ -177,9 +177,8 @@ func (c *Core) signInReset(ctx context.Context, q db.Querier, a *Attempt, p Prin
 }
 
 // WHY: Admit runs before any write, so a refusal leaves the credential and the sessions as they were.
-func (c *Core) Reopen(ctx context.Context, q db.Querier, sess uuid.UUID, p Principal, src string, m Meta, commit func(ctx context.Context, q db.Querier) error) (Result, error) {
+func (c *Core) Reopen(ctx context.Context, q db.Querier, sess uuid.UUID, p Principal, src string, m Meta, now time.Time, commit func(ctx context.Context, q db.Querier) error) (Result, error) {
 	s := c.s
-	now := s.now()
 	open, err := session.LockOpen(ctx, q, sess, p.ID, now)
 	if errors.Is(err, db.ErrNoRows) {
 		return Result{Refusal: ErrSessionEnded}, nil

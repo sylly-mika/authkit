@@ -92,7 +92,7 @@ func TestARefusedLoginCommitsItsThrottleAndEvent(t *testing.T) {
 	var res authkit.Result
 	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		res, err = w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", "a wrong password", authkit.Meta{})
+		res, err = w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", "a wrong password", authkit.Meta{})
 		return err
 	}); err != nil || !errors.Is(res.Refusal, authkit.ErrInvalidCredentials) {
 		t.Fatalf("Login = %+v, %v", res, err)
@@ -171,7 +171,7 @@ func TestANilErrorRefusalIsAnError(t *testing.T) {
 	var res authkit.Result
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		res, err = w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{})
+		res, err = w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{})
 		return err
 	})
 	if err == nil {
@@ -185,7 +185,7 @@ func TestLoginRefusesReservedAppClaims(t *testing.T) {
 		w.User("ada@example.invalid", "the right password")
 		w.P.SetClaim(name, "x")
 		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-			_, err := w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{})
+			_, err := w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{})
 			return err
 		})
 		if !errors.Is(err, bearer.ErrReservedClaim) || w.Count(`SELECT count(*) FROM auth_sessions`) != 0 {
@@ -204,7 +204,7 @@ func TestReservedClaimsFailBeforeTheSessionRow(t *testing.T) {
 	}
 	defer tx.Rollback()
 	q := sqldb.Tx(tx)
-	if _, err := w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{}); !errors.Is(err, bearer.ErrReservedClaim) {
+	if _, err := w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{}); !errors.Is(err, bearer.ErrReservedClaim) {
 		t.Fatalf("Login = %v, want ErrReservedClaim", err)
 	}
 	var n int
@@ -217,7 +217,7 @@ func TestLoginRehashesWhenTheParametersRise(t *testing.T) {
 	w := newWorld(t)
 	id := w.User("ada@example.invalid", "the right password")
 	stronger := w.Cfg
-	stronger.Hashing.Time = 2
+	stronger.Password.Hashing.Time = 2
 	w.Svc = w.Build(stronger)
 	w.SignIn("ada@example.invalid", "the right password")
 	var hash string
@@ -261,7 +261,7 @@ func TestLoginRefusesNotErrsOnNUL(t *testing.T) {
 		t.Fatalf("results = %v, want the NUL login's bad_password", w.Results(id))
 	}
 	res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password",
+		return w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password",
 			authkit.Meta{IP: "192.0.2.1\x00", UserAgent: "authkit-\xfftest\x00"})
 	})
 	if res.Refusal != nil || res.Session == nil || res.Session.IP != "192.0.2.1" || res.Session.UserAgent != "authkit-test" {
@@ -276,7 +276,7 @@ func TestLoginRefusesNotErrsOnNUL(t *testing.T) {
 func TestLoginNeedsATransaction(t *testing.T) {
 	w := newWorld(t)
 	conn := w.Pinned(w.User("ada@example.invalid", "the right password"))
-	if _, err := w.Svc.Login(w.Ctx, sqldb.Conn(conn), "staff", "ada@example.invalid", "the right password", authkit.Meta{}); !errors.Is(err, db.ErrTxRequired) {
+	if _, err := w.Svc.Password.Login(w.Ctx, sqldb.Conn(conn), "staff", "ada@example.invalid", "the right password", authkit.Meta{}); !errors.Is(err, db.ErrTxRequired) {
 		t.Fatalf("Login on a bare connection = %v, want db.ErrTxRequired", err)
 	}
 }

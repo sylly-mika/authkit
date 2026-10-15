@@ -28,7 +28,6 @@ import (
 	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/migrations"
 	"github.com/sylly-mika/authkit/onetime"
-	"github.com/sylly-mika/authkit/password"
 	"github.com/sylly-mika/authkit/session"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
@@ -165,11 +164,9 @@ func (r Result) Claims() *Claims {
 type Service struct {
 	cfg        Config
 	principals Principals
-	hasher     *password.Hasher
 	codec      *bearer.Codec
 	links      *onetime.Store
 	rps        map[Audience]*webauthn.WebAuthn
-	onVerify   func()
 	mu         sync.Mutex
 	attached   map[string]bool
 	verifier   SecondStepVerifier
@@ -187,15 +184,11 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
-	hasher, err := password.NewHasher(cfg.Hashing, cfg.HashConcurrency, cfg.HashWait, cfg.Rand)
-	if err != nil {
-		return nil, err
-	}
 	rps, err := relyingParties(cfg.Passkeys)
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{cfg: cfg, principals: principals, hasher: hasher, rps: rps, attached: map[string]bool{}}
+	s := &Service{cfg: cfg, principals: principals, rps: rps, attached: map[string]bool{}}
 	s.links = onetime.New(s.now, cfg.Rand)
 	if len(cfg.SecondFactors.Key) > 0 {
 		s.verifier = factorVerifier{s: s}
@@ -251,13 +244,6 @@ func (s *Service) Codec() *bearer.Codec { return s.codec }
 
 // OneTime is the one-time link store for the app's own purposes (invites).
 func (s *Service) OneTime() *onetime.Store { return s.links }
-
-// ResetFloor is how long a reset request answers at the least (PadSince).
-func (s *Service) ResetFloor() time.Duration { return s.cfg.ResetFloor }
-
-// CheckPassword applies the password policy alone, for an app that validates
-// before it writes.
-func (s *Service) CheckPassword(pw string) error { return s.cfg.Password.Check(pw) }
 
 // CheckSchema refuses a database whose auth_schema.version is older than this
 // library's migrations. The app calls it once at startup.
@@ -317,4 +303,13 @@ func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 	}
 	_, err := s.links.Prune(ctx, q, now.Add(-retention))
 	return err
+}
+
+// PadSince sleeps until floor has passed since start. The app's
+// reset-request handler calls it after its transaction commits, so a known
+// and an unknown email take as long.
+func PadSince(start time.Time, floor time.Duration) {
+	if d := floor - time.Since(start); d > 0 {
+		time.Sleep(d)
+	}
 }

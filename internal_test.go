@@ -9,14 +9,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/password"
 )
-
-func SetVerifyHook(s *Service, f func()) { s.onVerify = f }
-
-func HoldHashSlot(ctx context.Context, s *Service) (release func(), err error) {
-	return s.hasher.Acquire(ctx)
-}
 
 func PasskeyRP(s *Service, aud Audience) (*webauthn.WebAuthn, bool, error) {
 	return s.relyingParty(aud)
@@ -58,10 +51,9 @@ func TestWithDefaultsAreTheSpecs(t *testing.T) {
 	c := withDefaults(Config{})
 	if c.Transport != TransportBearer || c.AccessTTL != 15*time.Minute || c.RefreshTTL != 0 ||
 		c.Session != (SessionRules{IdleTTL: 30 * time.Minute, AbsoluteTTL: 12 * time.Hour, RotateEvery: 15 * time.Minute}) ||
-		c.ResetTTL != time.Hour || c.ResetFloor != 500*time.Millisecond || c.HashWait != 2*time.Second || c.ReuseGrace != 30*time.Second ||
-		c.HashConcurrency != 4 || c.Password != password.DefaultPolicy || c.Hashing != password.Default ||
+		c.ReuseGrace != 30*time.Second ||
 		c.Throttle != (Throttle{Failures: 5, Window: 15 * time.Minute, Lockout: 15 * time.Minute}) ||
-		c.RevokeOnPasswordChange != RevokeOthers || c.Events != (EventRules{}) || c.Reset != (ResetRules{}) ||
+		c.Events != (EventRules{}) ||
 		c.EventRetention != 90*24*time.Hour || c.OnEvent != nil || c.Clock == nil || c.Rand == nil {
 		t.Errorf("withDefaults(Config{}) = %+v, want spec §3.1's values", c)
 	}

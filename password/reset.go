@@ -1,14 +1,13 @@
-package authkit
+package password
 
 import (
 	"context"
 	"errors"
 	"time"
 
+	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/events"
-	"github.com/sylly-mika/authkit/internal/throttle"
-	"github.com/sylly-mika/authkit/session"
 )
 
 const (
@@ -22,41 +21,41 @@ const (
 // Reset.MayCreateCredential, writes nothing and has no TokenID.
 // The app's handler answers alike either way and pads with PadSince after
 // its transaction commits.
-func (s *Service) RequestReset(ctx context.Context, q db.Querier, aud Audience, login string) (Result, error) {
+func (s *Module) RequestReset(ctx context.Context, q db.Querier, aud authkit.Audience, login string) (authkit.Result, error) {
 	if err := db.RequireTx(q); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	p, err := s.principals.Lookup(ctx, q, Normalize(login), aud)
-	if errors.Is(err, ErrUnknownLogin) {
-		return Result{}, nil
+	p, err := s.principals.Lookup(ctx, q, authkit.Normalize(login), aud)
+	if errors.Is(err, authkit.ErrUnknownLogin) {
+		return authkit.Result{}, nil
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !s.cfg.Reset.MayCreateCredential {
 		_, has, err := credentialOf(ctx, q, p.ID)
 		if err != nil {
-			return Result{}, err
+			return authkit.Result{}, err
 		}
 		if !has {
-			return Result{Principal: p}, nil
+			return authkit.Result{Principal: p}, nil
 		}
 	}
-	if err := s.links.Lock(ctx, q, PurposeReset, p.ID); err != nil {
-		return Result{}, err
+	if err := s.links.Lock(ctx, q, authkit.PurposeReset, p.ID); err != nil {
+		return authkit.Result{}, err
 	}
-	n, err := s.links.CreatedSince(ctx, q, PurposeReset, p.ID, s.now().Add(-resetCapWindow))
+	n, err := s.links.CreatedSince(ctx, q, authkit.PurposeReset, p.ID, s.now().Add(-resetCapWindow))
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if n >= resetCap {
-		return Result{Principal: p}, nil
+		return authkit.Result{Principal: p}, nil
 	}
-	id, err := s.links.Create(ctx, q, PurposeReset, p.ID, s.cfg.ResetTTL)
+	id, err := s.links.Create(ctx, q, authkit.PurposeReset, p.ID, s.cfg.ResetTTL)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	return Result{Principal: p, TokenID: &id}, nil
+	return authkit.Result{Principal: p, TokenID: &id}, nil
 }
 
 // CompleteReset spends a reset link and sets the password it was sent for
@@ -71,93 +70,81 @@ func (s *Service) RequestReset(ctx context.Context, q db.Querier, aud Audience, 
 // transports instead of a session; the factors and recovery codes stay.
 // It also deletes every passkey of the principal, reports the count in
 // Result.PasskeysRemoved and logs passkeys_reset when there were any.
-func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience, raw, pw string, m Meta) (Result, error) {
+func (s *Module) CompleteReset(ctx context.Context, q db.Querier, aud authkit.Audience, raw, pw string, m authkit.Meta) (authkit.Result, error) {
 	if err := db.RequireTx(q); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	m = m.clean()
+	m = m.Clean()
 	if err := s.cfg.Password.Check(pw); err != nil {
-		return Result{Refusal: err}, nil
+		return authkit.Result{Refusal: err}, nil
 	}
 	hash, err := s.hasher.Hash(ctx, pw)
 	if errors.Is(err, ErrBusy) {
-		return Result{Refusal: ErrBusy}, nil
+		return authkit.Result{Refusal: ErrBusy}, nil
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	tok, err := s.links.Spend(ctx, q, raw, PurposeReset)
-	var gone ErrTokenGone
+	tok, err := s.links.Spend(ctx, q, raw, authkit.PurposeReset)
+	var gone authkit.ErrTokenGone
 	switch {
-	case errors.Is(err, ErrTokenUnknown):
-		return Result{Refusal: ErrTokenUnknown}, nil
+	case errors.Is(err, authkit.ErrTokenUnknown):
+		return authkit.Result{Refusal: authkit.ErrTokenUnknown}, nil
 	case errors.As(err, &gone):
-		return Result{Refusal: gone}, nil
+		return authkit.Result{Refusal: gone}, nil
 	case err != nil:
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	p, err := s.principals.ByID(ctx, q, tok.Owner, aud)
-	if errors.Is(err, ErrUnknownLogin) {
-		return Result{Refusal: ErrTokenUnknown}, nil
+	if errors.Is(err, authkit.ErrUnknownLogin) {
+		return authkit.Result{Refusal: authkit.ErrTokenUnknown}, nil
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	a := s.core().BeginVerified(SourceCompleteReset, aud, m)
+	a := s.core.BeginVerified(authkit.SourceCompleteReset, aud, m)
 	a.SetPrincipal(&p)
-	now := a.now
+	now := a.Now()
 	_, had, err := credentialOf(ctx, q, p.ID)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !had && !s.cfg.Reset.MayCreateCredential {
-		return Result{Refusal: ErrTokenUnknown}, nil
+		return authkit.Result{Refusal: authkit.ErrTokenUnknown}, nil
 	}
 	var removed int
 	a.Commit(func(ctx context.Context, q db.Querier) error {
 		if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
 			return err
 		}
-		if err := session.RevokeAll(ctx, q, p.ID, ReasonPasswordReset, now); err != nil {
+		if err := s.core.RevokeAll(ctx, q, p.ID, authkit.ReasonPasswordReset, now); err != nil {
 			return err
 		}
-		n, err := deleteAllPasskeys(ctx, q, p.ID)
+		n, err := s.core.ResetCredentials(ctx, q, p, aud)
 		if err != nil {
 			return err
 		}
 		removed = n
-		if err := throttle.Clear(ctx, q, s.throttleKey(Normalize(p.Login)), string(aud)); err != nil {
-			return err
-		}
-		result := ResultPasswordSet
+		result := authkit.ResultPasswordSet
 		if had {
-			result = ResultPasswordReset
+			result = authkit.ResultPasswordReset
 		}
-		if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+		if err := s.record(ctx, q, now, authkit.SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
 			Result: result, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
 			return err
 		}
 		if removed > 0 {
-			if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
-				Result: ResultPasskeysReset, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+			if err := s.record(ctx, q, now, authkit.SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+				Result: authkit.ResultPasskeysReset, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
-	res, err := s.core().SignIn(ctx, q, a, p, FactorPassword)
+	res, err := s.core.SignIn(ctx, q, a, p, authkit.FactorPassword)
 	if err != nil || res.Refusal != nil {
 		return res, err
 	}
 	res.PasskeysRemoved = removed
 	return res, nil
-}
-
-// PadSince sleeps until floor has passed since start. The app's
-// reset-request handler calls it after its transaction commits, so a known
-// and an unknown email take as long.
-func PadSince(start time.Time, floor time.Duration) {
-	if d := floor - time.Since(start); d > 0 {
-		time.Sleep(d)
-	}
 }

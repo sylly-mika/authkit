@@ -93,11 +93,11 @@ func TestRevokeAllSessionsEndsEveryOpenSessionAndLogsEach(t *testing.T) {
 func TestHasCredential(t *testing.T) {
 	w := newWorld(t, kittest.DefaultRules)
 	with, without := w.User("ada@example.invalid", "the right password"), w.User("invited@example.invalid", "")
-	if has, err := w.Svc.HasCredential(w.Ctx, sqldb.Conn(w.Pinned(with)), with); err != nil || !has {
+	if has, err := w.Svc.Password.HasCredential(w.Ctx, sqldb.Conn(w.Pinned(with)), with); err != nil || !has {
 		t.Fatalf("HasCredential of a principal with a password, on its kittest.PinnedRules connection = %v, %v", has, err)
 	}
 	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-		has, err := w.Svc.HasCredential(w.Ctx, q, without)
+		has, err := w.Svc.Password.HasCredential(w.Ctx, q, without)
 		if err == nil && has {
 			t.Error("HasCredential of a principal without a password = true")
 		}
@@ -173,7 +173,10 @@ func TestMayCreateCredential(t *testing.T) {
 
 func TestChangePasswordRevokeAllReopens(t *testing.T) {
 	var c captured
-	w := sessionWorld(t, func(cfg *kittest.Rules) { cfg.OnEvent = c.onEvent; cfg.RevokeOnPasswordChange = authkit.RevokeAll })
+	w := sessionWorld(t, func(cfg *kittest.Rules) {
+		cfg.OnEvent = c.onEvent
+		cfg.Password.RevokeOnPasswordChange = authkit.RevokeAll
+	})
 	id := w.User("ada@example.invalid", "the old password")
 	other := w.SignIn("ada@example.invalid", "the old password")
 	current := w.SignIn("ada@example.invalid", "the old password")
@@ -194,7 +197,7 @@ func TestChangePasswordRevokeAllReopens(t *testing.T) {
 	if w.authenticateSession("staff", current.SessionToken).Refusal == nil || w.authenticateSession("staff", res.SessionToken).Refusal != nil {
 		t.Fatal("want the old token ended and the new one open")
 	}
-	bw := newWorld(t, kittest.DefaultRules, func(cfg *kittest.Rules) { cfg.RevokeOnPasswordChange = authkit.RevokeAll })
+	bw := newWorld(t, kittest.DefaultRules, func(cfg *kittest.Rules) { cfg.Password.RevokeOnPasswordChange = authkit.RevokeAll })
 	bid := bw.User("ada@example.invalid", "the old password")
 	if res := bw.changePassword(bw.Pinned(bid), bw.Claims(bw.SignIn("ada@example.invalid", "the old password")), "the old password", "the new password"); res.Tokens == nil {
 		t.Fatalf("Bearer-mode ChangePassword under RevokeAll = %+v, want a new token pair", res)
@@ -202,7 +205,7 @@ func TestChangePasswordRevokeAllReopens(t *testing.T) {
 }
 
 func TestChangePasswordRevokeAllAsksAdmitFirst(t *testing.T) {
-	w := sessionWorld(t, func(cfg *kittest.Rules) { cfg.RevokeOnPasswordChange = authkit.RevokeAll })
+	w := sessionWorld(t, func(cfg *kittest.Rules) { cfg.Password.RevokeOnPasswordChange = authkit.RevokeAll })
 	id := w.User("ada@example.invalid", "the old password")
 	current := w.SignIn("ada@example.invalid", "the old password")
 	hash, events := w.StoredHash(id), w.Count(`SELECT count(*) FROM auth_events`)

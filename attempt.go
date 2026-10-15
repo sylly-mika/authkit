@@ -3,6 +3,7 @@ package authkit
 import (
 	"context"
 	"errors"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sylly-mika/authkit/db"
@@ -92,3 +93,6 @@ func (a *Attempt) Refuse(ctx context.Context, q db.Querier, result string, refus
 func (a *Attempt) Commit(fn func(ctx context.Context, q db.Querier) error) {
 	a.commit = fn
 }
+
+// Now is the time the attempt began; its writes use it.
+func (a *Attempt) Now() time.Time { return a.now }

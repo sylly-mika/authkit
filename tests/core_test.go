@@ -123,7 +123,7 @@ func TestAdmitSeesTheSource(t *testing.T) {
 		}
 	})
 	t.Run("change_password", func(t *testing.T) {
-		w := newWorld(t, func(c *kittest.Rules) { c.RevokeOnPasswordChange = authkit.RevokeAll })
+		w := newWorld(t, func(c *kittest.Rules) { c.Password.RevokeOnPasswordChange = authkit.RevokeAll })
 		rec := withSourceLog(w)
 		id := w.User(login, pw)
 		res := w.SignIn(login, pw)

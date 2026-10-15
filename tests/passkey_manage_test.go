@@ -323,7 +323,7 @@ func TestDeletePasskeyCountsFromTheLastPasswordProof(t *testing.T) {
 	x := w.addStoredPasskey(ada, "Laptop", false)
 	w.Clock.Advance(10 * time.Minute)
 	changed := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ChangePassword(w.Ctx, q, w.Claims(a1), "the right password", "another password", authkit.Meta{})
+		return w.Svc.Password.ChangePassword(w.Ctx, q, w.Claims(a1), "the right password", "another password", authkit.Meta{})
 	})
 	if changed.Refusal != nil {
 		t.Fatalf("change password: refusal %v", changed.Refusal)

@@ -16,7 +16,9 @@ import (
 
 func (w *world) requestReset(login string) authkit.Result {
 	w.T.Helper()
-	return w.InAuth(func(q db.Querier) (authkit.Result, error) { return w.Svc.RequestReset(w.Ctx, q, "staff", login) })
+	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Password.RequestReset(w.Ctx, q, "staff", login)
+	})
 }
 
 func (w *world) mintLink(id uuid.UUID) string {
@@ -35,7 +37,7 @@ func (w *world) mintLink(id uuid.UUID) string {
 func (w *world) completeReset(raw, pw string) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.CompleteReset(w.Ctx, q, "staff", raw, pw, authkit.Meta{})
+		return w.Svc.Password.CompleteReset(w.Ctx, q, "staff", raw, pw, authkit.Meta{})
 	})
 }
 
@@ -96,7 +98,7 @@ func TestRequestResetCountsUnderTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if res, err := w.Svc.RequestReset(w.Ctx, sqldb.Tx(holder), "staff", "ada@example.invalid"); err != nil || res.TokenID == nil {
+	if res, err := w.Svc.Password.RequestReset(w.Ctx, sqldb.Tx(holder), "staff", "ada@example.invalid"); err != nil || res.TokenID == nil {
 		t.Fatalf("the third request = %+v (%v)", res, err)
 	}
 	type outcome struct {
@@ -108,7 +110,7 @@ func TestRequestResetCountsUnderTheLock(t *testing.T) {
 		var res authkit.Result
 		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 			var err error
-			res, err = w.Svc.RequestReset(w.Ctx, q, "staff", "ada@example.invalid")
+			res, err = w.Svc.Password.RequestReset(w.Ctx, q, "staff", "ada@example.invalid")
 			return err
 		})
 		done <- outcome{res, err}

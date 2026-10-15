@@ -27,11 +27,13 @@ var Cheap = password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen
 // Rules is the configuration a World builds its Kit from.
 type Rules struct {
 	authkit.Config
+	Password password.Config
 }
 
-// Kit is the Service under test.
+// Kit is the Service under test and its password module.
 type Kit struct {
 	*authkit.Service
+	Password *password.Module
 }
 
 // World is one test's Kit and the fixtures it runs over.
@@ -50,8 +52,8 @@ type World struct {
 func New(t *testing.T, tweaks ...func(*Rules)) *World {
 	t.Helper()
 	w := &World{T: t, Ctx: context.Background(), D: authkittest.NewDB(t), P: authkittest.NewPrincipals(), Clock: authkittest.NewClock()}
-	w.Cfg = Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Hashing: Cheap,
-		HashWait: 200 * time.Millisecond, Clock: w.Clock, Rand: authkittest.Rand(7)}}
+	w.Cfg = Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Clock: w.Clock, Rand: authkittest.Rand(7)},
+		Password: password.Config{Hashing: Cheap, HashWait: 200 * time.Millisecond}}
 	PinnedRules(&w.Cfg)
 	for _, f := range tweaks {
 		f(&w.Cfg)
@@ -66,14 +68,14 @@ func PinnedRules(c *Rules) {
 	c.Session = authkit.SessionRules{IdleTTL: 7 * 24 * time.Hour, AbsoluteTTL: -1}
 	c.Throttle = authkit.Throttle{Failures: 10, Window: 15 * time.Minute, Lockout: 15 * time.Minute, CountAfterVerify: true, PlainLoginKey: true}
 	c.Events.ChangeLogsReset = true
-	c.Reset.MayCreateCredential = true
+	c.Password.Reset.MayCreateCredential = true
 	c.EventRetention = -1
 }
 
 // DefaultRules clears the rules PinnedRules sets, so the Service runs on
 // their zero values.
 func DefaultRules(c *Rules) {
-	c.Session, c.Throttle, c.Events, c.Reset, c.EventRetention = authkit.SessionRules{}, authkit.Throttle{}, authkit.EventRules{}, authkit.ResetRules{}, 0
+	c.Session, c.Throttle, c.Events, c.Password.Reset, c.EventRetention = authkit.SessionRules{}, authkit.Throttle{}, authkit.EventRules{}, authkit.ResetRules{}, 0
 }
 
 // Build builds a Kit from r over the world's principals.
@@ -85,11 +87,24 @@ func (w *World) Build(r Rules) *Kit {
 // BuildWith builds a Kit from r over the principals p.
 func (w *World) BuildWith(r Rules, p authkit.Principals) *Kit {
 	w.T.Helper()
-	svc, err := authkit.New(r.Config, p)
+	kit, err := NewKit(r, p)
 	if err != nil {
 		w.T.Fatal(err)
 	}
-	return &Kit{Service: svc}
+	return kit
+}
+
+// NewKit builds a Kit from r over the principals p.
+func NewKit(r Rules, p authkit.Principals) (*Kit, error) {
+	svc, err := authkit.New(r.Config, p)
+	if err != nil {
+		return nil, err
+	}
+	pw, err := password.New(svc, r.Password)
+	if err != nil {
+		return nil, err
+	}
+	return &Kit{Service: svc, Password: pw}, nil
 }
 
 // User creates a principal with the login and, when pw is not empty, a
@@ -98,7 +113,7 @@ func (w *World) User(login, pw string) uuid.UUID {
 	w.T.Helper()
 	id := w.D.NewPrincipal(w.T, login)
 	if pw != "" {
-		hash, err := password.Encode(w.Cfg.Hashing, crand.Reader, pw)
+		hash, err := password.Encode(w.Cfg.Password.Hashing, crand.Reader, pw)
 		if err != nil {
 			w.T.Fatal(err)
 		}
@@ -142,7 +157,7 @@ func (w *World) InConn(conn *sql.Conn, fn func(q db.Querier) (authkit.Result, er
 func (w *World) Login(aud authkit.Audience, login, pw string) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.Login(w.Ctx, q, aud, login, pw, authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"})
+		return w.Svc.Password.Login(w.Ctx, q, aud, login, pw, authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"})
 	})
 }
 

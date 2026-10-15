@@ -8,6 +8,7 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
+	"github.com/sylly-mika/authkit/internal/kittest"
 	"github.com/sylly-mika/authkit/password"
 )
 
@@ -36,42 +37,42 @@ func TestNewValidatesItsConfig(t *testing.T) {
 }
 
 func TestNewRefusesAConfigThatDisablesAGuard(t *testing.T) {
-	good := authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!")}
+	good := kittest.Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!")}}
 	p := authkittest.NewPrincipals()
-	for name, f := range map[string]func(*authkit.Config){
-		"a negative throttle window":  func(c *authkit.Config) { c.Throttle = authkit.Throttle{Failures: 5, Window: -time.Minute} },
-		"a negative throttle lockout": func(c *authkit.Config) { c.Throttle = authkit.Throttle{Failures: 5, Lockout: -time.Minute} },
-		"a negative throttle limit":   func(c *authkit.Config) { c.Throttle = authkit.Throttle{Failures: -1} },
-		"a negative RefreshTTL":       func(c *authkit.Config) { c.RefreshTTL = -time.Hour },
-		"a zero RefreshTTLFor":        func(c *authkit.Config) { c.RefreshTTLFor = map[authkit.Audience]time.Duration{"staff": 0} },
-		"a negative ResetTTL":         func(c *authkit.Config) { c.ResetTTL = -time.Hour },
-		"a negative ResetFloor":       func(c *authkit.Config) { c.ResetFloor = -time.Second },
-		"a negative HashWait":         func(c *authkit.Config) { c.HashWait = -time.Second },
-		"a negative ReuseGrace":       func(c *authkit.Config) { c.ReuseGrace = -time.Second },
-		"a policy with no minimum":    func(c *authkit.Config) { c.Password = password.Policy{MaxRunes: 64} },
-		"a policy with no maximum":    func(c *authkit.Config) { c.Password = password.Policy{MinRunes: 12} },
-		"a minimum above the maximum": func(c *authkit.Config) { c.Password = password.Policy{MinRunes: 20, MaxRunes: 10} },
+	for name, f := range map[string]func(*kittest.Rules){
+		"a negative throttle window":  func(c *kittest.Rules) { c.Throttle = authkit.Throttle{Failures: 5, Window: -time.Minute} },
+		"a negative throttle lockout": func(c *kittest.Rules) { c.Throttle = authkit.Throttle{Failures: 5, Lockout: -time.Minute} },
+		"a negative throttle limit":   func(c *kittest.Rules) { c.Throttle = authkit.Throttle{Failures: -1} },
+		"a negative RefreshTTL":       func(c *kittest.Rules) { c.RefreshTTL = -time.Hour },
+		"a zero RefreshTTLFor":        func(c *kittest.Rules) { c.RefreshTTLFor = map[authkit.Audience]time.Duration{"staff": 0} },
+		"a negative ResetTTL":         func(c *kittest.Rules) { c.Password.ResetTTL = -time.Hour },
+		"a negative ResetFloor":       func(c *kittest.Rules) { c.Password.ResetFloor = -time.Second },
+		"a negative HashWait":         func(c *kittest.Rules) { c.Password.HashWait = -time.Second },
+		"a negative ReuseGrace":       func(c *kittest.Rules) { c.ReuseGrace = -time.Second },
+		"a policy with no minimum":    func(c *kittest.Rules) { c.Password.Password = password.Policy{MaxRunes: 64} },
+		"a policy with no maximum":    func(c *kittest.Rules) { c.Password.Password = password.Policy{MinRunes: 12} },
+		"a minimum above the maximum": func(c *kittest.Rules) { c.Password.Password = password.Policy{MinRunes: 20, MaxRunes: 10} },
 	} {
 		cfg := good
 		f(&cfg)
-		if _, err := authkit.New(cfg, p); err == nil {
+		if _, err := kittest.NewKit(cfg, p); err == nil {
 			t.Errorf("New accepted %s", name)
 		}
 	}
 }
 
 func TestNewNamesTheDurationItRefuses(t *testing.T) {
-	good := authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!")}
-	for field, f := range map[string]func(*authkit.Config){
-		"RefreshTTL": func(c *authkit.Config) { c.RefreshTTL = -time.Hour },
-		"ResetTTL":   func(c *authkit.Config) { c.ResetTTL = -time.Hour },
-		"ResetFloor": func(c *authkit.Config) { c.ResetFloor = -time.Second },
-		"HashWait":   func(c *authkit.Config) { c.HashWait = -time.Second },
-		"ReuseGrace": func(c *authkit.Config) { c.ReuseGrace = -time.Second },
+	good := kittest.Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!")}}
+	for field, f := range map[string]func(*kittest.Rules){
+		"RefreshTTL": func(c *kittest.Rules) { c.RefreshTTL = -time.Hour },
+		"ResetTTL":   func(c *kittest.Rules) { c.Password.ResetTTL = -time.Hour },
+		"ResetFloor": func(c *kittest.Rules) { c.Password.ResetFloor = -time.Second },
+		"HashWait":   func(c *kittest.Rules) { c.Password.HashWait = -time.Second },
+		"ReuseGrace": func(c *kittest.Rules) { c.ReuseGrace = -time.Second },
 	} {
 		cfg := good
 		f(&cfg)
-		if _, err := authkit.New(cfg, authkittest.NewPrincipals()); err == nil || !strings.Contains(err.Error(), "Config."+field) {
+		if _, err := kittest.NewKit(cfg, authkittest.NewPrincipals()); err == nil || !strings.Contains(err.Error(), "Config."+field) {
 			t.Errorf("New with a negative %s = %v, want an error naming Config.%s", field, err, field)
 		}
 	}
@@ -106,50 +107,52 @@ func TestNormalizeIsStable(t *testing.T) {
 }
 
 func TestNewRefusesContradictorySessionRules(t *testing.T) {
-	bearer := authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!")}
-	session := authkit.Config{Transport: authkit.TransportSession}
+	bearer := kittest.Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!")}}
+	session := kittest.Rules{Config: authkit.Config{Transport: authkit.TransportSession}}
 	for name, tc := range map[string]struct {
-		base authkit.Config
-		f    func(*authkit.Config)
+		base kittest.Rules
+		f    func(*kittest.Rules)
 		want string
 	}{
-		"an idle timeout past the cap": {bearer, func(c *authkit.Config) { c.Session = authkit.SessionRules{IdleTTL: 13 * time.Hour} }, "Config.Session.IdleTTL"},
-		"a RefreshTTL past the cap":    {bearer, func(c *authkit.Config) { c.RefreshTTL = 7 * 24 * time.Hour }, "Config.Session.IdleTTL"},
-		"an audience's idle past the cap": {bearer, func(c *authkit.Config) {
+		"an idle timeout past the cap": {bearer, func(c *kittest.Rules) { c.Session = authkit.SessionRules{IdleTTL: 13 * time.Hour} }, "Config.Session.IdleTTL"},
+		"a RefreshTTL past the cap":    {bearer, func(c *kittest.Rules) { c.RefreshTTL = 7 * 24 * time.Hour }, "Config.Session.IdleTTL"},
+		"an audience's idle past the cap": {bearer, func(c *kittest.Rules) {
 			c.RefreshTTLFor = map[authkit.Audience]time.Duration{"client": 13 * time.Hour}
 		}, `RefreshTTLFor["client"]`},
-		"a rotation as late as the idle timeout": {session, func(c *authkit.Config) {
+		"a rotation as late as the idle timeout": {session, func(c *kittest.Rules) {
 			c.Session = authkit.SessionRules{IdleTTL: 10 * time.Minute, RotateEvery: 10 * time.Minute}
 		}, "Config.Session.RotateEvery"},
-		"a rotation after an audience's idle timeout": {session, func(c *authkit.Config) {
+		"a rotation after an audience's idle timeout": {session, func(c *kittest.Rules) {
 			c.RefreshTTLFor = map[authkit.Audience]time.Duration{"admin": 5 * time.Minute}
 		}, "Config.Session.RotateEvery"},
-		"a negative idle timeout": {session, func(c *authkit.Config) { c.Session.IdleTTL = -time.Minute }, "Config.Session.IdleTTL"},
-		"an unknown transport":    {bearer, func(c *authkit.Config) { c.Transport = 2 }, "Config.Transport"},
-		"an unknown revoke rule":  {bearer, func(c *authkit.Config) { c.RevokeOnPasswordChange = 2 }, "Config.RevokeOnPasswordChange"},
-		"Bearer without a secret": {bearer, func(c *authkit.Config) { c.Secret = nil }, "Config.Secret"},
+		"a negative idle timeout": {session, func(c *kittest.Rules) { c.Session.IdleTTL = -time.Minute }, "Config.Session.IdleTTL"},
+		"an unknown transport":    {bearer, func(c *kittest.Rules) { c.Transport = 2 }, "Config.Transport"},
+		"an unknown revoke rule":  {bearer, func(c *kittest.Rules) { c.Password.RevokeOnPasswordChange = 2 }, "Config.RevokeOnPasswordChange"},
+		"Bearer without a secret": {bearer, func(c *kittest.Rules) { c.Secret = nil }, "Config.Secret"},
 	} {
 		cfg := tc.base
 		tc.f(&cfg)
-		if _, err := authkit.New(cfg, authkittest.NewPrincipals()); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, err := kittest.NewKit(cfg, authkittest.NewPrincipals()); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: New = %v, want an error naming %s", name, err, tc.want)
 		}
 	}
 }
 
 func TestNewAcceptsTheConfigsTheAppsSet(t *testing.T) {
-	for name, cfg := range map[string]authkit.Config{
-		"ino-tasks' pins (spec §6)": {Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"),
+	for name, cfg := range map[string]kittest.Rules{
+		"ino-tasks' pins (spec §6)": {Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"),
 			Session:  authkit.SessionRules{IdleTTL: 7 * 24 * time.Hour, AbsoluteTTL: -1},
 			Throttle: authkit.Throttle{Failures: 10, Window: 15 * time.Minute, Lockout: 15 * time.Minute, CountAfterVerify: true, PlainLoginKey: true},
-			Events:   authkit.EventRules{ChangeLogsReset: true}, Reset: authkit.ResetRules{MayCreateCredential: true}, EventRetention: -1},
-		"BMParts' Session mode, no issuer or secret": {Transport: authkit.TransportSession, RevokeOnPasswordChange: authkit.RevokeAll,
-			Hashing: password.Params{Memory: 64 * 1024, Time: 3, Threads: 2, SaltLen: 16, KeyLen: 32}, Password: password.Policy{MinRunes: 12, MaxRunes: 256}},
-		"Bearer ignores the rotation": {Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"),
-			Session: authkit.SessionRules{IdleTTL: 10 * time.Minute, RotateEvery: time.Hour}},
-		"a session that never rotates": {Transport: authkit.TransportSession, Session: authkit.SessionRules{IdleTTL: time.Minute, RotateEvery: -1}},
+			Events:   authkit.EventRules{ChangeLogsReset: true}, EventRetention: -1},
+			Password: password.Config{Reset: authkit.ResetRules{MayCreateCredential: true}}},
+		"BMParts' Session mode, no issuer or secret": {Config: authkit.Config{Transport: authkit.TransportSession},
+			Password: password.Config{RevokeOnPasswordChange: authkit.RevokeAll,
+				Hashing: password.Params{Memory: 64 * 1024, Time: 3, Threads: 2, SaltLen: 16, KeyLen: 32}, Password: password.Policy{MinRunes: 12, MaxRunes: 256}}},
+		"Bearer ignores the rotation": {Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"),
+			Session: authkit.SessionRules{IdleTTL: 10 * time.Minute, RotateEvery: time.Hour}}},
+		"a session that never rotates": {Config: authkit.Config{Transport: authkit.TransportSession, Session: authkit.SessionRules{IdleTTL: time.Minute, RotateEvery: -1}}},
 	} {
-		svc, err := authkit.New(cfg, authkittest.NewPrincipals())
+		svc, err := kittest.NewKit(cfg, authkittest.NewPrincipals())
 		if err != nil {
 			t.Errorf("%s: New = %v", name, err)
 			continue

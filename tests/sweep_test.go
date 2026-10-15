@@ -57,28 +57,34 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 	c, q := w.Claims(res), counted{Querier: sqldb.Conn(w.Pinned(id)), n: &n}
 	p, links, ctx := authkit.Principal{ID: id, Login: "ada@example.invalid"}, w.Svc.OneTime(), w.Ctx
 	calls := map[string]func() error{
-		"Login": func() error { _, err := w.Svc.Login(ctx, q, "staff", p.Login, "x", authkit.Meta{}); return err },
+		"Login": func() error {
+			_, err := w.Svc.Password.Login(ctx, q, "staff", p.Login, "x", authkit.Meta{})
+			return err
+		},
 		"Refresh": func() error {
 			_, err := w.Svc.Refresh(ctx, q, "staff", res.Tokens.RefreshToken, authkit.Meta{})
 			return err
 		},
 		"Logout": func() error { _, err := w.Svc.Logout(ctx, q, c, authkit.Meta{}); return err },
 		"ChangePassword": func() error {
-			_, err := w.Svc.ChangePassword(ctx, q, c, "the right password", "another password", authkit.Meta{})
+			_, err := w.Svc.Password.ChangePassword(ctx, q, c, "the right password", "another password", authkit.Meta{})
 			return err
 		},
 		"RevokeSession": func() error { _, err := w.Svc.RevokeSession(ctx, q, c, res.Session.ID, authkit.Meta{}); return err },
-		"RequestReset":  func() error { _, err := w.Svc.RequestReset(ctx, q, "staff", p.Login); return err },
+		"RequestReset":  func() error { _, err := w.Svc.Password.RequestReset(ctx, q, "staff", p.Login); return err },
 		"CompleteReset": func() error {
-			_, err := w.Svc.CompleteReset(ctx, q, "staff", "x", "another password", authkit.Meta{})
+			_, err := w.Svc.Password.CompleteReset(ctx, q, "staff", "x", "another password", authkit.Meta{})
 			return err
 		},
 		"SetPassword": func() error {
-			_, err := w.Svc.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
+			_, err := w.Svc.Password.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
 			return err
 		},
-		"VerifyPassword": func() error { _, err := w.Svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
-		"OpenSession":    func() error { _, err := w.Svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"VerifyPassword": func() error {
+			_, err := w.Svc.Password.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{})
+			return err
+		},
+		"OpenSession": func() error { _, err := w.Svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
 		"VerifySecondStep": func() error {
 			_, err := w.Svc.VerifySecondStep(ctx, q, "staff", "x", authkit.FactorTOTP, "123456", authkit.Meta{})
 			return err
@@ -173,7 +179,7 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	if _, total, err := w.Svc.ListEvents(w.Ctx, q, id, nil, 10, 0); err != nil || total != 1 {
 		t.Errorf("ListEvents = %d, %v", total, err)
 	}
-	if has, err := w.Svc.HasCredential(w.Ctx, q, id); err != nil || !has {
+	if has, err := w.Svc.Password.HasCredential(w.Ctx, q, id); err != nil || !has {
 		t.Errorf("HasCredential = %v, %v", has, err)
 	}
 	if list, err := w.Svc.ListPasskeys(w.Ctx, q, id); err != nil || len(list) != 1 || list[0].ID != pk {

@@ -615,7 +615,7 @@ func TestFactorReauthCountsFromTheLastPasswordProof(t *testing.T) {
 		t.Fatalf("Begin 10 minutes after sign-in = %v, %v, want ErrReauthRequired", res.Refusal, err)
 	}
 	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ChangePassword(w.Ctx, q, c, "the right password", "another password", factorMeta)
+		return w.Svc.Password.ChangePassword(w.Ctx, q, c, "the right password", "another password", factorMeta)
 	}); res.Refusal != nil {
 		t.Fatalf("ChangePassword refused: %v", res.Refusal)
 	}

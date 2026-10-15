@@ -32,8 +32,7 @@ func (c *Core) Rand() io.Reader { return c.s.cfg.Rand }
 func (c *Core) Principals() Principals { return c.s.principals }
 
 // Fresh returns the caller's open session and whether it authenticated within window.
-func (c *Core) Fresh(ctx context.Context, q db.Querier, cl *Claims, window time.Duration) (Session, bool, error) {
-	now := c.s.now()
+func (c *Core) Fresh(ctx context.Context, q db.Querier, cl *Claims, window time.Duration, now time.Time) (Session, bool, error) {
 	sess, err := session.LockOpen(ctx, q, cl.SessionID, cl.Subject, now)
 	if errors.Is(err, db.ErrNoRows) {
 		return Session{}, false, nil
@@ -48,23 +47,23 @@ func (c *Core) Fresh(ctx context.Context, q db.Querier, cl *Claims, window time.
 }
 
 // LockSession locks the caller's open session for the transaction and returns it; an ended session is db.ErrNoRows.
-func (c *Core) LockSession(ctx context.Context, q db.Querier, cl *Claims) (Session, error) {
-	return session.LockOpen(ctx, q, cl.SessionID, cl.Subject, c.s.now())
+func (c *Core) LockSession(ctx context.Context, q db.Querier, cl *Claims, now time.Time) (Session, error) {
+	return session.LockOpen(ctx, q, cl.SessionID, cl.Subject, now)
 }
 
 // MarkAuthenticated stamps sess as authenticated now.
-func (c *Core) MarkAuthenticated(ctx context.Context, q db.Querier, sess uuid.UUID) error {
-	return session.SetAuthenticated(ctx, q, sess, c.s.now())
+func (c *Core) MarkAuthenticated(ctx context.Context, q db.Querier, sess uuid.UUID, now time.Time) error {
+	return session.SetAuthenticated(ctx, q, sess, now)
 }
 
 // RevokeAll ends every session of principal, recording reason.
-func (c *Core) RevokeAll(ctx context.Context, q db.Querier, principal uuid.UUID, reason string) error {
-	return session.RevokeAll(ctx, q, principal, reason, c.s.now())
+func (c *Core) RevokeAll(ctx context.Context, q db.Querier, principal uuid.UUID, reason string, now time.Time) error {
+	return session.RevokeAll(ctx, q, principal, reason, now)
 }
 
 // RevokeOthers ends every session of principal except keep, recording reason.
-func (c *Core) RevokeOthers(ctx context.Context, q db.Querier, principal, keep uuid.UUID, reason string) error {
-	return session.RevokeOthers(ctx, q, principal, keep, reason, c.s.now())
+func (c *Core) RevokeOthers(ctx context.Context, q db.Querier, principal, keep uuid.UUID, reason string, now time.Time) error {
+	return session.RevokeOthers(ctx, q, principal, keep, reason, now)
 }
 
 // ResetCredentials deletes every passkey of p and clears its login throttle under aud, and returns how many passkeys it deleted.
