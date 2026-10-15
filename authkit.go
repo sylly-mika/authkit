@@ -172,6 +172,7 @@ type Service struct {
 	onVerify   func()
 	mu         sync.Mutex
 	attached   map[string]bool
+	verifier   SecondStepVerifier
 }
 
 // New builds the Service. It reads no database: the app calls CheckSchema at
@@ -196,6 +197,9 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	}
 	s := &Service{cfg: cfg, principals: principals, hasher: hasher, rps: rps, attached: map[string]bool{}}
 	s.links = onetime.New(s.now, cfg.Rand)
+	if len(cfg.SecondFactors.Key) > 0 {
+		s.verifier = factorVerifier{s: s}
+	}
 	if cfg.Transport == TransportBearer {
 		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, s.now); err != nil {
 			return nil, err

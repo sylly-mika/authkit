@@ -111,11 +111,11 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if !had && !s.cfg.Reset.MayCreateCredential {
 		return Result{Refusal: ErrTokenUnknown}, nil
 	}
-	methods, err := s.secondFactorMethods(ctx, q, p.ID)
+	methods, off, err := s.gateMethods(ctx, q, p.ID, FactorPassword)
 	if err != nil {
 		return Result{}, err
 	}
-	if len(methods) > 0 && len(s.cfg.SecondFactors.Key) == 0 {
+	if off {
 		return Result{Refusal: ErrSecondFactorsOff}, nil
 	}
 	g := grant{p: p, aud: aud, m: m, now: now}

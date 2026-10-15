@@ -169,11 +169,11 @@ func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Princi
 		}
 		return Result{Refusal: refusal.Err}, nil
 	}
-	methods, err := s.secondFactorMethods(ctx, q, p.ID)
+	methods, off, err := s.gateMethods(ctx, q, p.ID, FactorPassword)
 	if err != nil {
 		return Result{}, err
 	}
-	if len(methods) > 0 && len(s.cfg.SecondFactors.Key) == 0 {
+	if off {
 		return Result{Refusal: ErrSecondFactorsOff}, nil
 	}
 	if s.hasher.NeedsRehash(hash) {
