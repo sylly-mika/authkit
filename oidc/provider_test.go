@@ -9,7 +9,10 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -387,6 +390,92 @@ func TestFlexBool(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "oidc: a boolean claim is neither true nor false") {
 				t.Errorf("decoding %s: err = %v, want the boolean claim error", raw, err)
 			}
+		}
+	})
+}
+
+func wantCallback(t *testing.T, got Callback, err error, want Callback) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("ParseCallback: %v", err)
+	}
+	eq(t, "State", got.State, want.State)
+	eq(t, "Code", got.Code, want.Code)
+	eq(t, "Error", got.Error, want.Error)
+	eq(t, "User", got.User, want.User)
+}
+
+func wantMalformed(t *testing.T, got Callback, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrBadCallback) {
+		t.Fatalf("ParseCallback error = %v, want ErrBadCallback", err)
+	}
+	if err.Error() != "oidc: the callback is malformed" {
+		t.Errorf("ParseCallback error text = %q, want the malformed text", err.Error())
+	}
+	if got != (Callback{}) {
+		t.Error("ParseCallback returned fields with a refused callback")
+	}
+}
+
+func formRequest(target, body string) *http.Request {
+	r := httptest.NewRequest("POST", target, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	return r
+}
+
+func TestParseCallback(t *testing.T) {
+	t.Run("get", func(t *testing.T) {
+		r := httptest.NewRequest("GET", "/cb?state=S1&code=C1&scope=openid&iss=https%3A%2F%2Faccounts.google.com", nil)
+		got, err := ParseCallback(r)
+		wantCallback(t, got, err, Callback{State: "S1", Code: "C1"})
+	})
+
+	t.Run("post", func(t *testing.T) {
+		body := "state=S2&code=C2&id_token=x.y.z&user=" + url.QueryEscape(`{"name":{"firstName":"Ada"}}`)
+		got, err := ParseCallback(formRequest("/cb", body))
+		wantCallback(t, got, err, Callback{State: "S2", Code: "C2", User: `{"name":{"firstName":"Ada"}}`})
+	})
+
+	t.Run("postIgnoresQuery", func(t *testing.T) {
+		got, err := ParseCallback(formRequest("/cb?state=Q", "state=S3&code=C3"))
+		wantCallback(t, got, err, Callback{State: "S3", Code: "C3"})
+	})
+
+	t.Run("cancelled", func(t *testing.T) {
+		got, err := ParseCallback(formRequest("/cb", "state=S4&error=user_cancelled_authorize"))
+		wantCallback(t, got, err, Callback{State: "S4", Error: "user_cancelled_authorize"})
+	})
+
+	t.Run("atCap", func(t *testing.T) {
+		body := "state=S5&code=C5&pad=" + strings.Repeat("a", 65536-len("state=S5&code=C5&pad="))
+		got, err := ParseCallback(formRequest("/cb", body))
+		wantCallback(t, got, err, Callback{State: "S5", Code: "C5"})
+	})
+
+	t.Run("overCap", func(t *testing.T) {
+		body := "state=S5&code=C5&pad=" + strings.Repeat("a", 65537-len("state=S5&code=C5&pad="))
+		got, err := ParseCallback(formRequest("/cb", body))
+		wantMalformed(t, got, err)
+	})
+
+	t.Run("refused", func(t *testing.T) {
+		textPlain := httptest.NewRequest("POST", "/cb", strings.NewReader("state=S&code=C"))
+		textPlain.Header.Set("Content-Type", "text/plain")
+		put := httptest.NewRequest("PUT", "/cb", strings.NewReader("state=S&code=C"))
+		put.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for name, r := range map[string]*http.Request{
+			"noState":        httptest.NewRequest("GET", "/cb?code=C", nil),
+			"noCodeOrError":  httptest.NewRequest("GET", "/cb?state=S", nil),
+			"codeAndError":   httptest.NewRequest("GET", "/cb?state=S&code=C&error=access_denied", nil),
+			"duplicateState": httptest.NewRequest("GET", "/cb?state=A&state=B&code=C", nil),
+			"textPlain":      textPlain,
+			"put":            put,
+		} {
+			t.Run(name, func(t *testing.T) {
+				got, err := ParseCallback(r)
+				wantMalformed(t, got, err)
+			})
 		}
 	})
 }
