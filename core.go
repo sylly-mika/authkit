@@ -71,11 +71,14 @@ func (c *Core) RevokeOthers(ctx context.Context, q db.Querier, principal, keep u
 	return session.RevokeOthers(ctx, q, principal, keep, reason, now)
 }
 
-// ResetCredentials deletes every passkey of p and clears its login throttle under aud, and returns how many passkeys it deleted.
+// ResetCredentials deletes every passkey and linked OIDC identity of p and clears its login throttle under aud, and returns how many passkeys it deleted.
 func (c *Core) ResetCredentials(ctx context.Context, q db.Querier, p Principal, aud Audience) (passkeys int, err error) {
 	q = c.Q(q)
 	passkeys, err = deleteAllPasskeys(ctx, q, p.ID)
 	if err != nil {
+		return 0, err
+	}
+	if _, err = q.Exec(ctx, `DELETE FROM auth_identities WHERE principal_id = $1`, p.ID); err != nil {
 		return 0, err
 	}
 	if err = throttle.Clear(ctx, q, c.s.throttleKey(Normalize(p.Login)), string(aud)); err != nil {
