@@ -15,14 +15,21 @@ package authkit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/ceremony"
+	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/migrations"
 	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/password"
+	"github.com/sylly-mika/authkit/session"
+	"github.com/sylly-mika/authkit/throttle"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 
@@ -229,3 +236,62 @@ func (s *Service) ResetFloor() time.Duration { return s.cfg.ResetFloor }
 // CheckPassword applies the password policy alone, for an app that validates
 // before it writes.
 func (s *Service) CheckPassword(pw string) error { return s.cfg.Password.Check(pw) }
+
+// CheckSchema refuses a database whose auth_schema.version is older than this
+// library's migrations. The app calls it once at startup.
+func CheckSchema(ctx context.Context, q db.Querier) error {
+	var exists bool
+	if err := q.QueryRow(ctx, `SELECT to_regclass('auth_schema') IS NOT NULL`).Scan(&exists); err != nil {
+		return fmt.Errorf("authkit: look for auth_schema: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("%w (no auth_schema table)", ErrSchemaBehind)
+	}
+	var v int
+	err := q.QueryRow(ctx, `SELECT version FROM auth_schema WHERE id`).Scan(&v)
+	if errors.Is(err, db.ErrNoRows) {
+		return fmt.Errorf("%w (no auth_schema row visible; call CheckSchema with no workspace bound)", ErrSchemaBehind)
+	}
+	if err != nil {
+		return fmt.Errorf("authkit: read auth_schema: %w", err)
+	}
+	if v < migrations.Version {
+		return fmt.Errorf("%w (database %d, library %d)", ErrSchemaBehind, v, migrations.Version)
+	}
+	return nil
+}
+
+const retention = 30 * 24 * time.Hour
+
+const ceremonyRetention = time.Hour
+
+// Prune deletes what no flow reads any more: throttle counters
+// whose window and lock have passed, sessions and one-time links dead for 30
+// days, passkey ceremonies and second-step challenges an hour past their
+// expiry, and sign-in events older than EventRetention unless it is negative.
+// The app's worker runs it with no workspace bound.
+func (s *Service) Prune(ctx context.Context, q db.Querier) error {
+	if err := db.RequireTx(q); err != nil {
+		return err
+	}
+	now := s.now()
+	if _, err := throttle.Prune(ctx, q, now, s.cfg.Throttle); err != nil {
+		return err
+	}
+	if _, err := session.Prune(ctx, q, now.Add(-retention)); err != nil {
+		return err
+	}
+	if s.cfg.EventRetention > 0 {
+		if _, err := events.Prune(ctx, q, now.Add(-s.cfg.EventRetention)); err != nil {
+			return err
+		}
+	}
+	if _, err := ceremony.Prune(ctx, q, now.Add(-ceremonyRetention)); err != nil {
+		return err
+	}
+	if _, err := factor.PruneChallenges(ctx, q, now.Add(-ceremonyRetention)); err != nil {
+		return err
+	}
+	_, err := s.links.Prune(ctx, q, now.Add(-retention))
+	return err
+}
