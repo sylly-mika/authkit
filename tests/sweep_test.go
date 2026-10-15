@@ -22,6 +22,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
 	"github.com/sylly-mika/authkit/onetime"
+	"github.com/sylly-mika/authkit/password"
 )
 
 type counted struct {
@@ -45,8 +46,8 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "ListPasskeys", "HasCredential", "SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
-	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword", "AcquireHashSlot", "Attach"}
+	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "ListPasskeys", "Password.HasCredential", "SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
+	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Attach"}
 )
 
 func TestWriteMethodsRefuseABareConnection(t *testing.T) {
@@ -57,7 +58,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 	c, q := w.Claims(res), counted{Querier: sqldb.Conn(w.Pinned(id)), n: &n}
 	p, links, ctx := authkit.Principal{ID: id, Login: "ada@example.invalid"}, w.Svc.OneTime(), w.Ctx
 	calls := map[string]func() error{
-		"Login": func() error {
+		"Password.Login": func() error {
 			_, err := w.Svc.Password.Login(ctx, q, "staff", p.Login, "x", authkit.Meta{})
 			return err
 		},
@@ -66,21 +67,21 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"Logout": func() error { _, err := w.Svc.Logout(ctx, q, c, authkit.Meta{}); return err },
-		"ChangePassword": func() error {
+		"Password.ChangePassword": func() error {
 			_, err := w.Svc.Password.ChangePassword(ctx, q, c, "the right password", "another password", authkit.Meta{})
 			return err
 		},
-		"RevokeSession": func() error { _, err := w.Svc.RevokeSession(ctx, q, c, res.Session.ID, authkit.Meta{}); return err },
-		"RequestReset":  func() error { _, err := w.Svc.Password.RequestReset(ctx, q, "staff", p.Login); return err },
-		"CompleteReset": func() error {
+		"RevokeSession":         func() error { _, err := w.Svc.RevokeSession(ctx, q, c, res.Session.ID, authkit.Meta{}); return err },
+		"Password.RequestReset": func() error { _, err := w.Svc.Password.RequestReset(ctx, q, "staff", p.Login); return err },
+		"Password.CompleteReset": func() error {
 			_, err := w.Svc.Password.CompleteReset(ctx, q, "staff", "x", "another password", authkit.Meta{})
 			return err
 		},
-		"SetPassword": func() error {
+		"Password.SetPassword": func() error {
 			_, err := w.Svc.Password.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
 			return err
 		},
-		"VerifyPassword": func() error {
+		"Password.VerifyPassword": func() error {
 			_, err := w.Svc.Password.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{})
 			return err
 		},
@@ -148,7 +149,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			t.Errorf("%s ran %d statements on a bare connection before refusing it", name, n)
 		}
 	}
-	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store]()} {
+	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module]()} {
 		for i := range typ.NumMethod() {
 			name := prefix + typ.Method(i).Name
 			if _, swept := calls[name]; !swept && !slices.Contains(sweptReads, name) && !slices.Contains(sweptPure, name) {
