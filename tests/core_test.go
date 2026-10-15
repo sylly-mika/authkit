@@ -206,3 +206,77 @@ func TestAttachNames(t *testing.T) {
 		t.Fatalf("second Service Attach password = %v, %v; want a Core: the registry is per Service", c, err)
 	}
 }
+
+func TestCoreAttemptCountsAndLocks(t *testing.T) {
+	const login = "ada@example.invalid"
+	cases := []struct {
+		name     string
+		tweaks   []func(*authkit.Config)
+		n        int
+		lockedBy bool
+	}{
+		{name: "pinned", n: 10},
+		{name: "defaults", tweaks: []func(*authkit.Config){kittest.DefaultRules}, n: 5, lockedBy: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t, tc.tweaks...)
+			id := w.User(login, pw)
+			svc, err := authkit.New(w.Cfg, w.P)
+			if err != nil {
+				t.Fatal(err)
+			}
+			core, err := svc.Attach("password")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < tc.n; i++ {
+				var a *authkit.Attempt
+				res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+					att, begun, err := core.Begin(w.Ctx, q, authkit.SourceLogin, "staff", "  Ada@Example.invalid", authkit.Meta{})
+					if err != nil || att == nil {
+						return begun, err
+					}
+					a = att
+					a.SetPrincipal(&authkit.Principal{ID: id, Login: login})
+					return a.Refuse(w.Ctx, q, authkit.ResultBadPassword, authkit.ErrInvalidCredentials)
+				})
+				if a == nil {
+					t.Fatalf("round %d: Begin refused %v before the limit", i+1, res.Refusal)
+				}
+				if a.Login() != login || !a.Counted() {
+					t.Fatalf("round %d: Login = %q, Counted = %v", i+1, a.Login(), a.Counted())
+				}
+				if !errors.Is(res.Refusal, authkit.ErrInvalidCredentials) {
+					t.Fatalf("round %d: refusal = %v, want ErrInvalidCredentials", i+1, res.Refusal)
+				}
+			}
+			var last *authkit.Attempt
+			res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+				att, begun, err := core.Begin(w.Ctx, q, authkit.SourceLogin, "staff", login, authkit.Meta{})
+				last = att
+				return begun, err
+			})
+			if last != nil {
+				t.Fatal("Begin after the limit returned an Attempt; want a locked refusal")
+			}
+			var locked authkit.ErrLocked
+			if !errors.As(res.Refusal, &locked) {
+				t.Fatalf("Begin after the limit refusal = %v, want ErrLocked", res.Refusal)
+			}
+			if got := w.Count(`SELECT count(*) FROM auth_events WHERE source = 'login' AND result = 'bad_password' AND principal_id = $1`, id); got != tc.n {
+				t.Fatalf("bad_password rows = %d, want %d", got, tc.n)
+			}
+			if got := w.Count(`SELECT count(*) FROM auth_events WHERE source = 'login' AND result = 'locked'`); got != 1 {
+				t.Fatalf("locked rows = %d, want 1", got)
+			}
+			lockedRow := w.Count(`SELECT count(*) FROM auth_events WHERE source = 'login' AND result = 'locked' AND principal_id IS NULL`)
+			if tc.lockedBy {
+				lockedRow = w.Count(`SELECT count(*) FROM auth_events WHERE source = 'login' AND result = 'locked' AND principal_id = $1`, id)
+			}
+			if lockedRow != 1 {
+				t.Fatalf("the locked row does not name the principal as this mode expects (count %d)", lockedRow)
+			}
+		})
+	}
+}
