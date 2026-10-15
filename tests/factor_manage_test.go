@@ -19,6 +19,7 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/internal/kittest"
 )
 
 var (
@@ -27,7 +28,7 @@ var (
 	recoveryShape = regexp.MustCompile(`^[0-9a-hjkmnp-tv-z]{5}-[0-9a-hjkmnp-tv-z]{5}$`)
 )
 
-func withSecondFactors(c *authkit.Config) {
+func withSecondFactors(c *kittest.Rules) {
 	c.SecondFactors = authkit.SecondFactorRules{Key: testFactorKey}
 }
 
@@ -559,7 +560,7 @@ func TestRegenerateRecoveryCodesNeedsAFactor(t *testing.T) {
 }
 
 func TestFactorChangesNeedASignInWithinReauth(t *testing.T) {
-	w := newWorld(t, withSecondFactors, func(c *authkit.Config) { c.SecondFactors.Reauth = 2 * time.Minute })
+	w := newWorld(t, withSecondFactors, func(c *kittest.Rules) { c.SecondFactors.Reauth = 2 * time.Minute })
 	ada := w.User("ada@example.invalid", "the right password")
 	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	w.Clock.Advance(2 * time.Minute)

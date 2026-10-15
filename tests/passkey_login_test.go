@@ -248,7 +248,7 @@ func TestPasskeyLoginSignsIn(t *testing.T) {
 		t.Errorf("the stored sign count is below 4")
 	}
 	t.Run("session mode", func(t *testing.T) {
-		w := newWorld(t, kittest.Passkeys, func(c *authkit.Config) { c.Transport = authkit.TransportSession })
+		w := newWorld(t, kittest.Passkeys, func(c *kittest.Rules) { c.Transport = authkit.TransportSession })
 		id := w.User("ada@example.invalid", "")
 		a := authkittest.NewAuthenticator("localhost", kittest.StaffOrigin)
 		w.SeedPasskey(id, a)

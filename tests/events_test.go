@@ -24,7 +24,7 @@ func (c *captured) onEvent(_ context.Context, _ db.Querier, e authkit.Event) err
 
 func TestEveryEventNamesItsSource(t *testing.T) {
 	var c captured
-	w := newWorld(t, kittest.DefaultRules, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	w := newWorld(t, kittest.DefaultRules, func(cfg *kittest.Rules) { cfg.OnEvent = c.onEvent })
 	id := w.User("ada@example.invalid", "the old password")
 	invited := authkit.Principal{ID: w.User("invited@example.invalid", ""), Login: "invited@example.invalid"}
 	refused := w.User("refused@example.invalid", "the right password")
@@ -120,7 +120,7 @@ func TestListEventsReadsTheStoredSource(t *testing.T) {
 
 func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 	var seen []bool
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) {
+	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) {
 		c.OnEvent = func(ctx context.Context, q db.Querier, e authkit.Event) error {
 			var n int
 			if err := q.QueryRow(ctx, `SELECT count(*) FROM auth_events WHERE id = $1`, e.ID).Scan(&n); err != nil {
@@ -153,7 +153,7 @@ func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 
 func TestAnOnEventErrorFailsTheMethod(t *testing.T) {
 	down := errors.New("app: the mirror is down")
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) {
+	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) {
 		c.OnEvent = func(context.Context, db.Querier, authkit.Event) error { return down }
 	})
 	w.User("ada@example.invalid", "the right password")

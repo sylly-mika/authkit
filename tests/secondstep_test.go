@@ -23,16 +23,16 @@ const pw = "the right password"
 
 var meta = authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"}
 
-func factors(c *authkit.Config) {
+func factors(c *kittest.Rules) {
 	c.SecondFactors.Key = bytes.Repeat([]byte{0x07}, 32)
 }
 
-func throttleAt(n int) func(*authkit.Config) {
-	return func(c *authkit.Config) { c.Throttle.Failures = n }
+func throttleAt(n int) func(*kittest.Rules) {
+	return func(c *kittest.Rules) { c.Throttle.Failures = n }
 }
 
-func maxTries(n int) func(*authkit.Config) {
-	return func(c *authkit.Config) { c.SecondFactors.MaxTries = n }
+func maxTries(n int) func(*kittest.Rules) {
+	return func(c *kittest.Rules) { c.SecondFactors.MaxTries = n }
 }
 
 func (w *world) code(secret string) string {
@@ -97,14 +97,14 @@ func (w *world) offline(key []byte) {
 	w.T.Helper()
 	cfg := w.Cfg
 	cfg.SecondFactors.Key = key
-	w.Svc = w.Service(cfg)
+	w.Svc = w.Build(cfg)
 }
 
 func (w *world) sessionMode() {
 	w.T.Helper()
 	cfg := w.Cfg
 	cfg.Transport, cfg.Issuer, cfg.Secret = authkit.TransportSession, "", nil
-	w.Svc = w.Service(cfg)
+	w.Svc = w.Build(cfg)
 }
 
 func (w *world) eventResults(id uuid.UUID, source string) []string {

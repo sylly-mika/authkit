@@ -23,7 +23,7 @@ import (
 var regOrigins = map[authkit.Audience][]string{"staff": {kittest.StaffOrigin}, "client": {kittest.ClientOrigin}}
 
 func regWorld(t *testing.T, origins map[authkit.Audience][]string) *world {
-	return newWorld(t, func(c *authkit.Config) {
+	return newWorld(t, func(c *kittest.Rules) {
 		c.Passkeys = authkit.PasskeyRules{RPID: "localhost", Origins: origins, CeremonyTTL: 2 * time.Minute, Reauth: 5 * time.Minute, Max: 10}
 		c.RevokeOnPasswordChange = authkit.RevokeOthers
 	})

@@ -24,35 +24,45 @@ import (
 // WHY: cheap hashing keeps -race runs fast.
 var Cheap = password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen: 32}
 
-// World is one test's Service and the fixtures it runs over.
+// Rules is the configuration a World builds its Kit from.
+type Rules struct {
+	authkit.Config
+}
+
+// Kit is the Service under test.
+type Kit struct {
+	*authkit.Service
+}
+
+// World is one test's Kit and the fixtures it runs over.
 type World struct {
 	T     *testing.T              // the test the world belongs to
 	Ctx   context.Context         // the context every call runs under
 	D     *authkittest.DB         // the throwaway database
 	P     *authkittest.Principals // the principal fixture
 	Clock *authkittest.Clock      // the clock the Service reads
-	Cfg   authkit.Config          // the config Svc was built from
-	Svc   *authkit.Service        // the Service under test
+	Cfg   Rules                   // the rules Svc was built from
+	Svc   *Kit                    // the Kit under test
 }
 
 // New builds a World on a throwaway database with PinnedRules applied, then
 // each tweak in order.
-func New(t *testing.T, tweaks ...func(*authkit.Config)) *World {
+func New(t *testing.T, tweaks ...func(*Rules)) *World {
 	t.Helper()
 	w := &World{T: t, Ctx: context.Background(), D: authkittest.NewDB(t), P: authkittest.NewPrincipals(), Clock: authkittest.NewClock()}
-	w.Cfg = authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Hashing: Cheap,
-		HashWait: 200 * time.Millisecond, Clock: w.Clock, Rand: authkittest.Rand(7)}
+	w.Cfg = Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Hashing: Cheap,
+		HashWait: 200 * time.Millisecond, Clock: w.Clock, Rand: authkittest.Rand(7)}}
 	PinnedRules(&w.Cfg)
 	for _, f := range tweaks {
 		f(&w.Cfg)
 	}
-	w.Svc = w.Service(w.Cfg)
+	w.Svc = w.Build(w.Cfg)
 	return w
 }
 
 // PinnedRules sets the session, throttle, event and reset rules the tests
 // pin to fixed values.
-func PinnedRules(c *authkit.Config) {
+func PinnedRules(c *Rules) {
 	c.Session = authkit.SessionRules{IdleTTL: 7 * 24 * time.Hour, AbsoluteTTL: -1}
 	c.Throttle = authkit.Throttle{Failures: 10, Window: 15 * time.Minute, Lockout: 15 * time.Minute, CountAfterVerify: true, PlainLoginKey: true}
 	c.Events.ChangeLogsReset = true
@@ -62,18 +72,24 @@ func PinnedRules(c *authkit.Config) {
 
 // DefaultRules clears the rules PinnedRules sets, so the Service runs on
 // their zero values.
-func DefaultRules(c *authkit.Config) {
+func DefaultRules(c *Rules) {
 	c.Session, c.Throttle, c.Events, c.Reset, c.EventRetention = authkit.SessionRules{}, authkit.Throttle{}, authkit.EventRules{}, authkit.ResetRules{}, 0
 }
 
-// Service builds a Service from cfg over the world's principals.
-func (w *World) Service(cfg authkit.Config) *authkit.Service {
+// Build builds a Kit from r over the world's principals.
+func (w *World) Build(r Rules) *Kit {
 	w.T.Helper()
-	svc, err := authkit.New(cfg, w.P)
+	return w.BuildWith(r, w.P)
+}
+
+// BuildWith builds a Kit from r over the principals p.
+func (w *World) BuildWith(r Rules, p authkit.Principals) *Kit {
+	w.T.Helper()
+	svc, err := authkit.New(r.Config, p)
 	if err != nil {
 		w.T.Fatal(err)
 	}
-	return svc
+	return &Kit{Service: svc}
 }
 
 // User creates a principal with the login and, when pw is not empty, a

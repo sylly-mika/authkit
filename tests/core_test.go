@@ -36,11 +36,7 @@ func (s *sourceLog) take() []string {
 func withSourceLog(w *world) *sourceLog {
 	w.T.Helper()
 	rec := &sourceLog{Principals: w.P}
-	svc, err := authkit.New(w.Cfg, rec)
-	if err != nil {
-		w.T.Fatal(err)
-	}
-	w.Svc = svc
+	w.Svc = w.BuildWith(w.Cfg, rec)
 	return rec
 }
 
@@ -127,7 +123,7 @@ func TestAdmitSeesTheSource(t *testing.T) {
 		}
 	})
 	t.Run("change_password", func(t *testing.T) {
-		w := newWorld(t, func(c *authkit.Config) { c.RevokeOnPasswordChange = authkit.RevokeAll })
+		w := newWorld(t, func(c *kittest.Rules) { c.RevokeOnPasswordChange = authkit.RevokeAll })
 		rec := withSourceLog(w)
 		id := w.User(login, pw)
 		res := w.SignIn(login, pw)
@@ -167,7 +163,7 @@ func TestAdmitSeesTheSource(t *testing.T) {
 
 func TestAttachTwice(t *testing.T) {
 	w := newWorld(t)
-	svc, err := authkit.New(w.Cfg, w.P)
+	svc, err := authkit.New(w.Cfg.Config, w.P)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,11 +182,11 @@ func TestAttachTwice(t *testing.T) {
 
 func TestAttachNames(t *testing.T) {
 	w := newWorld(t)
-	first, err := authkit.New(w.Cfg, w.P)
+	first, err := authkit.New(w.Cfg.Config, w.P)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := authkit.New(w.Cfg, w.P)
+	second, err := authkit.New(w.Cfg.Config, w.P)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,18 +207,18 @@ func TestCoreAttemptCountsAndLocks(t *testing.T) {
 	const login = "ada@example.invalid"
 	cases := []struct {
 		name     string
-		tweaks   []func(*authkit.Config)
+		tweaks   []func(*kittest.Rules)
 		n        int
 		lockedBy bool
 	}{
 		{name: "pinned", n: 10},
-		{name: "defaults", tweaks: []func(*authkit.Config){kittest.DefaultRules}, n: 5, lockedBy: true},
+		{name: "defaults", tweaks: []func(*kittest.Rules){kittest.DefaultRules}, n: 5, lockedBy: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newWorld(t, tc.tweaks...)
 			id := w.User(login, pw)
-			svc, err := authkit.New(w.Cfg, w.P)
+			svc, err := authkit.New(w.Cfg.Config, w.P)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -31,11 +31,7 @@ func (f factorClaim) Admit(ctx context.Context, q db.Querier, prop authkit.Propo
 
 func withFactorClaim(w *world) *world {
 	w.T.Helper()
-	svc, err := authkit.New(w.Cfg, factorClaim{w.P})
-	if err != nil {
-		w.T.Fatal(err)
-	}
-	w.Svc = svc
+	w.Svc = w.BuildWith(w.Cfg, factorClaim{w.P})
 	return w
 }
 
@@ -176,7 +172,7 @@ func TestPasskeyLoginRecordsThePasskeyFactor(t *testing.T) {
 }
 
 func TestChangePasswordRevokingAllKeepsTheSecondFactor(t *testing.T) {
-	w := withFactorClaim(newWorld(t, func(c *authkit.Config) { c.RevokeOnPasswordChange = authkit.RevokeAll }))
+	w := withFactorClaim(newWorld(t, func(c *kittest.Rules) { c.RevokeOnPasswordChange = authkit.RevokeAll }))
 	login := "ada@example.invalid"
 	id := w.User(login, pw)
 	res := w.SignIn(login, pw)

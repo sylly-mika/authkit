@@ -26,7 +26,7 @@ import (
 
 type world struct{ *kittest.World }
 
-func newWorld(t *testing.T, tweaks ...func(*authkit.Config)) *world {
+func newWorld(t *testing.T, tweaks ...func(*kittest.Rules)) *world {
 	t.Helper()
 	return &world{kittest.New(t, tweaks...)}
 }
@@ -35,7 +35,7 @@ func TestTheSixthAttemptIsRefusedUnverified(t *testing.T) {
 	w := newWorld(t, kittest.DefaultRules)
 	id := w.User("ada@example.invalid", "the right password")
 	var calls atomic.Int64
-	authkit.SetVerifyHook(w.Svc, func() { calls.Add(1) })
+	authkit.SetVerifyHook(w.Svc.Service, func() { calls.Add(1) })
 	for i := range 5 {
 		if res := w.Login("staff", "ada@example.invalid", "a wrong password"); !errors.Is(res.Refusal, authkit.ErrInvalidCredentials) {
 			t.Fatalf("attempt %d = %v, want ErrInvalidCredentials", i+1, res.Refusal)
@@ -64,9 +64,9 @@ func TestTheSixthAttemptIsRefusedUnverified(t *testing.T) {
 }
 
 func TestABusyLoginCountsNothing(t *testing.T) {
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
+	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
 	w.User("ada@example.invalid", "the right password")
-	release, err := authkit.HoldHashSlot(w.Ctx, w.Svc)
+	release, err := authkit.HoldHashSlot(w.Ctx, w.Svc.Service)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,12 +81,12 @@ func TestABusyLoginCountsNothing(t *testing.T) {
 
 func TestTheCountComesBeforeTheVerify(t *testing.T) {
 	for name, tc := range map[string]struct {
-		tweak    func(*authkit.Config)
+		tweak    func(*kittest.Rules)
 		key      string
 		verified int64
 	}{
 		"count-before":     {kittest.DefaultRules, kittest.HashedKey("ada@example.invalid"), 0},
-		"CountAfterVerify": {func(*authkit.Config) {}, "ada@example.invalid", 1},
+		"CountAfterVerify": {func(*kittest.Rules) {}, "ada@example.invalid", 1},
 	} {
 		w := newWorld(t, tc.tweak)
 		w.User("ada@example.invalid", "the right password")
@@ -99,7 +99,7 @@ func TestTheCountComesBeforeTheVerify(t *testing.T) {
 			t.Fatal(err)
 		}
 		var calls atomic.Int64
-		authkit.SetVerifyHook(w.Svc, func() { calls.Add(1) })
+		authkit.SetVerifyHook(w.Svc.Service, func() { calls.Add(1) })
 		done := make(chan error, 1)
 		var res authkit.Result
 		go func() {
@@ -127,7 +127,7 @@ func TestLoginVerifiesExactlyOncePerAttempt(t *testing.T) {
 	w.User("known@example.invalid", "the right password")
 	w.User("invited@example.invalid", "")
 	var calls atomic.Int64
-	authkit.SetVerifyHook(w.Svc, func() { calls.Add(1) })
+	authkit.SetVerifyHook(w.Svc.Service, func() { calls.Add(1) })
 	for name, tc := range map[string][2]string{
 		"unknown login":  {"nobody@example.invalid", "whatever it is"},
 		"no credential":  {"invited@example.invalid", "whatever it is"},
@@ -149,7 +149,7 @@ func TestTheLockoutEngagesAfterTenFailures(t *testing.T) {
 		w.Login("staff", "ada@example.invalid", "a wrong password")
 	}
 	var calls atomic.Int64
-	authkit.SetVerifyHook(w.Svc, func() { calls.Add(1) })
+	authkit.SetVerifyHook(w.Svc.Service, func() { calls.Add(1) })
 	w.Clock.Advance(5 * time.Minute)
 	var locked authkit.ErrLocked
 	if res := w.Login("staff", "ada@example.invalid", "the right password"); !errors.As(res.Refusal, &locked) || locked.RetryAfter != 10*time.Minute {
@@ -179,9 +179,9 @@ func TestARehashKeepsAPasswordChangedDuringTheLogin(t *testing.T) {
 	}
 	stronger := w.Cfg
 	stronger.Hashing.Time = 2
-	w.Svc = w.Service(stronger)
+	w.Svc = w.Build(stronger)
 	var once sync.Once
-	authkit.SetVerifyHook(w.Svc, func() {
+	authkit.SetVerifyHook(w.Svc.Service, func() {
 		once.Do(func() {
 			w.D.Exec(t, `UPDATE auth_credentials SET password_hash = $2 WHERE principal_id = $1`, id, changed)
 		})
@@ -204,14 +204,14 @@ func (p admitHook) Admit(ctx context.Context, q db.Querier, prop authkit.Proposa
 }
 
 func TestLoginSkipsTheRehashWhenTheCeilingIsFull(t *testing.T) {
-	w := newWorld(t, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
+	w := newWorld(t, func(c *kittest.Rules) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
 	id := w.User("ada@example.invalid", "the right password")
 	stronger := w.Cfg
 	stronger.Hashing.Time = 2
 	var svc *authkit.Service
 	var release func()
 	hold := true
-	svc, err := authkit.New(stronger, admitHook{w.P, func() {
+	svc, err := authkit.New(stronger.Config, admitHook{w.P, func() {
 		if !hold {
 			return
 		}
@@ -224,7 +224,7 @@ func TestLoginSkipsTheRehashWhenTheCeilingIsFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Svc = svc
+	w.Svc = &kittest.Kit{Service: svc}
 	w.SignIn("ada@example.invalid", "the right password")
 	if h := w.StoredHash(id); !strings.Contains(h, ",t=1,") {
 		t.Fatalf("hash after a sign-in with the ceiling full = %q; want the rehash skipped", h)
@@ -238,9 +238,9 @@ func TestLoginSkipsTheRehashWhenTheCeilingIsFull(t *testing.T) {
 }
 
 func TestLoginAnswersBusyWhenTheCeilingIsFull(t *testing.T) {
-	w := newWorld(t, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
+	w := newWorld(t, func(c *kittest.Rules) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
 	w.User("ada@example.invalid", "the right password")
-	release, err := authkit.HoldHashSlot(w.Ctx, w.Svc)
+	release, err := authkit.HoldHashSlot(w.Ctx, w.Svc.Service)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestPasskeyOwnerHandlerRefusesAnotherUsersHandle(t *testing.T) {
 }
 
 func passkeyWorld(t *testing.T, ttl time.Duration) *world {
-	return newWorld(t, func(c *authkit.Config) {
+	return newWorld(t, func(c *kittest.Rules) {
 		c.Passkeys = authkit.PasskeyRules{
 			RPID:   "localhost",
 			RPName: "ino-tasks",
@@ -310,7 +310,7 @@ func optionsMap(t *testing.T, v any) map[string]any {
 
 func TestPasskeyRelyingPartyPerAudience(t *testing.T) {
 	w := passkeyWorld(t, 2*time.Minute)
-	staff, ok, err := authkit.PasskeyRP(w.Svc, "staff")
+	staff, ok, err := authkit.PasskeyRP(w.Svc.Service, "staff")
 	if !ok || err != nil {
 		t.Fatalf("staff relying party: ok=%v err=%v", ok, err)
 	}
@@ -327,7 +327,7 @@ func TestPasskeyRelyingPartyPerAudience(t *testing.T) {
 		t.Errorf("the staff relying party refused its own origin: %v", err)
 	}
 
-	client, ok, err := authkit.PasskeyRP(w.Svc, "client")
+	client, ok, err := authkit.PasskeyRP(w.Svc.Service, "client")
 	if !ok || err != nil {
 		t.Fatalf("client relying party: ok=%v err=%v", ok, err)
 	}
@@ -338,7 +338,7 @@ func TestPasskeyRelyingPartyPerAudience(t *testing.T) {
 		t.Error("the client relying party began a login from the staff origin")
 	}
 
-	rp, ok, err := authkit.PasskeyRP(w.Svc, "agent")
+	rp, ok, err := authkit.PasskeyRP(w.Svc.Service, "agent")
 	if rp != nil || ok || err != nil {
 		t.Fatalf("an audience with no relying party: rp=%v ok=%v err=%v", rp != nil, ok, err)
 	}
@@ -348,7 +348,7 @@ var ada = authkit.Principal{ID: uuid.MustParse("6f1c2a52-8a43-4c1e-9d6f-0b7e2f6c
 
 func TestPasskeyRegistrationOptions(t *testing.T) {
 	w := passkeyWorld(t, 2*time.Minute)
-	rp, _, err := authkit.PasskeyRP(w.Svc, "staff")
+	rp, _, err := authkit.PasskeyRP(w.Svc.Service, "staff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestPasskeyRegistrationOptions(t *testing.T) {
 
 func TestPasskeyLoginOptionsUseTheCeremonyTTL(t *testing.T) {
 	w := passkeyWorld(t, 90*time.Second)
-	rp, _, err := authkit.PasskeyRP(w.Svc, "staff")
+	rp, _, err := authkit.PasskeyRP(w.Svc.Service, "staff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestPasskeyLoginOptionsUseTheCeremonyTTL(t *testing.T) {
 
 func TestPasskeysOffWithoutRPID(t *testing.T) {
 	w := newWorld(t)
-	rp, ok, err := authkit.PasskeyRP(w.Svc, "staff")
+	rp, ok, err := authkit.PasskeyRP(w.Svc.Service, "staff")
 	if rp != nil || ok || !errors.Is(err, authkit.ErrPasskeysOff) {
 		t.Fatalf("passkeys off: rp=%v ok=%v err=%v, want ErrPasskeysOff", rp != nil, ok, err)
 	}
@@ -430,7 +430,7 @@ func TestPasskeysOffWithoutRPID(t *testing.T) {
 
 func TestPasskeyUserCarriesTheHandleAndCredentials(t *testing.T) {
 	w := passkeyWorld(t, 2*time.Minute)
-	rp, _, err := authkit.PasskeyRP(w.Svc, "staff")
+	rp, _, err := authkit.PasskeyRP(w.Svc.Service, "staff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +452,7 @@ func TestPasskeyUserCarriesTheHandleAndCredentials(t *testing.T) {
 }
 
 func TestChangePasswordHashesBeforeItLocks(t *testing.T) {
-	w := newWorld(t, func(c *authkit.Config) { c.HashConcurrency = 1 })
+	w := newWorld(t, func(c *kittest.Rules) { c.HashConcurrency = 1 })
 	id := w.User("ada@example.invalid", "the old password")
 	keep := w.SignIn("ada@example.invalid", "the old password")
 	holder, err := w.D.Owner.BeginTx(w.Ctx, nil)
@@ -474,7 +474,7 @@ func TestChangePasswordHashesBeforeItLocks(t *testing.T) {
 		})
 	}()
 	w.D.WaitForLockWaiters(t, 1)
-	release, err := authkit.HoldHashSlot(w.Ctx, w.Svc)
+	release, err := authkit.HoldHashSlot(w.Ctx, w.Svc.Service)
 	if err != nil {
 		t.Fatal(err)
 	}

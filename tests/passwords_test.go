@@ -220,8 +220,8 @@ func TestChangePasswordLocksTheCredentialBeforeTheSession(t *testing.T) {
 }
 
 func TestAnAppHeldSlotServesTheHashingMethods(t *testing.T) {
-	for name, tweak := range map[string]func(*authkit.Config){"count-before": kittest.DefaultRules, "CountAfterVerify": func(*authkit.Config) {}} {
-		w := newWorld(t, tweak, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
+	for name, tweak := range map[string]func(*kittest.Rules){"count-before": kittest.DefaultRules, "CountAfterVerify": func(*kittest.Rules) {}} {
+		w := newWorld(t, tweak, func(c *kittest.Rules) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
 		ada := authkit.Principal{ID: w.User("ada@example.invalid", "the right password"), Login: "ada@example.invalid"}
 		invited := authkit.Principal{ID: w.User("invited@example.invalid", ""), Login: "invited@example.invalid"}
 		held, release, res, err := w.Svc.AcquireHashSlot(w.Ctx)
@@ -251,7 +251,7 @@ func TestAnAppHeldSlotServesTheHashingMethods(t *testing.T) {
 }
 
 func TestAcquireHashSlotRefusesBusyAndReturnsTheContextsError(t *testing.T) {
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
+	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) { c.HashConcurrency, c.HashWait = 1, 50*time.Millisecond })
 	_, release, _, err := w.Svc.AcquireHashSlot(w.Ctx)
 	if err != nil {
 		t.Fatal(err)

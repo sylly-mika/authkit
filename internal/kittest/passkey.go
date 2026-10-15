@@ -16,7 +16,7 @@ import (
 const StaffOrigin, ClientOrigin = "http://localhost:3000", "http://localhost:3100"
 
 // Passkeys turns passkey sign-in on for localhost, with the staff and client origins.
-func Passkeys(c *authkit.Config) {
+func Passkeys(c *Rules) {
 	c.Passkeys = authkit.PasskeyRules{RPID: "localhost", Origins: map[authkit.Audience][]string{"staff": {StaffOrigin}, "client": {ClientOrigin}}, CeremonyTTL: 2 * time.Minute}
 }
 

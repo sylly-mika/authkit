@@ -15,9 +15,10 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/kittest"
 )
 
-func withPasskeys(c *authkit.Config) {
+func withPasskeys(c *kittest.Rules) {
 	c.Passkeys = authkit.PasskeyRules{RPID: "localhost", Origins: map[authkit.Audience][]string{"staff": {"http://localhost:3000"}, "client": {"http://localhost:3100"}}}
 }
 
@@ -246,7 +247,7 @@ func TestRenameAndDeleteAnswerAForeignIdAsUnknown(t *testing.T) {
 
 func TestDeletePasskeyRevokesTheOtherSessions(t *testing.T) {
 	rec := &captured{}
-	w := newWorld(t, withPasskeys, func(c *authkit.Config) { c.OnEvent = rec.onEvent })
+	w := newWorld(t, withPasskeys, func(c *kittest.Rules) { c.OnEvent = rec.onEvent })
 	ada := w.User("ada@example.invalid", "the right password")
 	w.User("bob@example.invalid", "the right password")
 	a1 := w.SignIn("ada@example.invalid", "the right password")

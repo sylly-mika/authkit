@@ -10,14 +10,15 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/kittest"
 	"github.com/sylly-mika/authkit/internal/token"
 )
 
 var sixDigits = regexp.MustCompile(`^[0-9]{6}$`)
 
-func emailWorld(t *testing.T, tweaks ...func(*authkit.Config)) *world {
+func emailWorld(t *testing.T, tweaks ...func(*kittest.Rules)) *world {
 	t.Helper()
-	return withFactorClaim(newWorld(t, append([]func(*authkit.Config){factors}, tweaks...)...))
+	return withFactorClaim(newWorld(t, append([]func(*kittest.Rules){factors}, tweaks...)...))
 }
 
 func (w *world) emailUser() uuid.UUID {
@@ -395,7 +396,7 @@ func TestSecondStepEmailCodeTakesFiveWrongTries(t *testing.T) {
 
 func TestSecondStepEmailCodeExpires(t *testing.T) {
 	login := "ada@example.invalid"
-	w := emailWorld(t, func(c *authkit.Config) { c.SecondFactors.EmailCodeTTL = 2 * time.Minute })
+	w := emailWorld(t, func(c *kittest.Rules) { c.SecondFactors.EmailCodeTTL = 2 * time.Minute })
 	w.emailUser()
 	tok := w.challenge(login)
 	sent := w.stepSend("staff", tok)
@@ -468,7 +469,7 @@ func (roundingClock) Now() time.Time {
 	return time.Date(2040, time.January, 1, 12, 0, 0, 1_000_700, time.UTC)
 }
 
-func withRoundingClock(c *authkit.Config) { c.Clock = roundingClock{} }
+func withRoundingClock(c *kittest.Rules) { c.Clock = roundingClock{} }
 
 func TestAFreshEmailCodeIsNotRefusedAsSentTooSoon(t *testing.T) {
 	rows := []struct {

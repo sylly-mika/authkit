@@ -13,6 +13,7 @@ import (
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
+	"github.com/sylly-mika/authkit/internal/kittest"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 
@@ -41,7 +42,7 @@ func TestLoginSignsIn(t *testing.T) {
 }
 
 func TestLoginHonoursRefreshTTLFor(t *testing.T) {
-	w := newWorld(t, func(c *authkit.Config) {
+	w := newWorld(t, func(c *kittest.Rules) {
 		c.RefreshTTLFor = map[authkit.Audience]time.Duration{"client": time.Hour}
 	})
 	w.User("ada@example.invalid", "the right password")
@@ -217,7 +218,7 @@ func TestLoginRehashesWhenTheParametersRise(t *testing.T) {
 	id := w.User("ada@example.invalid", "the right password")
 	stronger := w.Cfg
 	stronger.Hashing.Time = 2
-	w.Svc = w.Service(stronger)
+	w.Svc = w.Build(stronger)
 	w.SignIn("ada@example.invalid", "the right password")
 	var hash string
 	if err := w.D.Row(t, `SELECT password_hash FROM auth_credentials WHERE principal_id = $1`, id).Scan(&hash); err != nil || !strings.Contains(hash, ",t=2,") {
@@ -292,7 +293,7 @@ func TestTheAccessTokenUsesTheMethodsInstant(t *testing.T) {
 	w.User("ada@example.invalid", "the right password")
 	cfg := w.Cfg
 	cfg.Clock = ticking{w.Clock}
-	w.Svc = w.Service(cfg)
+	w.Svc = w.Build(cfg)
 	res := w.SignIn("ada@example.invalid", "the right password")
 	if want := res.Session.CreatedAt.Add(15 * time.Minute); !res.Tokens.ExpiresAt.Equal(want) {
 		t.Fatalf("Login's access token expires at %v, want its session's now + 15m = %v", res.Tokens.ExpiresAt, want)

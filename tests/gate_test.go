@@ -138,7 +138,7 @@ func TestGateEveryPath(t *testing.T) {
 	})
 
 	t.Run("change password", func(t *testing.T) {
-		revokeAll := func(c *authkit.Config) { c.RevokeOnPasswordChange = authkit.RevokeAll }
+		revokeAll := func(c *kittest.Rules) { c.RevokeOnPasswordChange = authkit.RevokeAll }
 		w := newWorld(t, factors, revokeAll)
 		rec := withSourceLog(w)
 		ada := w.User(gateLogin, pw)
