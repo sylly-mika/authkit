@@ -24,6 +24,7 @@ func (c *Core) Begin(ctx context.Context, q db.Querier, src string, aud Audience
 	m = m.clean()
 	a := &Attempt{c: c, src: src, keyed: true, attempt: attempt{aud: aud, key: Normalize(login), now: c.s.now(), m: m,
 		ev: events.Event{Audience: string(aud), Login: typedLogin(login), IP: m.IP, UserAgent: m.UserAgent}}}
+	// WHY: a login longer than any account's is unknown, so no account escapes the throttle through it.
 	a.counted = utf8.RuneCountInString(a.key) <= maxLoginRunes
 	until, locked, err := c.s.throttled(ctx, q, &a.attempt)
 	if err != nil {
