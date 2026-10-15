@@ -295,6 +295,10 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.exchanges++
+	if r.Header.Get("Authorization") != "" {
+		s.refuse(w, http.StatusUnauthorized, "invalid_client", "authorization")
+		return
+	}
 	if form.Get("client_id") != s.ClientID {
 		s.refuse(w, http.StatusUnauthorized, "invalid_client", "client_id")
 		return
@@ -339,7 +343,7 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) clientSecretOK(secret string) bool {
 	if s.kind == Apple {
-		return true
+		return s.verifyAppleSecret(secret)
 	}
 	return subtle.ConstantTimeCompare([]byte(secret), []byte(s.secret)) == 1
 }

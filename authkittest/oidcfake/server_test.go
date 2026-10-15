@@ -2,8 +2,13 @@ package oidcfake
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
@@ -16,6 +21,7 @@ import (
 	"time"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
+	jose "github.com/go-jose/go-jose/v4"
 	"github.com/sylly-mika/authkit/oidc"
 	"golang.org/x/oauth2"
 )
@@ -412,6 +418,205 @@ func TestFakeAuthorizeChecksRequest(t *testing.T) {
 			}
 			if cb := tc.s.Authorize(t, good, User{Subject: "s"}); cb.Code == "" {
 				t.Errorf("the good request after the refusal returned no code")
+			}
+		})
+	}
+}
+
+func sentSecret(t *testing.T, p oidc.Provider) string {
+	t.Helper()
+	if p.Secret == nil {
+		return p.ClientSecret
+	}
+	secret, err := p.Secret(at)
+	if err != nil {
+		t.Fatalf("client secret: %v", err)
+	}
+	return secret
+}
+
+func fixedSecret(secret string) func(time.Time) (string, error) {
+	return func(time.Time) (string, error) { return secret, nil }
+}
+
+func appleSecretFrom(t *testing.T, team, kid, servicesID string, p8 []byte) func(time.Time) (string, error) {
+	t.Helper()
+	q, err := oidc.Apple(team, kid, servicesID, p8, redirect)
+	if err != nil {
+		t.Fatalf("Apple provider: %v", err)
+	}
+	return q.Secret
+}
+
+func otherP8(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+}
+
+func appleSecretWithAud(t *testing.T, s *Server, aud string) string {
+	t.Helper()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: s.appleKey},
+		(&jose.SignerOptions{}).WithHeader(jose.HeaderKey("kid"), s.keyID))
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	claims, err := json.Marshal(map[string]any{
+		"iss": s.teamID, "sub": s.ClientID, "aud": aud,
+		"iat": at.Unix(), "exp": at.Add(5 * time.Minute).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("claims: %v", err)
+	}
+	obj, err := signer.Sign(claims)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	compact, err := obj.CompactSerialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	return compact
+}
+
+func TestFakeAppleChecksClientSecret(t *testing.T) {
+	cases := []struct {
+		name   string
+		secret func(t *testing.T, s *Server, p oidc.Provider) func(time.Time) (string, error)
+	}{
+		{"wrong key", func(t *testing.T, s *Server, _ oidc.Provider) func(time.Time) (string, error) {
+			return appleSecretFrom(t, s.teamID, s.keyID, s.ClientID, otherP8(t))
+		}},
+		{"wrong kid", func(t *testing.T, s *Server, _ oidc.Provider) func(time.Time) (string, error) {
+			return appleSecretFrom(t, s.teamID, "OTHERKEY01", s.ClientID, s.p8)
+		}},
+		{"wrong team", func(t *testing.T, s *Server, _ oidc.Provider) func(time.Time) (string, error) {
+			return appleSecretFrom(t, "OTHERTEAM1", s.keyID, s.ClientID, s.p8)
+		}},
+		{"wrong services id", func(t *testing.T, s *Server, _ oidc.Provider) func(time.Time) (string, error) {
+			return appleSecretFrom(t, s.teamID, s.keyID, "lv.example.other", s.p8)
+		}},
+		{"wrong aud", func(t *testing.T, s *Server, _ oidc.Provider) func(time.Time) (string, error) {
+			return fixedSecret(appleSecretWithAud(t, s, "https://example.invalid"))
+		}},
+		{"expired", func(t *testing.T, _ *Server, p oidc.Provider) func(time.Time) (string, error) {
+			old, err := p.Secret(at.Add(-10 * time.Minute))
+			if err != nil {
+				t.Fatalf("client secret: %v", err)
+			}
+			return fixedSecret(old)
+		}},
+		{"not a JWT", func(t *testing.T, _ *Server, _ oidc.Provider) func(time.Time) (string, error) {
+			return fixedSecret("not-a-jwt")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newServer(t, Apple)
+			p := s.Provider(redirect)
+			r, verifier, _ := begin(t, s, p)
+			cb := s.Authorize(t, r, User{Subject: "k-1"})
+
+			bad := p
+			bad.Secret = tc.secret(t, s, p)
+			sent, err := bad.Secret(at)
+			if err != nil {
+				t.Fatalf("client secret: %v", err)
+			}
+			_, err = exchange(t, s, bad, p.AuthStyle, cb.Code, verifier)
+			if code, status, body := refused(t, err); code != "invalid_client" || status != http.StatusUnauthorized {
+				t.Errorf("a bad client secret: %s %d, want invalid_client 401", code, status)
+			} else {
+				noEcho(t, body, sent, cb.Code, verifier)
+			}
+
+			tok, err := exchange(t, s, p, p.AuthStyle, cb.Code, verifier)
+			if err != nil {
+				t.Fatalf("the right secret after a refusal: %v", err)
+			}
+			if idToken, _ := tok.Extra("id_token").(string); idToken == "" {
+				t.Error("the right secret has no id_token")
+			}
+			if n := s.Exchanges(); n != 2 {
+				t.Errorf("Exchanges() = %d, want 2", n)
+			}
+		})
+	}
+}
+
+func TestFakeRefusesBasicAuth(t *testing.T) {
+	for _, k := range []struct {
+		name string
+		kind Kind
+	}{{"google", Google}, {"apple", Apple}} {
+		t.Run(k.name, func(t *testing.T) {
+			s := newServer(t, k.kind)
+			p := s.Provider(redirect)
+			secret := sentSecret(t, p)
+
+			r, verifier, _ := begin(t, s, p)
+			cb := s.Authorize(t, r, User{Subject: "b-1"})
+			form := url.Values{
+				"grant_type":    {"authorization_code"},
+				"code":          {cb.Code},
+				"redirect_uri":  {p.RedirectURL},
+				"code_verifier": {verifier},
+				"client_id":     {p.ClientID},
+				"client_secret": {secret},
+			}
+			req, err := http.NewRequest(http.MethodPost, p.TokenURL, strings.NewReader(form.Encode()))
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.SetBasicAuth(p.ClientID, secret)
+			resp, err := s.Client.Do(req)
+			if err != nil {
+				t.Fatalf("raw token request: %v", err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				t.Fatalf("reading the answer: %v", err)
+			}
+			var answer struct {
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(body, &answer); err != nil {
+				t.Fatalf("the answer is not JSON: %v", err)
+			}
+			if resp.StatusCode != http.StatusUnauthorized || answer.Error != "invalid_client" {
+				t.Errorf("a Basic header: %d %s, want 401 invalid_client", resp.StatusCode, answer.Error)
+			}
+			noEcho(t, string(body), secret, cb.Code, verifier)
+
+			tok, err := exchange(t, s, p, oauth2.AuthStyleInParams, cb.Code, verifier)
+			if err != nil {
+				t.Fatalf("the body exchange after a refused Basic request: %v", err)
+			}
+			if idToken, _ := tok.Extra("id_token").(string); idToken == "" {
+				t.Error("the body exchange has no id_token")
+			}
+
+			r, verifier, _ = begin(t, s, p)
+			cb = s.Authorize(t, r, User{Subject: "b-2"})
+			before := s.Exchanges()
+			tok, err = exchange(t, s, p, oauth2.AuthStyle(0), cb.Code, verifier)
+			if err != nil {
+				t.Fatalf("the probing exchange: %v", err)
+			}
+			if idToken, _ := tok.Extra("id_token").(string); idToken == "" {
+				t.Error("the probing exchange has no id_token")
+			}
+			if n := s.Exchanges() - before; n != 2 {
+				t.Errorf("the probing exchange made %d requests, want 2 (header refused, body accepted)", n)
 			}
 		})
 	}
