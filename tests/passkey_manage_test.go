@@ -1,4 +1,4 @@
-package authkit_test
+package tests
 
 import (
 	"crypto/rand"
@@ -22,81 +22,81 @@ func withPasskeys(c *authkit.Config) {
 }
 
 func (w *world) addStoredPasskey(owner uuid.UUID, label string, backedUp bool) uuid.UUID {
-	w.t.Helper()
+	w.T.Helper()
 	credID := make([]byte, 16)
 	if _, err := rand.Read(credID); err != nil {
-		w.t.Fatal(err)
+		w.T.Fatal(err)
 	}
 	data, err := json.Marshal(webauthn.Credential{ID: credID, PublicKey: []byte{1}, Flags: webauthn.CredentialFlags{UserPresent: true, UserVerified: true, BackupEligible: backedUp, BackupState: backedUp}})
 	if err != nil {
-		w.t.Fatal(err)
+		w.T.Fatal(err)
 	}
 	id := uuid.New()
-	w.d.Exec(w.t, "INSERT INTO auth_passkeys (id, principal_id, credential_id, label, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)", id, owner, credID, label, string(data), w.clock.Now())
+	w.D.Exec(w.T, "INSERT INTO auth_passkeys (id, principal_id, credential_id, label, data, created_at) VALUES ($1, $2, $3, $4, $5, $6)", id, owner, credID, label, string(data), w.Clock.Now())
 	return id
 }
 
 func (w *world) listPasskeys(principal uuid.UUID) []authkit.Passkey {
-	w.t.Helper()
+	w.T.Helper()
 	var out []authkit.Passkey
-	if err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		out, err = w.svc.ListPasskeys(w.ctx, q, principal)
+		out, err = w.Svc.ListPasskeys(w.Ctx, q, principal)
 		return err
 	}); err != nil {
-		w.t.Fatalf("ListPasskeys: %v", err)
+		w.T.Fatalf("ListPasskeys: %v", err)
 	}
 	return out
 }
 
 func (w *world) renamePasskey(c *authkit.Claims, id uuid.UUID, label string) (authkit.Result, error) {
-	w.t.Helper()
+	w.T.Helper()
 	var res authkit.Result
-	err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		res, err = w.svc.RenamePasskey(w.ctx, q, c, id, label)
+		res, err = w.Svc.RenamePasskey(w.Ctx, q, c, id, label)
 		return err
 	})
 	return res, err
 }
 
 func (w *world) deletePasskey(c *authkit.Claims, id uuid.UUID) (authkit.Result, error) {
-	w.t.Helper()
+	w.T.Helper()
 	var res authkit.Result
-	err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		res, err = w.svc.DeletePasskey(w.ctx, q, c, id, authkit.Meta{IP: "192.0.2.7", UserAgent: "authkit-test"})
+		res, err = w.Svc.DeletePasskey(w.Ctx, q, c, id, authkit.Meta{IP: "192.0.2.7", UserAgent: "authkit-test"})
 		return err
 	})
 	return res, err
 }
 
 func (w *world) sessionLive(id uuid.UUID) bool {
-	w.t.Helper()
-	return w.count("SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL", id) == 1
+	w.T.Helper()
+	return w.Count("SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL", id) == 1
 }
 
 func (w *world) storedLabel(id uuid.UUID) string {
-	w.t.Helper()
+	w.T.Helper()
 	var label string
-	if err := w.d.Row(w.t, "SELECT label FROM auth_passkeys WHERE id = $1", id).Scan(&label); err != nil {
-		w.t.Fatal(err)
+	if err := w.D.Row(w.T, "SELECT label FROM auth_passkeys WHERE id = $1", id).Scan(&label); err != nil {
+		w.T.Fatal(err)
 	}
 	return label
 }
 
 func (w *world) passkeyRemovedEvents(principal uuid.UUID) int {
-	w.t.Helper()
-	return w.count("SELECT count(*) FROM auth_events WHERE result = 'passkey_removed' AND principal_id = $1", principal)
+	w.T.Helper()
+	return w.Count("SELECT count(*) FROM auth_events WHERE result = 'passkey_removed' AND principal_id = $1", principal)
 }
 
 func TestListPasskeysShowsOnlyTheCallersOwn(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	bob := w.user("bob@example.invalid", "the right password")
-	start := w.clock.Now()
+	ada := w.User("ada@example.invalid", "the right password")
+	bob := w.User("bob@example.invalid", "the right password")
+	start := w.Clock.Now()
 	x := w.addStoredPasskey(ada, "Laptop", false)
-	w.clock.Advance(time.Minute)
+	w.Clock.Advance(time.Minute)
 	y := w.addStoredPasskey(ada, "Phone", true)
 	w.addStoredPasskey(bob, "Bob key", false)
 	list := w.listPasskeys(ada)
@@ -116,8 +116,8 @@ func TestListPasskeysShowsOnlyTheCallersOwn(t *testing.T) {
 
 func TestListPasskeysShowsAPasskeyAsRegistrationReturnedIt(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	begin := regBegin(w, c)
 	if begin.Refusal != nil || begin.Ceremony == nil {
 		t.Fatalf("begin: refusal %v, ceremony given %v", begin.Refusal, begin.Ceremony != nil)
@@ -138,15 +138,15 @@ func TestListPasskeysShowsAPasskeyAsRegistrationReturnedIt(t *testing.T) {
 
 func TestRenamePasskeyTrimsTheLabelAndKeepsTheRest(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	x := w.addStoredPasskey(ada, "Laptop", true)
 	y := w.addStoredPasskey(ada, "Phone", false)
 	var before string
-	if err := w.d.Row(w.t, "SELECT data::text FROM auth_passkeys WHERE id = $1", x).Scan(&before); err != nil {
+	if err := w.D.Row(w.T, "SELECT data::text FROM auth_passkeys WHERE id = $1", x).Scan(&before); err != nil {
 		t.Fatal(err)
 	}
-	events := w.count("SELECT count(*) FROM auth_events WHERE principal_id = $1", ada)
+	events := w.Count("SELECT count(*) FROM auth_events WHERE principal_id = $1", ada)
 	got, err := w.renamePasskey(c, x, "  Desk key \n")
 	if err != nil || got.Refusal != nil {
 		t.Fatalf("rename: refusal %v, err %v", got.Refusal, err)
@@ -158,7 +158,7 @@ func TestRenamePasskeyTrimsTheLabelAndKeepsTheRest(t *testing.T) {
 		t.Errorf("stored label of %s = %q, want %q", x, label, "Desk key")
 	}
 	var after string
-	if err := w.d.Row(w.t, "SELECT data::text FROM auth_passkeys WHERE id = $1", x).Scan(&after); err != nil {
+	if err := w.D.Row(w.T, "SELECT data::text FROM auth_passkeys WHERE id = $1", x).Scan(&after); err != nil {
 		t.Fatal(err)
 	}
 	if after != before {
@@ -167,17 +167,17 @@ func TestRenamePasskeyTrimsTheLabelAndKeepsTheRest(t *testing.T) {
 	if label := w.storedLabel(y); label != "Phone" {
 		t.Errorf("the other passkey %s has label %q, want Phone", y, label)
 	}
-	if n := w.count("SELECT count(*) FROM auth_events WHERE principal_id = $1", ada); n != events {
+	if n := w.Count("SELECT count(*) FROM auth_events WHERE principal_id = $1", ada); n != events {
 		t.Errorf("rename logged %d events, want none", n-events)
 	}
 }
 
 func TestRenamePasskeyNeedsNoRecentSignIn(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	x := w.addStoredPasskey(ada, "Laptop", false)
-	w.clock.Advance(time.Hour)
+	w.Clock.Advance(time.Hour)
 	got, err := w.renamePasskey(c, x, "Old laptop")
 	if err != nil || got.Refusal != nil {
 		t.Fatalf("rename after an hour: refusal %v, err %v", got.Refusal, err)
@@ -189,8 +189,8 @@ func TestRenamePasskeyNeedsNoRecentSignIn(t *testing.T) {
 
 func TestRenamePasskeyRefusesABadLabel(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	x := w.addStoredPasskey(ada, "Laptop", false)
 	for _, bad := range []string{"", "   ", strings.Repeat("é", 65), "Bad\nlabel", "tab\tkey", "nul\x00"} {
 		got, err := w.renamePasskey(c, x, bad)
@@ -213,11 +213,11 @@ func TestRenamePasskeyRefusesABadLabel(t *testing.T) {
 
 func TestRenameAndDeleteAnswerAForeignIdAsUnknown(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	bob := w.user("bob@example.invalid", "the right password")
-	a1 := w.signIn("ada@example.invalid", "the right password")
-	a2 := w.signIn("ada@example.invalid", "the right password")
-	c1 := w.claims(a1)
+	ada := w.User("ada@example.invalid", "the right password")
+	bob := w.User("bob@example.invalid", "the right password")
+	a1 := w.SignIn("ada@example.invalid", "the right password")
+	a2 := w.SignIn("ada@example.invalid", "the right password")
+	c1 := w.Claims(a1)
 	xa := w.addStoredPasskey(ada, "Laptop", false)
 	xb := w.addStoredPasskey(bob, "Bob key", false)
 	for _, id := range []uuid.UUID{xb, uuid.New()} {
@@ -247,25 +247,25 @@ func TestRenameAndDeleteAnswerAForeignIdAsUnknown(t *testing.T) {
 func TestDeletePasskeyRevokesTheOtherSessions(t *testing.T) {
 	rec := &captured{}
 	w := newWorld(t, withPasskeys, func(c *authkit.Config) { c.OnEvent = rec.onEvent })
-	ada := w.user("ada@example.invalid", "the right password")
-	w.user("bob@example.invalid", "the right password")
-	a1 := w.signIn("ada@example.invalid", "the right password")
-	a2 := w.signIn("ada@example.invalid", "the right password")
-	b1 := w.signIn("bob@example.invalid", "the right password")
+	ada := w.User("ada@example.invalid", "the right password")
+	w.User("bob@example.invalid", "the right password")
+	a1 := w.SignIn("ada@example.invalid", "the right password")
+	a2 := w.SignIn("ada@example.invalid", "the right password")
+	b1 := w.SignIn("bob@example.invalid", "the right password")
 	x := w.addStoredPasskey(ada, "Laptop", false)
 	y := w.addStoredPasskey(ada, "Phone", false)
 	rec.pairs = nil
-	got, err := w.deletePasskey(w.claims(a1), x)
+	got, err := w.deletePasskey(w.Claims(a1), x)
 	if err != nil || got.Refusal != nil {
 		t.Fatalf("delete: refusal %v, err %v", got.Refusal, err)
 	}
 	if got.Passkey == nil || got.Passkey.ID != x || got.Passkey.Label != "Laptop" {
 		t.Errorf("deleted passkey = %+v, want %s Laptop", got.Passkey, x)
 	}
-	if n := w.count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 0 {
+	if n := w.Count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 0 {
 		t.Errorf("passkey %s still stored", x)
 	}
-	if n := w.count("SELECT count(*) FROM auth_passkeys WHERE id = $1", y); n != 1 {
+	if n := w.Count("SELECT count(*) FROM auth_passkeys WHERE id = $1", y); n != 1 {
 		t.Errorf("passkey %s stored %d times, want 1", y, n)
 	}
 	if !w.sessionLive(a1.Session.ID) {
@@ -276,10 +276,10 @@ func TestDeletePasskeyRevokesTheOtherSessions(t *testing.T) {
 	}
 	var at time.Time
 	var reason string
-	if err := w.d.Row(w.t, "SELECT revoked_at, revoke_reason FROM auth_sessions WHERE id = $1", a2.Session.ID).Scan(&at, &reason); err != nil {
+	if err := w.D.Row(w.T, "SELECT revoked_at, revoke_reason FROM auth_sessions WHERE id = $1", a2.Session.ID).Scan(&at, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if !at.Equal(w.clock.Now()) || reason != "passkey_removed" {
+	if !at.Equal(w.Clock.Now()) || reason != "passkey_removed" {
 		t.Errorf("other session revoked at %v for %q, want now for passkey_removed", at, reason)
 	}
 	if !w.sessionLive(b1.Session.ID) {
@@ -288,23 +288,23 @@ func TestDeletePasskeyRevokesTheOtherSessions(t *testing.T) {
 	if want := []string{"delete_passkey/passkey_removed"}; !slices.Equal(rec.pairs, want) {
 		t.Errorf("events = %v, want %v", rec.pairs, want)
 	}
-	if n := w.count("SELECT count(*) FROM auth_events WHERE result = 'passkey_removed' AND principal_id = $1 AND session_id = $2 AND ip = '192.0.2.7'", ada, a1.Session.ID); n != 1 {
+	if n := w.Count("SELECT count(*) FROM auth_events WHERE result = 'passkey_removed' AND principal_id = $1 AND session_id = $2 AND ip = '192.0.2.7'", ada, a1.Session.ID); n != 1 {
 		t.Errorf("passkey_removed events for the caller = %d, want 1", n)
 	}
 }
 
 func TestDeletePasskeyNeedsARecentSignIn(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	a1 := w.signIn("ada@example.invalid", "the right password")
-	a2 := w.signIn("ada@example.invalid", "the right password")
+	ada := w.User("ada@example.invalid", "the right password")
+	a1 := w.SignIn("ada@example.invalid", "the right password")
+	a2 := w.SignIn("ada@example.invalid", "the right password")
 	x := w.addStoredPasskey(ada, "Laptop", false)
-	w.clock.Advance(5*time.Minute + time.Second)
-	got, err := w.deletePasskey(w.claims(a1), x)
+	w.Clock.Advance(5*time.Minute + time.Second)
+	got, err := w.deletePasskey(w.Claims(a1), x)
 	if err != nil || !errors.Is(got.Refusal, authkit.ErrReauthRequired) || got.Passkey != nil {
 		t.Errorf("delete after the re-auth window: refusal %v, err %v, passkey given %v, want ErrReauthRequired", got.Refusal, err, got.Passkey != nil)
 	}
-	if n := w.count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 1 {
+	if n := w.Count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 1 {
 		t.Errorf("passkey %s stored %d times after a refused delete, want 1", x, n)
 	}
 	if !w.sessionLive(a2.Session.ID) {
@@ -317,75 +317,75 @@ func TestDeletePasskeyNeedsARecentSignIn(t *testing.T) {
 
 func TestDeletePasskeyCountsFromTheLastPasswordProof(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	a1 := w.signIn("ada@example.invalid", "the right password")
+	ada := w.User("ada@example.invalid", "the right password")
+	a1 := w.SignIn("ada@example.invalid", "the right password")
 	x := w.addStoredPasskey(ada, "Laptop", false)
-	w.clock.Advance(10 * time.Minute)
-	changed := w.inAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.svc.ChangePassword(w.ctx, q, w.claims(a1), "the right password", "another password", authkit.Meta{})
+	w.Clock.Advance(10 * time.Minute)
+	changed := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.ChangePassword(w.Ctx, q, w.Claims(a1), "the right password", "another password", authkit.Meta{})
 	})
 	if changed.Refusal != nil {
 		t.Fatalf("change password: refusal %v", changed.Refusal)
 	}
-	w.clock.Advance(4 * time.Minute)
-	got, err := w.deletePasskey(w.claims(a1), x)
+	w.Clock.Advance(4 * time.Minute)
+	got, err := w.deletePasskey(w.Claims(a1), x)
 	if err != nil || got.Refusal != nil {
 		t.Fatalf("delete four minutes after the password proof: refusal %v, err %v", got.Refusal, err)
 	}
-	if n := w.count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 0 {
+	if n := w.Count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 0 {
 		t.Errorf("passkey %s still stored", x)
 	}
 }
 
 func TestDeletePasskeyFromASwitchedSessionKeepsItsSignInTime(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
+	ada := w.User("ada@example.invalid", "the right password")
 	p := authkit.Principal{ID: ada, Login: "ada@example.invalid"}
 	x := w.addStoredPasskey(ada, "Laptop", false)
 	y := w.addStoredPasskey(ada, "Phone", false)
 
-	s0 := w.signIn("ada@example.invalid", "the right password")
-	w.clock.Advance(time.Minute)
-	s1 := w.inAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.svc.OpenSessionFrom(w.ctx, q, s0.Session.ID, p, "staff", authkit.Meta{})
+	s0 := w.SignIn("ada@example.invalid", "the right password")
+	w.Clock.Advance(time.Minute)
+	s1 := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.OpenSessionFrom(w.Ctx, q, s0.Session.ID, p, "staff", authkit.Meta{})
 	})
 	if s1.Refusal != nil {
 		t.Fatalf("switch: refusal %v", s1.Refusal)
 	}
-	got, err := w.deletePasskey(w.claims(s1), x)
+	got, err := w.deletePasskey(w.Claims(s1), x)
 	if err != nil || got.Refusal != nil {
 		t.Fatalf("delete from a switched session: refusal %v, err %v", got.Refusal, err)
 	}
 
-	s2 := w.signIn("ada@example.invalid", "the right password")
-	w.clock.Advance(5*time.Minute + time.Second)
-	s3 := w.inAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.svc.OpenSessionFrom(w.ctx, q, s2.Session.ID, p, "staff", authkit.Meta{})
+	s2 := w.SignIn("ada@example.invalid", "the right password")
+	w.Clock.Advance(5*time.Minute + time.Second)
+	s3 := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.OpenSessionFrom(w.Ctx, q, s2.Session.ID, p, "staff", authkit.Meta{})
 	})
 	if s3.Refusal != nil {
 		t.Fatalf("second switch: refusal %v", s3.Refusal)
 	}
-	got, err = w.deletePasskey(w.claims(s3), y)
+	got, err = w.deletePasskey(w.Claims(s3), y)
 	if err != nil || !errors.Is(got.Refusal, authkit.ErrReauthRequired) {
 		t.Errorf("delete from a switch of an old sign-in: refusal %v, err %v, want ErrReauthRequired", got.Refusal, err)
 	}
-	if n := w.count("SELECT count(*) FROM auth_passkeys WHERE id = $1", y); n != 1 {
+	if n := w.Count("SELECT count(*) FROM auth_passkeys WHERE id = $1", y); n != 1 {
 		t.Errorf("passkey %s stored %d times after a refused delete, want 1", y, n)
 	}
 }
 
 func TestDeletePasskeyRefusesAnEndedSession(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	a1 := w.signIn("ada@example.invalid", "the right password")
-	a2 := w.signIn("ada@example.invalid", "the right password")
+	ada := w.User("ada@example.invalid", "the right password")
+	a1 := w.SignIn("ada@example.invalid", "the right password")
+	a2 := w.SignIn("ada@example.invalid", "the right password")
 	x := w.addStoredPasskey(ada, "Laptop", false)
-	w.d.Exec(w.t, "UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'logout' WHERE id = $1", a1.Session.ID, w.clock.Now())
-	got, err := w.deletePasskey(w.claims(a1), x)
+	w.D.Exec(w.T, "UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'logout' WHERE id = $1", a1.Session.ID, w.Clock.Now())
+	got, err := w.deletePasskey(w.Claims(a1), x)
 	if err != nil || !errors.Is(got.Refusal, authkit.ErrReauthRequired) {
 		t.Errorf("delete from an ended session: refusal %v, err %v, want ErrReauthRequired", got.Refusal, err)
 	}
-	if n := w.count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 1 {
+	if n := w.Count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 1 {
 		t.Errorf("passkey %s stored %d times after a refused delete, want 1", x, n)
 	}
 	if !w.sessionLive(a2.Session.ID) {
@@ -398,13 +398,13 @@ func TestDeletePasskeyRefusesAnEndedSession(t *testing.T) {
 
 func TestPasskeyManagementIsOffWithoutAnRPID(t *testing.T) {
 	w := newWorld(t)
-	ada := w.user("ada@example.invalid", "the right password")
-	a1 := w.signIn("ada@example.invalid", "the right password")
-	a2 := w.signIn("ada@example.invalid", "the right password")
-	c1 := w.claims(a1)
+	ada := w.User("ada@example.invalid", "the right password")
+	a1 := w.SignIn("ada@example.invalid", "the right password")
+	a2 := w.SignIn("ada@example.invalid", "the right password")
+	c1 := w.Claims(a1)
 	x := w.addStoredPasskey(ada, "Laptop", false)
-	err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
-		_, err := w.svc.ListPasskeys(w.ctx, q, ada)
+	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		_, err := w.Svc.ListPasskeys(w.Ctx, q, ada)
 		return err
 	})
 	if !errors.Is(err, authkit.ErrPasskeysOff) {
@@ -429,19 +429,19 @@ func TestPasskeyManagementIsOffWithoutAnRPID(t *testing.T) {
 
 func TestDeletePasskeyWaitsForTheCredentialLock(t *testing.T) {
 	w := newWorld(t, withPasskeys)
-	ada := w.user("ada@example.invalid", "the right password")
-	a1 := w.signIn("ada@example.invalid", "the right password")
-	c := w.claims(a1)
+	ada := w.User("ada@example.invalid", "the right password")
+	a1 := w.SignIn("ada@example.invalid", "the right password")
+	c := w.Claims(a1)
 	x := w.addStoredPasskey(ada, "Laptop", false)
-	holder, err := w.d.Owner.BeginTx(w.ctx, nil)
+	holder, err := w.D.Owner.BeginTx(w.Ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.ctx, "SELECT 1 FROM auth_credentials WHERE principal_id = $1 FOR UPDATE", ada); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, "SELECT 1 FROM auth_credentials WHERE principal_id = $1 FOR UPDATE", ada); err != nil {
 		t.Fatal(err)
 	}
-	conn := w.pinned(ada)
+	conn := w.Pinned(ada)
 	type outcome struct {
 		res authkit.Result
 		err error
@@ -449,14 +449,14 @@ func TestDeletePasskeyWaitsForTheCredentialLock(t *testing.T) {
 	done := make(chan outcome, 1)
 	go func() {
 		var res authkit.Result
-		err := authkittest.InConnTx(w.ctx, conn, func(q db.Querier) error {
+		err := authkittest.InConnTx(w.Ctx, conn, func(q db.Querier) error {
 			var err error
-			res, err = w.svc.DeletePasskey(w.ctx, q, c, x, authkit.Meta{})
+			res, err = w.Svc.DeletePasskey(w.Ctx, q, c, x, authkit.Meta{})
 			return err
 		})
 		done <- outcome{res, err}
 	}()
-	w.d.WaitForLockWaiters(w.t, 1)
+	w.D.WaitForLockWaiters(w.T, 1)
 	if err := holder.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestDeletePasskeyWaitsForTheCredentialLock(t *testing.T) {
 	if o.err != nil || o.res.Refusal != nil {
 		t.Fatalf("delete after the lock: refusal %v, err %v", o.res.Refusal, o.err)
 	}
-	if n := w.count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 0 {
+	if n := w.Count("SELECT count(*) FROM auth_passkeys WHERE id = $1", x); n != 0 {
 		t.Errorf("passkey %s still stored", x)
 	}
 }

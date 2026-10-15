@@ -1,4 +1,4 @@
-package authkit_test
+package tests
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/kittest"
 )
 
 const pw = "the right password"
@@ -35,10 +36,10 @@ func maxTries(n int) func(*authkit.Config) {
 }
 
 func (w *world) code(secret string) string {
-	w.t.Helper()
-	code, err := totp.GenerateCodeCustom(secret, w.clock.Now(), totp.ValidateOpts{Period: 30, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
+	w.T.Helper()
+	code, err := totp.GenerateCodeCustom(secret, w.Clock.Now(), totp.ValidateOpts{Period: 30, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
 	if err != nil {
-		w.t.Fatalf("totp code: %v", err)
+		w.T.Fatalf("totp code: %v", err)
 	}
 	return code
 }
@@ -49,102 +50,102 @@ func wrong(code string) string {
 }
 
 func (w *world) enrolTOTP(login string) (uuid.UUID, string, []string) {
-	w.t.Helper()
-	id := w.user(login, pw)
-	c := w.claims(w.signIn(login, pw))
-	setup := w.inAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.svc.BeginTOTPSetup(w.ctx, q, c, meta)
+	w.T.Helper()
+	id := w.User(login, pw)
+	c := w.Claims(w.SignIn(login, pw))
+	setup := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, meta)
 	})
 	if setup.TOTPSetup == nil {
-		w.t.Fatalf("begin the authenticator: %v", setup.Refusal)
+		w.T.Fatalf("begin the authenticator: %v", setup.Refusal)
 	}
 	key, err := otp.NewKeyFromURL(setup.TOTPSetup.URI)
 	if err != nil {
-		w.t.Fatalf("setup URI: %v", err)
+		w.T.Fatalf("setup URI: %v", err)
 	}
 	secret := key.Secret()
-	conf := w.inAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.svc.ConfirmTOTP(w.ctx, q, c, w.code(secret), meta)
+	conf := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.ConfirmTOTP(w.Ctx, q, c, w.code(secret), meta)
 	})
 	if conf.Refusal != nil {
-		w.t.Fatalf("confirm the authenticator: %v", conf.Refusal)
+		w.T.Fatalf("confirm the authenticator: %v", conf.Refusal)
 	}
 	if len(conf.RecoveryCodes) != 10 {
-		w.t.Fatalf("got %d recovery codes, want 10", len(conf.RecoveryCodes))
+		w.T.Fatalf("got %d recovery codes, want 10", len(conf.RecoveryCodes))
 	}
-	w.clock.Advance(30 * time.Second)
+	w.Clock.Advance(30 * time.Second)
 	return id, secret, conf.RecoveryCodes
 }
 
 func (w *world) verify(aud authkit.Audience, token string, method authkit.FactorKind, code string) authkit.Result {
-	w.t.Helper()
-	return w.inAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.svc.VerifySecondStep(w.ctx, q, aud, token, method, code, meta)
+	w.T.Helper()
+	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.VerifySecondStep(w.Ctx, q, aud, token, method, code, meta)
 	})
 }
 
 func (w *world) challenge(login string) string {
-	w.t.Helper()
-	res := w.login("staff", login, pw)
+	w.T.Helper()
+	res := w.Login("staff", login, pw)
 	if res.SecondStep == nil {
-		w.t.Fatalf("login gave no second step: %v", res.Refusal)
+		w.T.Fatalf("login gave no second step: %v", res.Refusal)
 	}
 	return res.SecondStep.Token
 }
 
 func (w *world) offline(key []byte) {
-	w.t.Helper()
-	cfg := w.cfg
+	w.T.Helper()
+	cfg := w.Cfg
 	cfg.SecondFactors.Key = key
-	w.svc = w.service(cfg)
+	w.Svc = w.Service(cfg)
 }
 
 func (w *world) sessionMode() {
-	w.t.Helper()
-	cfg := w.cfg
+	w.T.Helper()
+	cfg := w.Cfg
 	cfg.Transport, cfg.Issuer, cfg.Secret = authkit.TransportSession, "", nil
-	w.svc = w.service(cfg)
+	w.Svc = w.Service(cfg)
 }
 
 func (w *world) eventResults(id uuid.UUID, source string) []string {
-	w.t.Helper()
-	rows, err := w.d.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = $2 ORDER BY at, id`, id, source)
+	w.T.Helper()
+	rows, err := w.D.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = $2 ORDER BY at, id`, id, source)
 	if err != nil {
-		w.t.Fatal(err)
+		w.T.Fatal(err)
 	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
 		var r string
 		if err := rows.Scan(&r); err != nil {
-			w.t.Fatal(err)
+			w.T.Fatal(err)
 		}
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
-		w.t.Fatal(err)
+		w.T.Fatal(err)
 	}
 	return out
 }
 
 func (w *world) openSessions(id uuid.UUID) int {
-	w.t.Helper()
-	return w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoked_at IS NULL`, id)
+	w.T.Helper()
+	return w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoked_at IS NULL`, id)
 }
 
 func (w *world) factorSessions(id uuid.UUID) int {
-	w.t.Helper()
-	return w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor <> '' AND id <> (SELECT id FROM auth_sessions WHERE principal_id = $1 ORDER BY created_at, id LIMIT 1)`, id)
+	w.T.Helper()
+	return w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor <> '' AND id <> (SELECT id FROM auth_sessions WHERE principal_id = $1 ORDER BY created_at, id LIMIT 1)`, id)
 }
 
 func (w *world) tries(id uuid.UUID) int {
-	w.t.Helper()
-	return w.count(`SELECT COALESCE(sum(tries), 0) FROM auth_second_step_challenges WHERE principal_id = $1`, id)
+	w.T.Helper()
+	return w.Count(`SELECT COALESCE(sum(tries), 0) FROM auth_second_step_challenges WHERE principal_id = $1`, id)
 }
 
 func (w *world) usedCodes(id uuid.UUID) int {
-	w.t.Helper()
-	return w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NOT NULL`, id)
+	w.T.Helper()
+	return w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NOT NULL`, id)
 }
 
 func TestLoginWithAFactorReturnsAChallengeNotASession(t *testing.T) {
@@ -152,14 +153,14 @@ func TestLoginWithAFactorReturnsAChallengeNotASession(t *testing.T) {
 	const login = "ada@example.invalid"
 	id, _, _ := w.enrolTOTP(login)
 	n := w.openSessions(id)
-	res := w.login("staff", login, pw)
+	res := w.Login("staff", login, pw)
 	if res.Refusal != nil || res.SecondStep == nil {
 		t.Fatalf("login = refusal %v, second step nil %v; want a second step", res.Refusal, res.SecondStep == nil)
 	}
 	if res.SecondStep.Token == "" {
 		t.Fatal("the second step has no token")
 	}
-	if want := w.clock.Now().Add(10 * time.Minute); !res.SecondStep.ExpiresAt.Equal(want) {
+	if want := w.Clock.Now().Add(10 * time.Minute); !res.SecondStep.ExpiresAt.Equal(want) {
 		t.Fatalf("second step expires at %v, want %v", res.SecondStep.ExpiresAt, want)
 	}
 	if !slices.Equal(res.SecondStep.Methods, []authkit.FactorKind{authkit.FactorTOTP, authkit.FactorRecovery}) {
@@ -178,7 +179,7 @@ func TestLoginWithAFactorReturnsAChallengeNotASession(t *testing.T) {
 	if countOf(ev, "signed_in") != 1 {
 		t.Fatalf("login events %v, want only the enrolment's signed_in", ev)
 	}
-	if w.count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND origin = 'login' AND audience = 'staff' AND tries = 0 AND used_at IS NULL`, id) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND origin = 'login' AND audience = 'staff' AND tries = 0 AND used_at IS NULL`, id) != 1 {
 		t.Fatal("no unspent login challenge for the principal")
 	}
 }
@@ -200,10 +201,10 @@ func TestTheSecondStepOpensASessionWithTheFactor(t *testing.T) {
 	if got := w.eventResults(id, "second_step"); !slices.Equal(got, []string{"signed_in"}) {
 		t.Fatalf("second_step events %v, want [signed_in]", got)
 	}
-	if w.count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND source = 'second_step' AND result = 'signed_in' AND second_factor = 'totp' AND session_id = $2`, id, res.Session.ID) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND source = 'second_step' AND result = 'signed_in' AND second_factor = 'totp' AND session_id = $2`, id, res.Session.ID) != 1 {
 		t.Fatal("the signed_in event does not record the totp factor and the session")
 	}
-	if w.count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND used_at IS NOT NULL`, id) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND used_at IS NOT NULL`, id) != 1 {
 		t.Fatal("the challenge is not spent")
 	}
 }
@@ -235,7 +236,7 @@ func TestARecoveryCodeWorksOnce(t *testing.T) {
 		t.Fatalf("first use refused: %v", first.Refusal)
 	}
 	n := w.openSessions(id)
-	w.clock.Advance(time.Second)
+	w.Clock.Advance(time.Second)
 	res := w.verify("staff", w.challenge(login), authkit.FactorRecovery, recovery[0])
 	if res.Refusal != authkit.ErrBadCode {
 		t.Fatalf("second use refusal %v, want ErrBadCode", res.Refusal)
@@ -261,14 +262,14 @@ func TestAChallengeWorksOnce(t *testing.T) {
 	if first.Refusal != nil || first.Session == nil {
 		t.Fatalf("first answer refused: %v", first.Refusal)
 	}
-	w.clock.Advance(30 * time.Second)
+	w.Clock.Advance(30 * time.Second)
 	if res := w.verify("staff", tok, authkit.FactorTOTP, w.code(secret)); res.Refusal != authkit.ErrChallengeEnded {
 		t.Fatalf("second answer refusal %v, want ErrChallengeEnded", res.Refusal)
 	}
-	if w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor = 'totp' AND id = $2`, id, first.Session.ID) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor = 'totp' AND id = $2`, id, first.Session.ID) != 1 {
 		t.Fatal("the first answer's session does not record totp")
 	}
-	if w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor = 'totp'`, id) != 2 {
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor = 'totp'`, id) != 2 {
 		t.Fatal("the reused challenge opened a session")
 	}
 	if slices.Contains(w.eventResults(id, "second_step"), "bad_code") {
@@ -284,7 +285,7 @@ func TestAChallengeEndsAtItsTTL(t *testing.T) {
 	const login = "ada@example.invalid"
 	id, secret, _ := w.enrolTOTP(login)
 	tok := w.challenge(login)
-	w.clock.Advance(10 * time.Minute)
+	w.Clock.Advance(10 * time.Minute)
 	if res := w.verify("staff", tok, authkit.FactorTOTP, w.code(secret)); res.Refusal != authkit.ErrChallengeEnded {
 		t.Fatalf("expired challenge refusal %v, want ErrChallengeEnded", res.Refusal)
 	}
@@ -295,7 +296,7 @@ func TestAChallengeEndsAtItsTTL(t *testing.T) {
 		t.Fatal("an expired challenge opened a session")
 	}
 	tok2 := w.challenge(login)
-	w.clock.Advance(10*time.Minute - time.Second)
+	w.Clock.Advance(10*time.Minute - time.Second)
 	if res := w.verify("staff", tok2, authkit.FactorTOTP, w.code(secret)); res.Refusal != nil || res.Session == nil {
 		t.Fatalf("challenge one second before its end refused: %v", res.Refusal)
 	}
@@ -353,13 +354,13 @@ func TestWrongCodesLockTheLoginThrottle(t *testing.T) {
 		if res := w.verify("staff", tok, authkit.FactorTOTP, wrong(w.code(secret))); res.Refusal != authkit.ErrBadCode {
 			t.Fatalf("wrong code %d refusal %v, want ErrBadCode", i+1, res.Refusal)
 		}
-		w.clock.Advance(time.Second)
+		w.Clock.Advance(time.Second)
 	}
 	var locked authkit.ErrLocked
 	if res := w.verify("staff", tok, authkit.FactorTOTP, w.code(secret)); !errors.As(res.Refusal, &locked) || locked.RetryAfter <= 0 {
 		t.Fatalf("right code after the throttle filled refusal %v, want ErrLocked", res.Refusal)
 	}
-	if res := w.login("staff", login, pw); !errors.As(res.Refusal, &locked) {
+	if res := w.Login("staff", login, pw); !errors.As(res.Refusal, &locked) {
 		t.Fatalf("login after the throttle filled refusal %v, want ErrLocked", res.Refusal)
 	}
 	if ev := w.eventResults(id, "second_step"); len(ev) == 0 || ev[len(ev)-1] != "locked" {
@@ -401,7 +402,7 @@ func TestASecondStepSignInClearsTheThrottle(t *testing.T) {
 	if res := w.verify("staff", tok, authkit.FactorTOTP, w.code(secret)); res.Refusal != nil || res.Session == nil {
 		t.Fatalf("right code after two wrong refused: %v", res.Refusal)
 	}
-	if got := w.count(`SELECT COALESCE(sum(failures), 0) FROM auth_throttle WHERE audience = 'staff'`); got != 0 {
+	if got := w.Count(`SELECT COALESCE(sum(failures), 0) FROM auth_throttle WHERE audience = 'staff'`); got != 0 {
 		t.Fatalf("throttle failures %d after a second-step sign-in, want 0", got)
 	}
 }
@@ -432,14 +433,14 @@ func TestAnAdmitRefusalAtTheSecondStepSpendsNothing(t *testing.T) {
 	id, _, recovery := w.enrolTOTP(login)
 	tok := w.challenge(login)
 	errNo := errors.New("app: no membership")
-	w.p.Refuse(id, errNo)
+	w.P.Refuse(id, errNo)
 	if res := w.verify("staff", tok, authkit.FactorRecovery, recovery[0]); res.Refusal != errNo {
 		t.Fatalf("refusal %v, want the admit refusal", res.Refusal)
 	}
 	if w.usedCodes(id) != 0 || w.tries(id) != 0 {
 		t.Fatal("a refused admit spent a code or counted a try")
 	}
-	if w.count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND used_at IS NULL`, id) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND used_at IS NULL`, id) != 1 {
 		t.Fatal("a refused admit spent the challenge")
 	}
 	if ev := w.eventResults(id, "second_step"); !slices.Equal(ev, []string{"no_membership"}) {
@@ -455,12 +456,12 @@ func TestALoginAdmitRefusalGivesNoChallenge(t *testing.T) {
 	const login = "ada@example.invalid"
 	id, _, _ := w.enrolTOTP(login)
 	errNo := errors.New("app: no membership")
-	w.p.Refuse(id, errNo)
-	res := w.login("staff", login, pw)
+	w.P.Refuse(id, errNo)
+	res := w.Login("staff", login, pw)
 	if res.Refusal != errNo || res.SecondStep != nil {
 		t.Fatalf("login = refusal %v, second step nil %v; want the admit refusal and no challenge", res.Refusal, res.SecondStep == nil)
 	}
-	if w.count(`SELECT count(*) FROM auth_second_step_challenges`) != 0 {
+	if w.Count(`SELECT count(*) FROM auth_second_step_challenges`) != 0 {
 		t.Fatal("a refused login left a challenge")
 	}
 }
@@ -472,14 +473,14 @@ func TestWithoutAKeyAFactorHolderCannotSignIn(t *testing.T) {
 	n := w.openSessions(id)
 	events := len(w.eventResults(id, "login"))
 	w.offline(nil)
-	res := w.login("staff", login, pw)
+	res := w.Login("staff", login, pw)
 	if res.Refusal != authkit.ErrSecondFactorsOff || res.SecondStep != nil || res.Session != nil || res.Tokens != nil {
 		t.Fatalf("login without a key = refusal %v; want ErrSecondFactorsOff alone", res.Refusal)
 	}
 	if got := w.openSessions(id); got != n {
 		t.Fatalf("open sessions %d, want %d", got, n)
 	}
-	if w.count(`SELECT count(*) FROM auth_second_step_challenges`) != 0 {
+	if w.Count(`SELECT count(*) FROM auth_second_step_challenges`) != 0 {
 		t.Fatal("a login without a key left a challenge")
 	}
 	if got := len(w.eventResults(id, "login")); got != events {
@@ -496,7 +497,7 @@ func TestVerifyIsOffWithoutAKey(t *testing.T) {
 	if res := w.verify("staff", tok, authkit.FactorTOTP, w.code(secret)); res.Refusal != authkit.ErrSecondFactorsOff {
 		t.Fatalf("verify without a key refusal %v, want ErrSecondFactorsOff", res.Refusal)
 	}
-	if w.count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND used_at IS NULL AND tries = 0`, id) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND used_at IS NULL AND tries = 0`, id) != 1 {
 		t.Fatal("verify without a key touched the challenge")
 	}
 	if w.factorSessions(id) != 0 {
@@ -521,16 +522,16 @@ func TestCompleteResetReturnsAChallengeAndKeepsTheFactors(t *testing.T) {
 	if got := w.openSessions(id); got != 0 {
 		t.Fatalf("open sessions %d after the reset, want 0", got)
 	}
-	if w.count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND origin = 'reset'`, id) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND origin = 'reset'`, id) != 1 {
 		t.Fatal("no reset challenge")
 	}
-	if w.count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1 AND confirmed_at IS NOT NULL`, id) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1 AND confirmed_at IS NOT NULL`, id) != 1 {
 		t.Fatal("the reset removed the authenticator")
 	}
-	if w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NULL`, id) != 10 {
+	if w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NULL`, id) != 10 {
 		t.Fatal("the reset changed the recovery codes")
 	}
-	if w.login("staff", login, "a brand new password").SecondStep == nil {
+	if w.Login("staff", login, "a brand new password").SecondStep == nil {
 		t.Fatal("login with the new password gave no second step")
 	}
 	if got := w.verify("staff", res.SecondStep.Token, authkit.FactorTOTP, w.code(secret)); got.Refusal != nil || got.Session == nil || got.Session.SecondFactor != "totp" {
@@ -543,7 +544,7 @@ func TestCompleteResetInSessionModeOpensNoSession(t *testing.T) {
 	const login = "ada@example.invalid"
 	id, secret, _ := w.enrolTOTP(login)
 	w.sessionMode()
-	signedIn := w.count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in'`, id)
+	signedIn := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in'`, id)
 	res := w.completeReset(w.mintLink(*w.requestReset(login).TokenID), "a brand new password")
 	if res.Refusal != nil || res.SecondStep == nil || res.SessionToken != "" {
 		t.Fatalf("session-mode reset = refusal %v; want a second step and no session token", res.Refusal)
@@ -551,7 +552,7 @@ func TestCompleteResetInSessionModeOpensNoSession(t *testing.T) {
 	if got := w.openSessions(id); got != 0 {
 		t.Fatalf("open sessions %d after the reset, want 0", got)
 	}
-	if got := w.count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in'`, id); got != signedIn {
+	if got := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in'`, id); got != signedIn {
 		t.Fatal("the reset recorded a signed_in")
 	}
 	got := w.verify("staff", res.SecondStep.Token, authkit.FactorTOTP, w.code(secret))
@@ -575,7 +576,7 @@ func TestAResetChallengeCountsOnTheLoginThrottle(t *testing.T) {
 		w.verify("staff", res.SecondStep.Token, authkit.FactorTOTP, wrong(w.code(secret)))
 	}
 	var locked authkit.ErrLocked
-	if got := w.login("staff", login, "a brand new password"); !errors.As(got.Refusal, &locked) {
+	if got := w.Login("staff", login, "a brand new password"); !errors.As(got.Refusal, &locked) {
 		t.Fatalf("login after the reset's wrong codes refusal %v, want ErrLocked", got.Refusal)
 	}
 }
@@ -584,14 +585,14 @@ func TestCompleteResetWithoutAKeyChangesNothing(t *testing.T) {
 	w := newWorld(t, factors)
 	const login = "ada@example.invalid"
 	id, _, _ := w.enrolTOTP(login)
-	h := w.storedHash(id)
+	h := w.StoredHash(id)
 	n := w.openSessions(id)
 	w.offline(nil)
 	res := w.completeReset(w.mintLink(*w.requestReset(login).TokenID), "a brand new password")
 	if res.Refusal != authkit.ErrSecondFactorsOff {
 		t.Fatalf("reset without a key refusal %v, want ErrSecondFactorsOff", res.Refusal)
 	}
-	if w.storedHash(id) != h {
+	if w.StoredHash(id) != h {
 		t.Fatal("a reset without a key changed the password")
 	}
 	if got := w.openSessions(id); got != n {
@@ -600,7 +601,7 @@ func TestCompleteResetWithoutAKeyChangesNothing(t *testing.T) {
 	if slices.Contains(w.eventResults(id, "complete_reset"), "password_reset") {
 		t.Fatal("a reset without a key recorded password_reset")
 	}
-	if w.count(`SELECT count(*) FROM auth_second_step_challenges`) != 0 {
+	if w.Count(`SELECT count(*) FROM auth_second_step_challenges`) != 0 {
 		t.Fatal("a reset without a key left a challenge")
 	}
 }
@@ -609,14 +610,14 @@ func TestAResetAdmitRefusalInBearerModeWritesNothing(t *testing.T) {
 	w := newWorld(t, factors)
 	const login = "ada@example.invalid"
 	id, _, _ := w.enrolTOTP(login)
-	h := w.storedHash(id)
+	h := w.StoredHash(id)
 	n := w.openSessions(id)
 	errNo := errors.New("app: no membership")
-	w.p.Refuse(id, errNo)
+	w.P.Refuse(id, errNo)
 	if res := w.completeReset(w.mintLink(*w.requestReset(login).TokenID), "a brand new password"); res.Refusal != errNo {
 		t.Fatalf("reset refusal %v, want the admit refusal", res.Refusal)
 	}
-	if w.storedHash(id) != h {
+	if w.StoredHash(id) != h {
 		t.Fatal("a refused reset changed the password")
 	}
 	if got := w.openSessions(id); got != n {
@@ -636,9 +637,9 @@ func TestListSessionsShowsTheFactor(t *testing.T) {
 		t.Fatalf("second step refused: %v", res.Refusal)
 	}
 	var list []authkit.Session
-	if err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		list, _, err = w.svc.ListSessions(w.ctx, q, w.claims(res), 10, 0)
+		list, _, err = w.Svc.ListSessions(w.Ctx, q, w.Claims(res), 10, 0)
 		return err
 	}); err != nil {
 		t.Fatalf("ListSessions: %v", err)
@@ -668,7 +669,7 @@ func TestTheSecondStepLeaksNoSecret(t *testing.T) {
 	if first.Refusal != authkit.ErrBadCode || second.Refusal != nil {
 		t.Fatalf("second step outcomes %v, %v", first.Refusal, second.Refusal)
 	}
-	rows, err := w.d.Owner.Query(`SELECT concat_ws('|', login, result, ip, user_agent, source, second_factor) FROM auth_events WHERE principal_id = $1`, id)
+	rows, err := w.D.Owner.Query(`SELECT concat_ws('|', login, result, ip, user_agent, source, second_factor) FROM auth_events WHERE principal_id = $1`, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -707,10 +708,10 @@ func TestPruneDeletesChallengesAnHourPastExpiry(t *testing.T) {
 	w.challenge("old@example.invalid")
 	w.challenge("edge@example.invalid")
 	w.challenge("live@example.invalid")
-	now := w.clock.Now()
-	w.d.Exec(w.t, `UPDATE auth_second_step_challenges SET expires_at = $1 WHERE principal_id = $2`, now.Add(-61*time.Minute), oldID)
-	w.d.Exec(w.t, `UPDATE auth_second_step_challenges SET expires_at = $1 WHERE principal_id = $2`, now.Add(-59*time.Minute), edgeID)
-	if err := w.d.InGlobalSystemTx(w.ctx, func(q db.Querier) error { return w.svc.Prune(w.ctx, q) }); err != nil {
+	now := w.Clock.Now()
+	w.D.Exec(w.T, `UPDATE auth_second_step_challenges SET expires_at = $1 WHERE principal_id = $2`, now.Add(-61*time.Minute), oldID)
+	w.D.Exec(w.T, `UPDATE auth_second_step_challenges SET expires_at = $1 WHERE principal_id = $2`, now.Add(-59*time.Minute), edgeID)
+	if err := w.D.InGlobalSystemTx(w.Ctx, func(q db.Querier) error { return w.Svc.Prune(w.Ctx, q) }); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 	for _, c := range []struct {
@@ -718,7 +719,7 @@ func TestPruneDeletesChallengesAnHourPastExpiry(t *testing.T) {
 		id   uuid.UUID
 		want int
 	}{{"old", oldID, 0}, {"edge", edgeID, 1}, {"live", liveID, 1}} {
-		if got := w.count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1`, c.id); got != c.want {
+		if got := w.Count(`SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1`, c.id); got != c.want {
 			t.Fatalf("%s challenges left %d, want %d", c.name, got, c.want)
 		}
 	}
@@ -738,8 +739,8 @@ func TestConcurrentVerifiesOfOneChallengeOpenOneSession(t *testing.T) {
 	aEnd := make(chan error, 1)
 	release := make(chan struct{})
 	go func() {
-		err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
-			res, err := w.svc.VerifySecondStep(w.ctx, q, "staff", tok, authkit.FactorRecovery, recovery[0], meta)
+		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+			res, err := w.Svc.VerifySecondStep(w.Ctx, q, "staff", tok, authkit.FactorRecovery, recovery[0], meta)
 			aDone <- outcome{res, err}
 			if err != nil {
 				return err
@@ -756,8 +757,8 @@ func TestConcurrentVerifiesOfOneChallengeOpenOneSession(t *testing.T) {
 
 	bDone := make(chan outcome, 2)
 	go func() {
-		err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
-			res, err := w.svc.VerifySecondStep(w.ctx, q, "staff", tok, authkit.FactorRecovery, recovery[1], meta)
+		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+			res, err := w.Svc.VerifySecondStep(w.Ctx, q, "staff", tok, authkit.FactorRecovery, recovery[1], meta)
 			bDone <- outcome{res, err}
 			return err
 		})
@@ -788,7 +789,7 @@ func TestConcurrentVerifiesOfOneChallengeOpenOneSession(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the first transaction did not commit")
 	}
-	if w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor = 'recovery'`, id) != 1 {
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor = 'recovery'`, id) != 1 {
 		t.Fatal("the challenge did not open exactly one session")
 	}
 	if w.usedCodes(id) != 1 {
@@ -800,8 +801,8 @@ func TestMethodsOmitRecoveryWhenNoneAreLeft(t *testing.T) {
 	w := newWorld(t, factors)
 	const login = "ada@example.invalid"
 	id, _, _ := w.enrolTOTP(login)
-	w.d.Exec(w.t, `UPDATE auth_recovery_codes SET used_at = $1 WHERE principal_id = $2`, w.clock.Now(), id)
-	res := w.login("staff", login, pw)
+	w.D.Exec(w.T, `UPDATE auth_recovery_codes SET used_at = $1 WHERE principal_id = $2`, w.Clock.Now(), id)
+	res := w.Login("staff", login, pw)
 	if res.SecondStep == nil {
 		t.Fatalf("login gave no second step: %v", res.Refusal)
 	}
@@ -813,12 +814,12 @@ func TestMethodsOmitRecoveryWhenNoneAreLeft(t *testing.T) {
 func TestAnUnconfirmedAuthenticatorAsksNoSecondStep(t *testing.T) {
 	w := newWorld(t, factors)
 	const login = "ada@example.invalid"
-	w.user(login, pw)
-	c := w.claims(w.signIn(login, pw))
-	w.inAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.svc.BeginTOTPSetup(w.ctx, q, c, meta)
+	w.User(login, pw)
+	c := w.Claims(w.SignIn(login, pw))
+	w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, meta)
 	})
-	res := w.login("staff", login, pw)
+	res := w.Login("staff", login, pw)
 	if res.Refusal != nil || res.Session == nil || res.SecondStep != nil {
 		t.Fatalf("login with an unconfirmed authenticator = refusal %v; want a session and no second step", res.Refusal)
 	}
@@ -835,9 +836,9 @@ func TestAChangedKeyFailsClosed(t *testing.T) {
 	tok := w.challenge(login)
 	w.offline(bytes.Repeat([]byte{0x08}, 32))
 	var res authkit.Result
-	err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		res, err = w.svc.VerifySecondStep(w.ctx, q, "staff", tok, authkit.FactorTOTP, w.code(secret), meta)
+		res, err = w.Svc.VerifySecondStep(w.Ctx, q, "staff", tok, authkit.FactorTOTP, w.code(secret), meta)
 		return err
 	})
 	if err == nil || res.Refusal != nil || res.Session != nil || res.Tokens != nil {
@@ -858,10 +859,10 @@ func TestAChangedKeyFailsClosed(t *testing.T) {
 }
 
 func TestAPasskeySignInRecordsPasskey(t *testing.T) {
-	w := newWorld(t, passkeys)
-	id := w.user("ada@example.invalid", "")
-	a := authkittest.NewAuthenticator("localhost", staffOrigin)
-	w.seedPasskey(id, a)
+	w := newWorld(t, kittest.Passkeys)
+	id := w.User("ada@example.invalid", "")
+	a := authkittest.NewAuthenticator("localhost", kittest.StaffOrigin)
+	w.SeedPasskey(id, a)
 	res := w.passkeySignIn("staff", a)
 	if res.Refusal != nil || res.Session == nil {
 		t.Fatalf("sign-in refused: %v", res.Refusal)
@@ -870,15 +871,15 @@ func TestAPasskeySignInRecordsPasskey(t *testing.T) {
 		t.Errorf("session second factor %q, want passkey", res.Session.SecondFactor)
 	}
 	var stored string
-	if err := w.d.Row(w.t, `SELECT second_factor FROM auth_sessions WHERE id = $1`, res.Session.ID).Scan(&stored); err != nil {
-		w.t.Fatal(err)
+	if err := w.D.Row(w.T, `SELECT second_factor FROM auth_sessions WHERE id = $1`, res.Session.ID).Scan(&stored); err != nil {
+		w.T.Fatal(err)
 	}
 	if stored != "passkey" {
 		t.Errorf("stored session second factor %q, want passkey", stored)
 	}
 	var event string
-	if err := w.d.Row(w.t, `SELECT second_factor FROM auth_events WHERE principal_id = $1 AND source = 'passkey_login' AND result = 'signed_in'`, id).Scan(&event); err != nil {
-		w.t.Fatal(err)
+	if err := w.D.Row(w.T, `SELECT second_factor FROM auth_events WHERE principal_id = $1 AND source = 'passkey_login' AND result = 'signed_in'`, id).Scan(&event); err != nil {
+		w.T.Fatal(err)
 	}
 	if event != "passkey" {
 		t.Errorf("signed_in event second factor %q, want passkey", event)
