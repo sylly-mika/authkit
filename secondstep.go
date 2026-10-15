@@ -3,7 +3,6 @@ package authkit
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/sylly-mika/authkit/internal/factor"
 	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/internal/token"
-	"github.com/sylly-mika/authkit/internal/totp"
 )
 
 // VerifySecondStep completes a sign-in that returned Result.SecondStep, with an authenticator code, an emailed code or a recovery code. A wrong code counts on the challenge and on the login's throttle; the refusal's writes must be committed.
@@ -197,49 +195,4 @@ func (s *Service) SendSecondStepEmail(ctx context.Context, q db.Querier, aud Aud
 		return Result{}, err
 	}
 	return Result{Principal: p, EmailCode: &req}, nil
-}
-
-func (s *Service) checkEmailStep(ctx context.Context, q db.Querier, principalID uuid.UUID, code string, now time.Time) (bool, error) {
-	keys := factor.DeriveKeys(s.cfg.SecondFactors.Key)
-	confirmed, err := factor.ConfirmedKinds(ctx, q, principalID)
-	if err != nil {
-		return false, err
-	}
-	if !slices.Contains(confirmed, string(FactorEmail)) {
-		return false, nil
-	}
-	c, err := factor.CheckEmailCode(ctx, q, keys.EmailKey, principalID, factor.PurposeSignIn, code, now, s.cfg.SecondFactors.MaxTries)
-	if err != nil {
-		return false, err
-	}
-	return c == factor.CodeOK, nil
-}
-
-func (s *Service) checkFactor(ctx context.Context, q db.Querier, id uuid.UUID, method FactorKind, code string, now time.Time) (bool, error) {
-	keys := factor.DeriveKeys(s.cfg.SecondFactors.Key)
-	switch method {
-	case FactorTOTP:
-		f, found, err := factor.Load(ctx, q, id, string(FactorTOTP))
-		if err != nil {
-			return false, err
-		}
-		if !found || f.ConfirmedAt == nil {
-			return false, nil
-		}
-		secret, err := keys.Open(f.Secret, id)
-		if err != nil {
-			return false, fmt.Errorf("authkit: open the authenticator secret: %w", err)
-		}
-		step, ok := totp.VerifyTOTP(secret, code, now, f.LastStep)
-		if !ok {
-			return false, nil
-		}
-		return factor.AcceptStep(ctx, q, id, step)
-	case FactorEmail:
-		return s.checkEmailStep(ctx, q, id, code, now)
-	case FactorRecovery:
-		hash := factor.HashCode(keys.RecoveryKey, id, "recovery", factor.NormalizeCode(code))
-		return factor.SpendRecoveryCode(ctx, q, id, hash, now)
-	}
-	return false, nil
 }

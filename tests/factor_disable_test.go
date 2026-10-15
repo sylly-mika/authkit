@@ -305,7 +305,7 @@ func TestTwoDisablesLeaveNoCodesWithoutAFactor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx1.Rollback()
-	res1, err := w.Svc.DisableSecondFactor(w.Ctx, sqldb.Tx(tx1), c1, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[0]}, fm)
+	res1, err := w.Svc.Factors.DisableSecondFactor(w.Ctx, sqldb.Tx(tx1), c1, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[0]}, fm)
 	if err != nil || res1.Refusal != nil {
 		t.Fatalf("first DisableSecondFactor = %v, %v; want nil", res1.Refusal, err)
 	}
@@ -319,7 +319,7 @@ func TestTwoDisablesLeaveNoCodesWithoutAFactor(t *testing.T) {
 		var res authkit.Result
 		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 			var err error
-			res, err = w.Svc.DisableSecondFactor(w.Ctx, q, c2, authkit.FactorEmail, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[1]}, fm)
+			res, err = w.Svc.Factors.DisableSecondFactor(w.Ctx, q, c2, authkit.FactorEmail, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[1]}, fm)
 			return err
 		})
 		out <- outcome{res, err}

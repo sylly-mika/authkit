@@ -20,6 +20,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/factor"
 	"github.com/sylly-mika/authkit/internal/kittest"
+	"github.com/sylly-mika/authkit/secondfactor"
 )
 
 var (
@@ -29,7 +30,7 @@ var (
 )
 
 func withSecondFactors(c *kittest.Rules) {
-	c.SecondFactors = authkit.SecondFactorRules{Key: testFactorKey}
+	c.Factors = secondfactor.Rules{Key: testFactorKey}
 }
 
 func totpCode(t *testing.T, secret string, at time.Time) string {
@@ -62,7 +63,7 @@ func (w *world) factorStatus(c *authkit.Claims) (authkit.FactorStatus, error) {
 	var st authkit.FactorStatus
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		st, err = w.Svc.SecondFactorStatus(w.Ctx, q, c)
+		st, err = w.Svc.Factors.SecondFactorStatus(w.Ctx, q, c)
 		return err
 	})
 	return st, err
@@ -82,7 +83,7 @@ func (w *world) wantStatus(c *authkit.Claims, want authkit.FactorStatus) {
 func (w *world) beginSetup(c *authkit.Claims) authkit.TOTPSetup {
 	w.T.Helper()
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
 	})
 	if err != nil || res.Refusal != nil || res.TOTPSetup == nil {
 		w.T.Fatalf("BeginTOTPSetup = %v, %v", res.Refusal, err)
@@ -93,7 +94,7 @@ func (w *world) beginSetup(c *authkit.Claims) authkit.TOTPSetup {
 func (w *world) confirmSetup(c *authkit.Claims, code string) authkit.Result {
 	w.T.Helper()
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ConfirmTOTP(w.Ctx, q, c, code, factorMeta)
+		return w.Svc.Factors.ConfirmTOTP(w.Ctx, q, c, code, factorMeta)
 	})
 	if err != nil {
 		w.T.Fatalf("ConfirmTOTP: %v", err)
@@ -410,7 +411,7 @@ func TestBeginTOTPSetupRefusesAConfirmedAuthenticator(t *testing.T) {
 	w.setUpTOTP(c)
 	before, beforeStep, _ := w.totpRow(ada)
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
 	})
 	if err != nil || !errors.Is(res.Refusal, authkit.ErrFactorExists) || res.TOTPSetup != nil {
 		t.Fatalf("Begin on a confirmed authenticator = %v, %v, want ErrFactorExists and no setup", res.Refusal, err)
@@ -496,7 +497,7 @@ func TestRegenerateRecoveryCodesReplacesTheSet(t *testing.T) {
 	w.Clock.Advance(time.Minute)
 	now := w.Clock.Now()
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
 	})
 	if err != nil || res.Refusal != nil || len(res.RecoveryCodes) != 10 {
 		t.Fatalf("RegenerateRecoveryCodes = %v, %v with %d codes, want 10", res.Refusal, err, len(res.RecoveryCodes))
@@ -546,7 +547,7 @@ func TestRegenerateRecoveryCodesNeedsAFactor(t *testing.T) {
 	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	w.beginSetup(c)
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
 	})
 	if err != nil || !errors.Is(res.Refusal, authkit.ErrFactorNotFound) || res.RecoveryCodes != nil {
 		t.Errorf("Regenerate with only a pending setup = %v, %v, want ErrFactorNotFound and no codes", res.Refusal, err)
@@ -560,12 +561,12 @@ func TestRegenerateRecoveryCodesNeedsAFactor(t *testing.T) {
 }
 
 func TestFactorChangesNeedASignInWithinReauth(t *testing.T) {
-	w := newWorld(t, withSecondFactors, func(c *kittest.Rules) { c.SecondFactors.Reauth = 2 * time.Minute })
+	w := newWorld(t, withSecondFactors, func(c *kittest.Rules) { c.Factors.Reauth = 2 * time.Minute })
 	ada := w.User("ada@example.invalid", "the right password")
 	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	w.Clock.Advance(2 * time.Minute)
 	begun, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
 	})
 	if err != nil || begun.Refusal != nil || begun.TOTPSetup == nil {
 		t.Fatalf("Begin at exactly Reauth = %v, %v, want a setup", begun.Refusal, err)
@@ -573,13 +574,13 @@ func TestFactorChangesNeedASignInWithinReauth(t *testing.T) {
 	before, _, _ := w.totpRow(ada)
 	w.Clock.Advance(time.Second)
 	begin, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
 	})
 	confirm, err2 := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ConfirmTOTP(w.Ctx, q, c, totpCode(w.T, begun.TOTPSetup.Secret, w.Clock.Now()), factorMeta)
+		return w.Svc.Factors.ConfirmTOTP(w.Ctx, q, c, totpCode(w.T, begun.TOTPSetup.Secret, w.Clock.Now()), factorMeta)
 	})
 	regen, err3 := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
 	})
 	for name, got := range map[string]struct {
 		res authkit.Result
@@ -610,7 +611,7 @@ func TestFactorReauthCountsFromTheLastPasswordProof(t *testing.T) {
 	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	w.Clock.Advance(10 * time.Minute)
 	if res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
 	}); err != nil || !errors.Is(res.Refusal, authkit.ErrReauthRequired) {
 		t.Fatalf("Begin 10 minutes after sign-in = %v, %v, want ErrReauthRequired", res.Refusal, err)
 	}
@@ -621,7 +622,7 @@ func TestFactorReauthCountsFromTheLastPasswordProof(t *testing.T) {
 	}
 	w.Clock.Advance(4 * time.Minute)
 	if res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
 	}); err != nil || res.Refusal != nil {
 		t.Errorf("Begin 4 minutes after the password proof = %v, %v, want a setup", res.Refusal, err)
 	}
@@ -634,7 +635,7 @@ func TestFactorChangesRefuseAnEndedSession(t *testing.T) {
 	w.SignIn("ada@example.invalid", "the right password")
 	w.logout(w.Pinned(ada), a1)
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, a1, factorMeta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, a1, factorMeta)
 	})
 	if err != nil || !errors.Is(res.Refusal, authkit.ErrReauthRequired) {
 		t.Errorf("Begin on an ended session = %v, %v, want ErrReauthRequired", res.Refusal, err)
@@ -649,7 +650,7 @@ func TestSecondFactorMethodsAreOffWithoutAKey(t *testing.T) {
 	ada := w.User("ada@example.invalid", "the right password")
 	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 	if res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, factorMeta)
 	}); err != nil || !errors.Is(res.Refusal, authkit.ErrSecondFactorsOff) {
 		t.Errorf("Begin without a key = %v, %v, want ErrSecondFactorsOff", res.Refusal, err)
 	}
@@ -657,7 +658,7 @@ func TestSecondFactorMethodsAreOffWithoutAKey(t *testing.T) {
 		t.Errorf("Confirm without a key = %v, want ErrSecondFactorsOff", res.Refusal)
 	}
 	if res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
+		return w.Svc.Factors.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
 	}); err != nil || !errors.Is(res.Refusal, authkit.ErrSecondFactorsOff) {
 		t.Errorf("Regenerate without a key = %v, %v, want ErrSecondFactorsOff", res.Refusal, err)
 	}
@@ -708,7 +709,7 @@ func TestConcurrentRegeneratesLeaveOneSet(t *testing.T) {
 			var o outcome
 			o.err = w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 				var err error
-				o.res, err = w.Svc.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
+				o.res, err = w.Svc.Factors.RegenerateRecoveryCodes(w.Ctx, q, c, factorMeta)
 				return err
 			})
 			out <- o

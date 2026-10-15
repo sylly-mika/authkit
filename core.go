@@ -94,7 +94,8 @@ func (c *Core) Throttle(login string, aud Audience, now time.Time) LoginThrottle
 
 // MarkSessionFactor records f as the second factor of sess, if sess has none.
 func (c *Core) MarkSessionFactor(ctx context.Context, q db.Querier, sess uuid.UUID, f FactorKind) error {
-	return c.s.markSessionFactor(ctx, q, sess, f)
+	_, err := q.Exec(ctx, `UPDATE auth_sessions SET second_factor = $2 WHERE id = $1 AND second_factor = ''`, sess, string(f))
+	return err
 }
 
 // LoginThrottle is one login's throttle under one audience, as of one instant.

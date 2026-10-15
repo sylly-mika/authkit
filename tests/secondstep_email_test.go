@@ -396,7 +396,7 @@ func TestSecondStepEmailCodeTakesFiveWrongTries(t *testing.T) {
 
 func TestSecondStepEmailCodeExpires(t *testing.T) {
 	login := "ada@example.invalid"
-	w := emailWorld(t, func(c *kittest.Rules) { c.SecondFactors.EmailCodeTTL = 2 * time.Minute })
+	w := emailWorld(t, func(c *kittest.Rules) { c.Factors.EmailCodeTTL = 2 * time.Minute })
 	w.emailUser()
 	tok := w.challenge(login)
 	sent := w.stepSend("staff", tok)

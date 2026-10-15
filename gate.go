@@ -51,25 +51,6 @@ func (s *Service) core() *Core {
 	return &Core{s: s}
 }
 
-type factorVerifier struct{ s *Service }
-
-func (v factorVerifier) Verify(ctx context.Context, q db.Querier, principal uuid.UUID, method FactorKind, code string) (bool, error) {
-	return v.s.checkFactor(ctx, q, principal, method, code, v.s.now())
-}
-
-func (v factorVerifier) RecoveryCodesLeft(ctx context.Context, q db.Querier, principal uuid.UUID) (int, error) {
-	return factor.RecoveryCodesLeft(ctx, q, principal)
-}
-
-func (v factorVerifier) SendCode(ctx context.Context, q db.Querier, principal uuid.UUID) (EmailCodeRequest, time.Duration, error) {
-	id, exp, retryAfter, err := factor.RequestEmailCode(ctx, q, v.s.cfg.Rand, principal, factor.PurposeSignIn, v.s.now(), v.s.emailRules())
-	return EmailCodeRequest{ID: id, ExpiresAt: exp}, retryAfter, err
-}
-
-func (v factorVerifier) ChallengeRules() (time.Duration, int) {
-	return v.s.cfg.SecondFactors.ChallengeTTL, v.s.cfg.SecondFactors.MaxTries
-}
-
 func (s *Service) gateMethods(ctx context.Context, q db.Querier, id uuid.UUID, f FactorKind) ([]FactorKind, bool, error) {
 	if f == FactorPasskey {
 		return nil, false, nil

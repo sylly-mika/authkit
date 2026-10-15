@@ -24,6 +24,7 @@ import (
 	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
+	"github.com/sylly-mika/authkit/secondfactor"
 )
 
 type counted struct {
@@ -47,7 +48,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
+	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
 	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Attach"}
 )
 
@@ -110,20 +111,20 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.Svc.Passkeys.DeletePasskey(ctx, q, c, uuid.New(), authkit.Meta{})
 			return err
 		},
-		"BeginTOTPSetup":          func() error { _, err := w.Svc.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
-		"ConfirmTOTP":             func() error { _, err := w.Svc.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
-		"RegenerateRecoveryCodes": func() error { _, err := w.Svc.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
-		"BeginEmailCodeSetup":     func() error { _, err := w.Svc.BeginEmailCodeSetup(ctx, q, c, authkit.Meta{}); return err },
-		"ConfirmEmailCode": func() error {
-			_, err := w.Svc.ConfirmEmailCode(ctx, q, c, "x", authkit.Meta{})
+		"Factors.BeginTOTPSetup":          func() error { _, err := w.Svc.Factors.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
+		"Factors.ConfirmTOTP":             func() error { _, err := w.Svc.Factors.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
+		"Factors.RegenerateRecoveryCodes": func() error { _, err := w.Svc.Factors.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
+		"Factors.BeginEmailCodeSetup":     func() error { _, err := w.Svc.Factors.BeginEmailCodeSetup(ctx, q, c, authkit.Meta{}); return err },
+		"Factors.ConfirmEmailCode": func() error {
+			_, err := w.Svc.Factors.ConfirmEmailCode(ctx, q, c, "x", authkit.Meta{})
 			return err
 		},
-		"RequestEmailProof": func() error { _, err := w.Svc.RequestEmailProof(ctx, q, c, authkit.Meta{}); return err },
-		"DisableSecondFactor": func() error {
-			_, err := w.Svc.DisableSecondFactor(ctx, q, c, authkit.FactorTOTP, authkit.FactorProof{}, authkit.Meta{})
+		"Factors.RequestEmailProof": func() error { _, err := w.Svc.Factors.RequestEmailProof(ctx, q, c, authkit.Meta{}); return err },
+		"Factors.DisableSecondFactor": func() error {
+			_, err := w.Svc.Factors.DisableSecondFactor(ctx, q, c, authkit.FactorTOTP, authkit.FactorProof{}, authkit.Meta{})
 			return err
 		},
-		"MintEmailCode": func() error { _, err := w.Svc.MintEmailCode(ctx, q, uuid.New()); return err },
+		"Factors.MintEmailCode": func() error { _, err := w.Svc.Factors.MintEmailCode(ctx, q, uuid.New()); return err },
 		"OpenSessionFrom": func() error {
 			_, err := w.Svc.OpenSessionFrom(ctx, q, res.Session.ID, p, "staff", authkit.Meta{})
 			return err
@@ -153,7 +154,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			t.Errorf("%s ran %d statements on a bare connection before refusing it", name, n)
 		}
 	}
-	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module]()} {
+	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module](), "Factors.": reflect.TypeFor[*secondfactor.Module]()} {
 		for i := range typ.NumMethod() {
 			name := prefix + typ.Method(i).Name
 			if _, swept := calls[name]; !swept && !slices.Contains(sweptReads, name) && !slices.Contains(sweptPure, name) {
@@ -190,7 +191,7 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	if list, err := w.Svc.Passkeys.ListPasskeys(w.Ctx, q, id); err != nil || len(list) != 1 || list[0].ID != pk {
 		t.Errorf("ListPasskeys = %d passkeys, %v, want the one passkey %s", len(list), err, pk)
 	}
-	if status, err := w.Svc.SecondFactorStatus(w.Ctx, q, c); err != nil || status != (authkit.FactorStatus{TOTP: true, RecoveryCodesLeft: 2}) {
+	if status, err := w.Svc.Factors.SecondFactorStatus(w.Ctx, q, c); err != nil || status != (authkit.FactorStatus{TOTP: true, RecoveryCodesLeft: 2}) {
 		t.Errorf("SecondFactorStatus = %+v, %v, want the TOTP factor on with 2 recovery codes", status, err)
 	}
 }

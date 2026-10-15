@@ -186,9 +186,6 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	var err error
 	s := &Service{cfg: cfg, principals: principals, attached: map[string]bool{}}
 	s.links = onetime.New(s.now, cfg.Rand)
-	if len(cfg.SecondFactors.Key) > 0 {
-		s.verifier = factorVerifier{s: s}
-	}
 	if cfg.Transport == TransportBearer {
 		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, s.now); err != nil {
 			return nil, err

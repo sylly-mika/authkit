@@ -59,7 +59,7 @@ func (f *fakeVerifier) record() ([]authkit.FactorKind, []uuid.UUID) {
 
 func attachFake(w *world) *fakeVerifier {
 	w.T.Helper()
-	c, err := w.Svc.Attach("secondfactor")
+	c, err := w.Svc.Attach("fakefactor")
 	if err != nil {
 		w.T.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func (w *world) challenges(id uuid.UUID) int {
 
 func TestSetVerifierTakesOneVerifier(t *testing.T) {
 	w := newWorld(t)
-	c, err := w.Svc.Attach("secondfactor")
+	c, err := w.Svc.Attach("fakefactor")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestSetVerifierTakesOneVerifier(t *testing.T) {
 	}
 
 	k := newWorld(t, factors)
-	kc, err := k.Svc.Attach("secondfactor")
+	kc, err := k.Svc.Attach("fakefactor")
 	if err != nil {
 		t.Fatal(err)
 	}

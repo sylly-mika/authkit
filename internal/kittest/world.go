@@ -19,6 +19,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
+	"github.com/sylly-mika/authkit/secondfactor"
 )
 
 // Cheap is the argon2id cost the tests hash with.
@@ -30,13 +31,15 @@ type Rules struct {
 	authkit.Config
 	Password password.Config
 	Passkeys passkey.Rules
+	Factors  secondfactor.Rules
 }
 
-// Kit is the Service under test and its password and passkey modules.
+// Kit is the Service under test and its password, passkey and second-factor modules.
 type Kit struct {
 	*authkit.Service
 	Password *password.Module
 	Passkeys *passkey.Module
+	Factors  *secondfactor.Module
 }
 
 // World is one test's Kit and the fixtures it runs over.
@@ -99,6 +102,20 @@ func (w *World) BuildWith(r Rules, p authkit.Principals) *Kit {
 
 // NewKit builds a Kit from r over the principals p.
 func NewKit(r Rules, p authkit.Principals) (*Kit, error) {
+	return newKit(r, p, true)
+}
+
+// BuildNoFactors builds a Kit from r over the world's principals with no secondfactor module attached.
+func (w *World) BuildNoFactors(r Rules) *Kit {
+	w.T.Helper()
+	kit, err := newKit(r, w.P, false)
+	if err != nil {
+		w.T.Fatal(err)
+	}
+	return kit
+}
+
+func newKit(r Rules, p authkit.Principals, factors bool) (*Kit, error) {
 	svc, err := authkit.New(r.Config, p)
 	if err != nil {
 		return nil, err
@@ -111,7 +128,13 @@ func NewKit(r Rules, p authkit.Principals) (*Kit, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Kit{Service: svc, Password: pw, Passkeys: pk}, nil
+	kit := &Kit{Service: svc, Password: pw, Passkeys: pk}
+	if factors {
+		if kit.Factors, err = secondfactor.New(svc, r.Factors); err != nil {
+			return nil, err
+		}
+	}
+	return kit, nil
 }
 
 // User creates a principal with the login and, when pw is not empty, a

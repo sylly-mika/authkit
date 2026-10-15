@@ -32,7 +32,7 @@ type emailRowState struct {
 func (w *world) beginEmail(c *authkit.Claims) authkit.Result {
 	w.T.Helper()
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginEmailCodeSetup(w.Ctx, q, c, fm)
+		return w.Svc.Factors.BeginEmailCodeSetup(w.Ctx, q, c, fm)
 	})
 	if err != nil {
 		w.T.Fatalf("BeginEmailCodeSetup: %v", err)
@@ -46,7 +46,7 @@ func (w *world) beginEmail(c *authkit.Claims) authkit.Result {
 func (w *world) confirmEmail(c *authkit.Claims, code string) authkit.Result {
 	w.T.Helper()
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ConfirmEmailCode(w.Ctx, q, c, code, fm)
+		return w.Svc.Factors.ConfirmEmailCode(w.Ctx, q, c, code, fm)
 	})
 	if err != nil {
 		w.T.Fatalf("ConfirmEmailCode: %v", err)
@@ -57,7 +57,7 @@ func (w *world) confirmEmail(c *authkit.Claims, code string) authkit.Result {
 func (w *world) requestProof(c *authkit.Claims) authkit.Result {
 	w.T.Helper()
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.RequestEmailProof(w.Ctx, q, c, fm)
+		return w.Svc.Factors.RequestEmailProof(w.Ctx, q, c, fm)
 	})
 	if err != nil {
 		w.T.Fatalf("RequestEmailProof: %v", err)
@@ -68,7 +68,7 @@ func (w *world) requestProof(c *authkit.Claims) authkit.Result {
 func (w *world) disable(c *authkit.Claims, kind authkit.FactorKind, proof authkit.FactorProof) authkit.Result {
 	w.T.Helper()
 	res, err := w.factor(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.DisableSecondFactor(w.Ctx, q, c, kind, proof, fm)
+		return w.Svc.Factors.DisableSecondFactor(w.Ctx, q, c, kind, proof, fm)
 	})
 	if err != nil {
 		w.T.Fatalf("DisableSecondFactor: %v", err)
@@ -81,7 +81,7 @@ func (w *world) mint(id uuid.UUID) (authkit.EmailCodeMail, error) {
 	var mail authkit.EmailCodeMail
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		mail, err = w.Svc.MintEmailCode(w.Ctx, q, id)
+		mail, err = w.Svc.Factors.MintEmailCode(w.Ctx, q, id)
 		return err
 	})
 	return mail, err
@@ -578,11 +578,13 @@ func TestEmailMethodsAreOffWithoutAKey(t *testing.T) {
 	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	calls := map[string]func(q db.Querier) (authkit.Result, error){
-		"BeginEmailCodeSetup": func(q db.Querier) (authkit.Result, error) { return w.Svc.BeginEmailCodeSetup(w.Ctx, q, c, fm) },
-		"ConfirmEmailCode":    func(q db.Querier) (authkit.Result, error) { return w.Svc.ConfirmEmailCode(w.Ctx, q, c, "123456", fm) },
-		"RequestEmailProof":   func(q db.Querier) (authkit.Result, error) { return w.Svc.RequestEmailProof(w.Ctx, q, c, fm) },
+		"BeginEmailCodeSetup": func(q db.Querier) (authkit.Result, error) { return w.Svc.Factors.BeginEmailCodeSetup(w.Ctx, q, c, fm) },
+		"ConfirmEmailCode": func(q db.Querier) (authkit.Result, error) {
+			return w.Svc.Factors.ConfirmEmailCode(w.Ctx, q, c, "123456", fm)
+		},
+		"RequestEmailProof": func(q db.Querier) (authkit.Result, error) { return w.Svc.Factors.RequestEmailProof(w.Ctx, q, c, fm) },
 		"DisableSecondFactor": func(q db.Querier) (authkit.Result, error) {
-			return w.Svc.DisableSecondFactor(w.Ctx, q, c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: "123456"}, fm)
+			return w.Svc.Factors.DisableSecondFactor(w.Ctx, q, c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: "123456"}, fm)
 		},
 	}
 	for name, call := range calls {

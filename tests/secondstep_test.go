@@ -24,7 +24,7 @@ const pw = "the right password"
 var meta = authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"}
 
 func factors(c *kittest.Rules) {
-	c.SecondFactors.Key = bytes.Repeat([]byte{0x07}, 32)
+	c.Factors.Key = bytes.Repeat([]byte{0x07}, 32)
 }
 
 func throttleAt(n int) func(*kittest.Rules) {
@@ -32,7 +32,7 @@ func throttleAt(n int) func(*kittest.Rules) {
 }
 
 func maxTries(n int) func(*kittest.Rules) {
-	return func(c *kittest.Rules) { c.SecondFactors.MaxTries = n }
+	return func(c *kittest.Rules) { c.Factors.MaxTries = n }
 }
 
 func (w *world) code(secret string) string {
@@ -54,7 +54,7 @@ func (w *world) enrolTOTP(login string) (uuid.UUID, string, []string) {
 	id := w.User(login, pw)
 	c := w.Claims(w.SignIn(login, pw))
 	setup := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, meta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, meta)
 	})
 	if setup.TOTPSetup == nil {
 		w.T.Fatalf("begin the authenticator: %v", setup.Refusal)
@@ -65,7 +65,7 @@ func (w *world) enrolTOTP(login string) (uuid.UUID, string, []string) {
 	}
 	secret := key.Secret()
 	conf := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ConfirmTOTP(w.Ctx, q, c, w.code(secret), meta)
+		return w.Svc.Factors.ConfirmTOTP(w.Ctx, q, c, w.code(secret), meta)
 	})
 	if conf.Refusal != nil {
 		w.T.Fatalf("confirm the authenticator: %v", conf.Refusal)
@@ -96,8 +96,13 @@ func (w *world) challenge(login string) string {
 func (w *world) offline(key []byte) {
 	w.T.Helper()
 	cfg := w.Cfg
-	cfg.SecondFactors.Key = key
+	cfg.Factors.Key = key
 	w.Svc = w.Build(cfg)
+}
+
+func (w *world) unplugged() {
+	w.T.Helper()
+	w.Svc = w.BuildNoFactors(w.Cfg)
 }
 
 func (w *world) sessionMode() {
@@ -817,7 +822,7 @@ func TestAnUnconfirmedAuthenticatorAsksNoSecondStep(t *testing.T) {
 	w.User(login, pw)
 	c := w.Claims(w.SignIn(login, pw))
 	w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, meta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, meta)
 	})
 	res := w.Login("staff", login, pw)
 	if res.Refusal != nil || res.Session == nil || res.SecondStep != nil {

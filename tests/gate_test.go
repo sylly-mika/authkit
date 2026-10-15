@@ -246,7 +246,7 @@ func TestGateFailsClosedWithoutVerifier(t *testing.T) {
 	h := w.StoredHash(id)
 	n := w.sessions(id)
 	e := w.Count("SELECT count(*) FROM auth_events WHERE principal_id = $1", id)
-	w.offline(nil)
+	w.unplugged()
 	results := []authkit.Result{
 		w.Login("staff", gateLogin, pw),
 		w.completeReset(link, gateNewPassword),
@@ -288,7 +288,7 @@ func TestResetOrder(t *testing.T) {
 		w.badLogin()
 		link := w.mintLink(*w.requestReset(gateLogin).TokenID)
 		h := w.StoredHash(ada)
-		w.offline(nil)
+		w.unplugged()
 		res := w.completeReset(link, gateNewPassword)
 		if !errors.Is(res.Refusal, authkit.ErrSecondFactorsOff) {
 			t.Errorf("refusal = %v, want ErrSecondFactorsOff", res.Refusal)
