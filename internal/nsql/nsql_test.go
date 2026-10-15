@@ -89,6 +89,11 @@ func TestCheckSchemaNames(t *testing.T) {
 			t.Errorf("Check(%q) = %v, want %q", s, err, want)
 		}
 	}
+	for _, s := range []string{`a"b`, "a.b", "a b", "a;b", "a'b"} {
+		if Check(s) == nil {
+			t.Errorf("Check(%q) = nil, want a refusal", s)
+		}
+	}
 	for _, s := range []string{"public", "information_schema", "pg_temp", "pg_catalog"} {
 		want := `authkit: schema "` + s + `" is reserved by PostgreSQL`
 		if err := Check(s); err == nil || err.Error() != want {
