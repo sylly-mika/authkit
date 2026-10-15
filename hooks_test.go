@@ -24,6 +24,13 @@ import (
 	"github.com/sylly-mika/authkit/password"
 )
 
+type world struct{ *kittest.World }
+
+func newWorld(t *testing.T, tweaks ...func(*authkit.Config)) *world {
+	t.Helper()
+	return &world{kittest.New(t, tweaks...)}
+}
+
 func TestTheSixthAttemptIsRefusedUnverified(t *testing.T) {
 	w := newWorld(t, kittest.DefaultRules)
 	id := w.User("ada@example.invalid", "the right password")
