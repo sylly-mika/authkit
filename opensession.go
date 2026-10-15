@@ -17,6 +17,7 @@ import (
 // is logged and returned. Bearer mode returns Tokens, Session mode
 // SessionToken. Needs a transaction.
 func (s *Service) OpenSession(ctx context.Context, q db.Querier, p Principal, aud Audience, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}
@@ -27,6 +28,7 @@ var errNotFromSession = errors.New("authkit: OpenSessionFrom: the session is not
 
 // OpenSessionFrom is OpenSession for a workspace switch: the new session keeps session from's authenticated_at.
 func (s *Service) OpenSessionFrom(ctx context.Context, q db.Querier, from uuid.UUID, p Principal, aud Audience, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}

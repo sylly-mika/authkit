@@ -70,7 +70,7 @@ func TestEveryEventNamesItsSource(t *testing.T) {
 	if w.Count(`SELECT count(*) FROM auth_events`) != len(want) {
 		t.Fatalf("auth_events holds %d rows, want one per OnEvent call", w.Count(`SELECT count(*) FROM auth_events`))
 	}
-	rows, err := w.D.Owner.Query(`SELECT source || '/' || result FROM auth_events`)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT source || '/' || result FROM auth_events`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,10 +120,11 @@ func TestListEventsReadsTheStoredSource(t *testing.T) {
 
 func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 	var seen []bool
-	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) {
+	var w *world
+	w = newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) {
 		c.OnEvent = func(ctx context.Context, q db.Querier, e authkit.Event) error {
 			var n int
-			if err := q.QueryRow(ctx, `SELECT count(*) FROM auth_events WHERE id = $1`, e.ID).Scan(&n); err != nil {
+			if err := q.QueryRow(ctx, w.D.SQL(`SELECT count(*) FROM auth_events WHERE id = $1`), e.ID).Scan(&n); err != nil {
 				return err
 			}
 			seen = append(seen, n == 1 && q.InTx())

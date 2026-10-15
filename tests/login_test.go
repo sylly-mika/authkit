@@ -208,7 +208,7 @@ func TestReservedClaimsFailBeforeTheSessionRow(t *testing.T) {
 		t.Fatalf("Login = %v, want ErrReservedClaim", err)
 	}
 	var n int
-	if err := q.QueryRow(w.Ctx, `SELECT count(*) FROM auth_sessions`).Scan(&n); err != nil || n != 0 {
+	if err := q.QueryRow(w.Ctx, w.D.SQL(`SELECT count(*) FROM auth_sessions`)).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("the failed Login's transaction holds %d session rows (%v); want 0, the check comes first (spec §8.4)", n, err)
 	}
 }

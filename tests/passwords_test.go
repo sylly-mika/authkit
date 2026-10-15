@@ -122,7 +122,7 @@ func TestChangePasswordLosesToAResetThatLands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := holder.ExecContext(w.Ctx, `UPDATE auth_credentials SET password_hash = $2 WHERE principal_id = $1`, id, replaced); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL(`UPDATE auth_credentials SET password_hash = $2 WHERE principal_id = $1`), id, replaced); err != nil {
 		t.Fatal(err)
 	}
 	if res := w.changeBehind(holder, w.Pinned(id), w.Claims(keep)); !errors.Is(res.Refusal, authkit.ErrCurrentPasswordWrong) {
@@ -143,7 +143,7 @@ func TestChangePasswordLosesToARevokeThatLands(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.Ctx, `UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'user' WHERE id = $1`, keep.Session.ID, w.Clock.Now()); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL(`UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'user' WHERE id = $1`), keep.Session.ID, w.Clock.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if res := w.changeBehind(holder, w.Pinned(id), w.Claims(keep)); !errors.Is(res.Refusal, authkit.ErrSessionEnded) {
@@ -191,7 +191,7 @@ func TestChangePasswordLocksTheCredentialBeforeTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reset.ExecContext(w.Ctx, `UPDATE auth_credentials SET password_hash = $2 WHERE principal_id = $1`, id, replaced); err != nil {
+	if _, err := reset.ExecContext(w.Ctx, w.D.SQL(`UPDATE auth_credentials SET password_hash = $2 WHERE principal_id = $1`), id, replaced); err != nil {
 		t.Fatal(err)
 	}
 	conn, c := w.Pinned(id), w.Claims(keep)
@@ -205,7 +205,7 @@ func TestChangePasswordLocksTheCredentialBeforeTheSession(t *testing.T) {
 		})
 	}()
 	w.D.WaitForLockWaiters(t, 1)
-	if _, err := reset.ExecContext(w.Ctx, `UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'password_reset' WHERE principal_id = $1 AND revoked_at IS NULL`,
+	if _, err := reset.ExecContext(w.Ctx, w.D.SQL(`UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'password_reset' WHERE principal_id = $1 AND revoked_at IS NULL`),
 		id, w.Clock.Now()); err != nil {
 		t.Fatalf("the reset's revoke of every session: %v", err)
 	}

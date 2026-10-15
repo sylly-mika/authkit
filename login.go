@@ -13,6 +13,7 @@ import (
 
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/events"
+	"github.com/sylly-mika/authkit/internal/nsql"
 	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/internal/token"
 	"github.com/sylly-mika/authkit/session"
@@ -79,7 +80,7 @@ func (s *Service) record(ctx context.Context, q db.Querier, now time.Time, sourc
 	if s.cfg.OnEvent == nil {
 		return nil
 	}
-	if err := s.cfg.OnEvent(ctx, q, e); err != nil {
+	if err := s.cfg.OnEvent(ctx, nsql.Plain(q), e); err != nil {
 		return fmt.Errorf("authkit: OnEvent: %w", err)
 	}
 	return nil

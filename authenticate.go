@@ -20,6 +20,7 @@ const touchEvery = time.Minute
 // last_seen_at at most once a minute. Bearer mode only; Session mode has
 // AuthenticateSession.
 func (s *Service) Authenticate(ctx context.Context, q db.Querier, c *Claims) (Result, error) {
+	q = s.names.Q(q)
 	if s.cfg.Transport != TransportBearer {
 		return Result{}, errors.New("authkit: Authenticate needs Config.Transport TransportBearer")
 	}
@@ -61,6 +62,7 @@ func (s *Service) Authenticate(ctx context.Context, q db.Querier, c *Claims) (Re
 // signed_out. A session already revoked or expired is left alone and logs
 // nothing, so a repeated logout succeeds.
 func (s *Service) Logout(ctx context.Context, q db.Querier, c *Claims, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}

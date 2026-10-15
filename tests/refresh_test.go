@@ -62,7 +62,7 @@ func TestRefreshConcurrentOneWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.Ctx, `SELECT 1 FROM auth_sessions WHERE id = $1 FOR UPDATE`, first.Session.ID); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL(`SELECT 1 FROM auth_sessions WHERE id = $1 FOR UPDATE`), first.Session.ID); err != nil {
 		t.Fatal(err)
 	}
 	const n = 16
@@ -181,7 +181,7 @@ func TestConcurrentReplaysRevokeAndLogOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.Ctx, `SELECT 1 FROM auth_sessions WHERE id = $1 FOR UPDATE`, first.Session.ID); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL(`SELECT 1 FROM auth_sessions WHERE id = $1 FOR UPDATE`), first.Session.ID); err != nil {
 		t.Fatal(err)
 	}
 	const n = 16

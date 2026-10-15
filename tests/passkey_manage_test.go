@@ -440,7 +440,7 @@ func TestDeletePasskeyWaitsForTheCredentialLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.Ctx, "SELECT 1 FROM auth_credentials WHERE principal_id = $1 FOR UPDATE", ada); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL("SELECT 1 FROM auth_credentials WHERE principal_id = $1 FOR UPDATE"), ada); err != nil {
 		t.Fatal(err)
 	}
 	conn := w.Pinned(ada)

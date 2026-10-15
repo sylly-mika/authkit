@@ -69,6 +69,7 @@ func (s *Service) gateMethods(ctx context.Context, q db.Querier, id uuid.UUID, f
 
 // WHY: an Admit refusal leaves the throttle counter as it is; only a sign-in clears it.
 func (c *Core) SignIn(ctx context.Context, q db.Querier, a *Attempt, p Principal, f FactorKind) (Result, error) {
+	q = c.Q(q)
 	s := c.s
 	ev := a.ev
 	ev.PrincipalID = &p.ID
@@ -159,6 +160,7 @@ func (c *Core) signInReset(ctx context.Context, q db.Querier, a *Attempt, p Prin
 
 // WHY: Admit runs before any write, so a refusal leaves the credential and the sessions as they were.
 func (c *Core) Reopen(ctx context.Context, q db.Querier, sess uuid.UUID, p Principal, src string, m Meta, now time.Time, commit func(ctx context.Context, q db.Querier) error) (Result, error) {
+	q = c.Q(q)
 	s := c.s
 	open, err := session.LockOpen(ctx, q, sess, p.ID, now)
 	if errors.Is(err, db.ErrNoRows) {

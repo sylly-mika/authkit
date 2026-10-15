@@ -69,7 +69,7 @@ func TestDisableNeedsACurrentCode(t *testing.T) {
 		t.Errorf("throttle failures = %d, want 3", n)
 	}
 	var kinds []string
-	rows, err := w.D.Owner.Query(`SELECT second_factor FROM auth_events WHERE principal_id = $1 AND source = 'second_factor' AND result = 'bad_code' ORDER BY second_factor`, ada)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT second_factor FROM auth_events WHERE principal_id = $1 AND source = 'second_factor' AND result = 'bad_code' ORDER BY second_factor`), ada)
 	if err != nil {
 		t.Fatal(err)
 	}

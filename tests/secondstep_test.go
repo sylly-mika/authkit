@@ -114,7 +114,7 @@ func (w *world) sessionMode() {
 
 func (w *world) eventResults(id uuid.UUID, source string) []string {
 	w.T.Helper()
-	rows, err := w.D.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = $2 ORDER BY at, id`, id, source)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = $2 ORDER BY at, id`), id, source)
 	if err != nil {
 		w.T.Fatal(err)
 	}
@@ -674,7 +674,7 @@ func TestTheSecondStepLeaksNoSecret(t *testing.T) {
 	if first.Refusal != authkit.ErrBadCode || second.Refusal != nil {
 		t.Fatalf("second step outcomes %v, %v", first.Refusal, second.Refusal)
 	}
-	rows, err := w.D.Owner.Query(`SELECT concat_ws('|', login, result, ip, user_agent, source, second_factor) FROM auth_events WHERE principal_id = $1`, id)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT concat_ws('|', login, result, ip, user_agent, source, second_factor) FROM auth_events WHERE principal_id = $1`), id)
 	if err != nil {
 		t.Fatal(err)
 	}

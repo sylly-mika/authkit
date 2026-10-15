@@ -16,6 +16,7 @@ import (
 // and only then writes: a refusal leaves the token valid. The pair is minted
 // with the claims Admit grants now. Bearer mode only.
 func (s *Service) Refresh(ctx context.Context, q db.Querier, aud Audience, raw string, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}

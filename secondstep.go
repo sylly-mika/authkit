@@ -17,6 +17,7 @@ import (
 
 // VerifySecondStep completes a sign-in that returned Result.SecondStep, with an authenticator code, an emailed code or a recovery code. A wrong code counts on the challenge and on the login's throttle; the refusal's writes must be committed.
 func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audience, token string, method FactorKind, code string, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}
@@ -149,6 +150,7 @@ func (s *Service) issueSecondStep(ctx context.Context, q db.Querier, source stri
 
 // SendSecondStepEmail issues an emailed sign-in code for a live second-step challenge. The code is minted later by MintEmailCode and never returned here. Needs a transaction.
 func (s *Service) SendSecondStepEmail(ctx context.Context, q db.Querier, aud Audience, raw string, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}

@@ -22,6 +22,7 @@ type Attempt struct {
 
 // Begin starts a sign-in attempt for login under aud; a throttled login gets ErrLocked in Result.Refusal and no Attempt.
 func (c *Core) Begin(ctx context.Context, q db.Querier, src string, aud Audience, login string, m Meta) (*Attempt, Result, error) {
+	q = c.Q(q)
 	m = m.clean()
 	a := &Attempt{c: c, src: src, keyed: true, attempt: attempt{aud: aud, key: Normalize(login), now: c.s.now(), m: m,
 		ev: events.Event{Audience: string(aud), Login: typedLogin(login), IP: m.IP, UserAgent: m.UserAgent}}}
@@ -76,6 +77,7 @@ func (a *Attempt) SetPrincipal(p *Principal) {
 
 // Refuse ends the attempt with result, returns refusal in Result.Refusal and writes the attempt's log row.
 func (a *Attempt) Refuse(ctx context.Context, q db.Querier, result string, refusal error) (Result, error) {
+	q = a.c.Q(q)
 	s := a.c.s
 	if a.keyed && a.counted && s.cfg.Throttle.CountAfterVerify {
 		if err := throttle.Fail(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle); err != nil {

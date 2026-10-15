@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"os"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/nsql"
 	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
 	"github.com/sylly-mika/authkit/secondfactor"
@@ -57,8 +59,13 @@ type World struct {
 // each tweak in order.
 func New(t *testing.T, tweaks ...func(*Rules)) *World {
 	t.Helper()
-	w := &World{T: t, Ctx: context.Background(), D: authkittest.NewDB(t), P: authkittest.NewPrincipals(), Clock: authkittest.NewClock()}
-	w.Cfg = Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Clock: w.Clock, Rand: authkittest.Rand(7)},
+	schema := os.Getenv("AUTHKIT_TEST_SCHEMA")
+	var opts []authkittest.Option
+	if schema != "" {
+		opts = append(opts, authkittest.Schema(schema))
+	}
+	w := &World{T: t, Ctx: context.Background(), D: authkittest.NewDB(t, opts...), P: authkittest.NewPrincipals(), Clock: authkittest.NewClock()}
+	w.Cfg = Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Clock: w.Clock, Rand: authkittest.Rand(7), Schema: schema},
 		Password: password.Config{Hashing: Cheap, HashWait: 200 * time.Millisecond}}
 	PinnedRules(&w.Cfg)
 	for _, f := range tweaks {
@@ -214,6 +221,9 @@ func (w *World) Claims(res authkit.Result) *authkit.Claims {
 // Pinned returns a connection pinned to id's scope and the staff audience.
 func (w *World) Pinned(id uuid.UUID) *sql.Conn { return w.D.Pinned(w.T, id, w.P.Scope, "staff") }
 
+// Q qualifies authkit's table names in q with the world's schema, for a test that calls an internal package directly.
+func (w *World) Q(q db.Querier) db.Querier { return nsql.NewNames(w.Cfg.Config.Schema).Q(q) }
+
 // Count runs a query that returns one integer and returns it.
 func (w *World) Count(query string, args ...any) int {
 	w.T.Helper()
@@ -237,7 +247,7 @@ func (w *World) StoredHash(id uuid.UUID) string {
 // Results lists the result of each auth event of id, oldest first.
 func (w *World) Results(id uuid.UUID) []string {
 	w.T.Helper()
-	rows, err := w.D.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 ORDER BY at, result`, id)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT result FROM auth_events WHERE principal_id = $1 ORDER BY at, result`), id)
 	if err != nil {
 		w.T.Fatal(err)
 	}

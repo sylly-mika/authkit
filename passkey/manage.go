@@ -16,6 +16,7 @@ import (
 
 // ListPasskeys is the principal's passkeys, oldest first. A bare pinned connection is fine.
 func (mod *Module) ListPasskeys(ctx context.Context, q db.Querier, principal uuid.UUID) ([]authkit.Passkey, error) {
+	q = mod.core.Q(q)
 	if mod.rules.RPID == "" {
 		return nil, authkit.ErrPasskeysOff
 	}
@@ -37,6 +38,7 @@ func (mod *Module) ListPasskeys(ctx context.Context, q db.Querier, principal uui
 
 // RenamePasskey sets the label of one of the caller's passkeys; authkit.ErrPasskeyNotFound when the caller has no such passkey.
 func (mod *Module) RenamePasskey(ctx context.Context, q db.Querier, c *authkit.Claims, id uuid.UUID, label string) (authkit.Result, error) {
+	q = mod.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -59,6 +61,7 @@ func (mod *Module) RenamePasskey(ctx context.Context, q db.Querier, c *authkit.C
 
 // DeletePasskey removes one of the caller's passkeys and revokes the principal's other sessions (passkey_removed). It needs a sign-in within Passkeys.Reauth; authkit.ErrPasskeyNotFound when the caller has no such passkey.
 func (mod *Module) DeletePasskey(ctx context.Context, q db.Querier, c *authkit.Claims, id uuid.UUID, m authkit.Meta) (authkit.Result, error) {
+	q = mod.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}

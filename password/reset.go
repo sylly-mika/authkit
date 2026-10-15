@@ -22,6 +22,7 @@ const (
 // The app's handler answers alike either way and pads with PadSince after
 // its transaction commits.
 func (s *Module) RequestReset(ctx context.Context, q db.Querier, aud authkit.Audience, login string) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -71,6 +72,7 @@ func (s *Module) RequestReset(ctx context.Context, q db.Querier, aud authkit.Aud
 // It also deletes every passkey of the principal, reports the count in
 // Result.PasskeysRemoved and logs passkeys_reset when there were any.
 func (s *Module) CompleteReset(ctx context.Context, q db.Querier, aud authkit.Audience, raw, pw string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}

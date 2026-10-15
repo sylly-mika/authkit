@@ -20,6 +20,7 @@ import (
 
 // BeginPasskeyRegistration starts adding a passkey for a signed-in principal with a password and a recent sign-in, and returns the options for the browser.
 func (mod *Module) BeginPasskeyRegistration(ctx context.Context, q db.Querier, c *authkit.Claims, m authkit.Meta) (authkit.Result, error) {
+	q = mod.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -81,6 +82,7 @@ func (mod *Module) BeginPasskeyRegistration(ctx context.Context, q db.Querier, c
 
 // FinishPasskeyRegistration stores the passkey the browser created for a begun ceremony and records a passkey_added event.
 func (mod *Module) FinishPasskeyRegistration(ctx context.Context, q db.Querier, c *authkit.Claims, ceremonyID string, response []byte, label string, m authkit.Meta) (authkit.Result, error) {
+	q = mod.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}

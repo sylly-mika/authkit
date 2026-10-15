@@ -248,14 +248,14 @@ func TestConfirmTOTPWritesTheStepItAccepted(t *testing.T) {
 		t.Errorf("the confirm did not write the step it accepted")
 	}
 	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-		replayed, err := factor.AcceptStep(w.Ctx, q, ada, step-1)
+		replayed, err := factor.AcceptStep(w.Ctx, w.Q(q), ada, step-1)
 		if err != nil {
 			return err
 		}
 		if replayed {
 			t.Errorf("the confirmed step was accepted again at sign-in")
 		}
-		fresh, err := factor.AcceptStep(w.Ctx, q, ada, step)
+		fresh, err := factor.AcceptStep(w.Ctx, w.Q(q), ada, step)
 		if err != nil {
 			return err
 		}
@@ -521,14 +521,14 @@ func TestRegenerateRecoveryCodesReplacesTheSet(t *testing.T) {
 		t.Errorf("recovery_codes_regenerated events = %d, want 1", n)
 	}
 	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-		gone, err := factor.SpendRecoveryCode(w.Ctx, q, ada, recoveryHash(ada, old[1]), now)
+		gone, err := factor.SpendRecoveryCode(w.Ctx, w.Q(q), ada, recoveryHash(ada, old[1]), now)
 		if err != nil {
 			return err
 		}
 		if gone {
 			t.Errorf("a code from the replaced set was spent")
 		}
-		fresh, err := factor.SpendRecoveryCode(w.Ctx, q, ada, recoveryHash(ada, res.RecoveryCodes[0]), now)
+		fresh, err := factor.SpendRecoveryCode(w.Ctx, w.Q(q), ada, recoveryHash(ada, res.RecoveryCodes[0]), now)
 		if err != nil {
 			return err
 		}
@@ -695,7 +695,7 @@ func TestConcurrentRegeneratesLeaveOneSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := holder.ExecContext(w.Ctx, "SELECT 1 FROM auth_recovery_codes WHERE principal_id = $1 FOR UPDATE", ada); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL("SELECT 1 FROM auth_recovery_codes WHERE principal_id = $1 FOR UPDATE"), ada); err != nil {
 		holder.Rollback()
 		t.Fatal(err)
 	}

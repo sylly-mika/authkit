@@ -1,8 +1,10 @@
 package tests
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,8 +14,10 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
+	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/pgxdb"
 	"github.com/sylly-mika/authkit/db/sqldb"
+	"github.com/sylly-mika/authkit/internal/kittest"
 	"github.com/sylly-mika/authkit/onetime"
 )
 
@@ -114,4 +118,116 @@ func TestUnwrapThroughSchema(t *testing.T) {
 			t.Fatalf("pgxdb.Unwrap = %v, %v; want the pgx.Tx", got, ok)
 		}
 	})
+}
+
+func TestCheckSchemaReadsTheServicesSchema(t *testing.T) {
+	t.Setenv("AUTHKIT_TEST_SCHEMA", "kit_ns")
+	t.Run("schema", func(t *testing.T) {
+		w := newWorld(t)
+		check := func(fn func(q db.Querier) error) error {
+			return w.D.InAuthTx(w.Ctx, fn)
+		}
+		if err := check(func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); err != nil {
+			t.Fatalf("Service.CheckSchema on a current schema = %v; want nil", err)
+		}
+		if err := check(func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
+			t.Fatalf("authkit.CheckSchema with the schema off the search path = %v; want ErrSchemaBehind", err)
+		}
+		w.D.Exec(t, "UPDATE auth_schema SET version = 1")
+		if err := check(func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
+			t.Fatalf("Service.CheckSchema after the version drops = %v; want ErrSchemaBehind", err)
+		}
+	})
+	t.Run("plain", func(t *testing.T) {
+		t.Setenv("AUTHKIT_TEST_SCHEMA", "")
+		w := newWorld(t)
+		check := func(fn func(q db.Querier) error) error {
+			return w.D.InAuthTx(w.Ctx, fn)
+		}
+		if err := check(func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); err != nil {
+			t.Fatalf("authkit.CheckSchema on the search path = %v; want nil", err)
+		}
+		if err := check(func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); err != nil {
+			t.Fatalf("Service.CheckSchema with Schema \"\" = %v; want nil", err)
+		}
+		w.D.Exec(t, "UPDATE auth_schema SET version = 1")
+		if err := check(func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
+			t.Fatalf("authkit.CheckSchema after the version drops = %v; want ErrSchemaBehind", err)
+		}
+	})
+}
+
+type recordingPrincipals struct {
+	authkit.Principals
+	seen []db.Querier
+}
+
+func (r *recordingPrincipals) Admit(ctx context.Context, q db.Querier, p authkit.Proposal) (authkit.Admission, error) {
+	r.seen = append(r.seen, q)
+	return r.Principals.Admit(ctx, q, p)
+}
+
+func TestPrincipalsGetTheCallersQuerier(t *testing.T) {
+	t.Setenv("AUTHKIT_TEST_SCHEMA", "kit_ns")
+	w := newWorld(t)
+	p := authkit.Principal{ID: w.User("ada@example.invalid", ""), Login: "ada@example.invalid"}
+	id := p.ID
+	rec := &recordingPrincipals{Principals: w.P}
+	svc, err := authkit.New(w.Cfg.Config, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		res, err := svc.OpenSession(w.Ctx, q, p, "staff", authkit.Meta{})
+		if err != nil {
+			return err
+		}
+		if res.Refusal != nil {
+			t.Fatalf("OpenSession refused: %v", res.Refusal)
+		}
+		if len(rec.seen) != 1 || rec.seen[0] != q {
+			t.Fatalf("Admit got %d queriers; want the caller's one querier", len(rec.seen))
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := w.Count("SELECT count(*) FROM auth_sessions WHERE principal_id = $1", id); n != 1 {
+		t.Fatalf("sessions written = %d; want 1", n)
+	}
+}
+
+func TestOnEventGetsTheCallersQuerier(t *testing.T) {
+	t.Setenv("AUTHKIT_TEST_SCHEMA", "kit_ns")
+	var seen []db.Querier
+	w := newWorld(t, func(r *kittest.Rules) {
+		r.OnEvent = func(ctx context.Context, q db.Querier, e authkit.Event) error {
+			seen = append(seen, q)
+			return nil
+		}
+	})
+	p := authkit.Principal{ID: w.User("ada@example.invalid", ""), Login: "ada@example.invalid"}
+	id := p.ID
+	seen = nil
+	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		if _, err := w.Svc.OpenSession(w.Ctx, q, p, "staff", authkit.Meta{}); err != nil {
+			return err
+		}
+		if len(seen) < 1 {
+			t.Fatal("OnEvent was not called")
+		}
+		for _, got := range seen {
+			if got != q {
+				t.Fatal("OnEvent got a querier other than the caller's")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := w.Count("SELECT count(*) FROM auth_events WHERE principal_id = $1", id); n != len(seen) {
+		t.Fatalf("events written = %d; OnEvent calls = %d", n, len(seen))
+	}
 }

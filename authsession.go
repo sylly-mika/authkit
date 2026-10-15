@@ -22,6 +22,7 @@ import (
 // it, for the caller to commit. The Result carries Principal (ID only),
 // Session and Admission.
 func (s *Service) AuthenticateSession(ctx context.Context, q db.Querier, aud Audience, raw string, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}

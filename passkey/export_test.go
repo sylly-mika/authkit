@@ -17,7 +17,8 @@ func NewPasskeyUser(p authkit.Principal, creds []webauthn.Credential) webauthn.U
 	return passkeyUser{p: p, creds: creds}
 }
 
-func PasskeyOwnerHandler(ctx context.Context, q db.Querier, rawID, userHandle []byte) (webauthn.User, error) {
+func PasskeyOwnerHandler(ctx context.Context, m *Module, q db.Querier, rawID, userHandle []byte) (webauthn.User, error) {
+	q = m.core.Q(q)
 	var hit *passkeyRow
 	var infraErr error
 	return passkeyHandler(ctx, q, &hit, &infraErr)(rawID, userHandle)

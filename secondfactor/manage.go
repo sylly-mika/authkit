@@ -19,6 +19,7 @@ import (
 
 // SecondFactorStatus is which second factors the caller has turned on and how many unused recovery codes remain. A bare pinned connection is fine.
 func (s *Module) SecondFactorStatus(ctx context.Context, q db.Querier, c *authkit.Claims) (authkit.FactorStatus, error) {
+	q = s.core.Q(q)
 	if len(s.r.Key) == 0 {
 		return authkit.FactorStatus{}, authkit.ErrSecondFactorsOff
 	}
@@ -35,6 +36,7 @@ func (s *Module) SecondFactorStatus(ctx context.Context, q db.Querier, c *authki
 
 // BeginTOTPSetup starts an authenticator setup for the caller, replacing an unconfirmed one: it stores the sealed secret and returns the otpauth URI, the secret and a QR code. It needs a sign-in within Rules.Reauth; authkit.ErrFactorExists when the authenticator is on already.
 func (s *Module) BeginTOTPSetup(ctx context.Context, q db.Querier, c *authkit.Claims, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -90,6 +92,7 @@ func (s *Module) BeginTOTPSetup(ctx context.Context, q db.Querier, c *authkit.Cl
 
 // ConfirmTOTP turns the caller's authenticator on with a current code from it. The first second factor also returns 10 recovery codes, shown once. It needs a sign-in within Rules.Reauth.
 func (s *Module) ConfirmTOTP(ctx context.Context, q db.Querier, c *authkit.Claims, code string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -162,6 +165,7 @@ func (s *Module) ConfirmTOTP(ctx context.Context, q db.Querier, c *authkit.Claim
 
 // RegenerateRecoveryCodes replaces the caller's recovery codes with 10 new ones, shown once. It needs a second factor and a sign-in within Rules.Reauth.
 func (s *Module) RegenerateRecoveryCodes(ctx context.Context, q db.Querier, c *authkit.Claims, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -215,6 +219,7 @@ func (s *Module) issueRecoveryCodes(ctx context.Context, q db.Querier, keys fact
 
 // DisableSecondFactor turns off one of the caller's factors with a current code from any factor or a recovery code. A wrong code counts toward the login throttle. Turning off the last factor deletes the recovery codes. No session ends. Needs a recent sign-in and a transaction.
 func (s *Module) DisableSecondFactor(ctx context.Context, q db.Querier, c *authkit.Claims, kind authkit.FactorKind, proof authkit.FactorProof, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}

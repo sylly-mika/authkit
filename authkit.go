@@ -192,6 +192,9 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	}
 	var err error
 	s := &Service{cfg: cfg, principals: principals, names: nsql.NewNames(cfg.Schema), attached: map[string]bool{}}
+	if cfg.Schema != "" {
+		s.principals = plainPrincipals{app: principals}
+	}
 	if s.links, err = onetime.NewIn(cfg.Schema, s.now, cfg.Rand); err != nil {
 		return nil, err
 	}
@@ -248,10 +251,21 @@ func (s *Service) Codec() *bearer.Codec { return s.codec }
 func (s *Service) OneTime() *onetime.Store { return s.links }
 
 // CheckSchema refuses a database whose auth_schema.version is older than this
-// library's migrations. The app calls it once at startup.
+// library's migrations. The app calls it once at startup. With Config.Schema
+// set, call Service.CheckSchema.
 func CheckSchema(ctx context.Context, q db.Querier) error {
+	return checkSchema(ctx, q, "auth_schema")
+}
+
+// CheckSchema checks the tables in this Service's Config.Schema as the package func CheckSchema checks the search path.
+func (s *Service) CheckSchema(ctx context.Context, q db.Querier) error {
+	q = s.names.Q(q)
+	return checkSchema(ctx, q, nsql.Rewrite(s.cfg.Schema, "auth_schema"))
+}
+
+func checkSchema(ctx context.Context, q db.Querier, table string) error {
 	var exists bool
-	if err := q.QueryRow(ctx, `SELECT to_regclass('auth_schema') IS NOT NULL`).Scan(&exists); err != nil {
+	if err := q.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL`, table).Scan(&exists); err != nil {
 		return fmt.Errorf("authkit: look for auth_schema: %w", err)
 	}
 	if !exists {
@@ -281,6 +295,7 @@ const ceremonyRetention = time.Hour
 // expiry, and sign-in events older than EventRetention unless it is negative.
 // The app's worker runs it with no workspace bound.
 func (s *Service) Prune(ctx context.Context, q db.Querier) error {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return err
 	}

@@ -27,6 +27,7 @@ var (
 
 // BeginPasskeyLogin starts a passkey sign-in on the audience: it stores a ceremony and returns its ID and the browser's request options. It takes no login. Needs a transaction.
 func (mod *Module) BeginPasskeyLogin(ctx context.Context, q db.Querier, aud authkit.Audience, m authkit.Meta) (authkit.Result, error) {
+	q = mod.core.Q(q)
 	rp, now, ok, err := mod.passkeyStart(ctx, q, aud)
 	if err != nil {
 		return authkit.Result{}, err
@@ -51,6 +52,7 @@ func (mod *Module) BeginPasskeyLogin(ctx context.Context, q db.Querier, aud auth
 
 // FinishPasskeyLogin completes a passkey sign-in with the ceremony ID and the browser's JSON response: the passkey's owner passes Admit and gets a session, as with Login. Every refusal is authkit.ErrPasskeyRejected except Admit's own. Needs a transaction.
 func (mod *Module) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud authkit.Audience, ceremonyID string, response []byte, m authkit.Meta) (authkit.Result, error) {
+	q = mod.core.Q(q)
 	m = m.Clean()
 	rp, now, ok, err := mod.passkeyStart(ctx, q, aud)
 	if err != nil {

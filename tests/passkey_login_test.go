@@ -52,7 +52,7 @@ func (w *world) passkeySignIn(aud authkit.Audience, a *authkittest.Authenticator
 
 func (w *world) loginEvents(id uuid.UUID) []string {
 	w.T.Helper()
-	rows, err := w.D.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = 'passkey_login' ORDER BY at, id`, id)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = 'passkey_login' ORDER BY at, id`), id)
 	if err != nil {
 		w.T.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func (w *world) passkeyState(id uuid.UUID) string {
 
 func (w *world) throttleRows() []string {
 	w.T.Helper()
-	rows, err := w.D.Owner.Query(`SELECT concat_ws('|', login, audience, failures, window_start, locked_until) FROM auth_throttle ORDER BY login, audience`)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT concat_ws('|', login, audience, failures, window_start, locked_until) FROM auth_throttle ORDER BY login, audience`))
 	if err != nil {
 		w.T.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestPasskeyLoginLocksThePasskeyRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.Ctx, "UPDATE auth_passkeys SET data = jsonb_set(data, '{authenticator,signCount}', '8') WHERE principal_id = $1", id); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL("UPDATE auth_passkeys SET data = jsonb_set(data, '{authenticator,signCount}', '8') WHERE principal_id = $1"), id); err != nil {
 		t.Fatal(err)
 	}
 	var got authkit.Result

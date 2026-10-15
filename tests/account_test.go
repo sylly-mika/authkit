@@ -159,11 +159,11 @@ func TestPruneDeletesOnlyWhatIsPastRetention(t *testing.T) {
 
 func TestCheckSchema(t *testing.T) {
 	w := newWorld(t)
-	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); err != nil {
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); err != nil {
 		t.Fatalf("a current schema = %v", err)
 	}
 	w.D.Exec(t, `UPDATE auth_schema SET version = 0`)
-	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
 		t.Fatalf("an older schema = %v, want ErrSchemaBehind", err)
 	}
 }
@@ -273,7 +273,7 @@ func TestPruneKeepsEachTableUntilItsRetentionPasses(t *testing.T) {
 func TestCheckSchemaAcceptsANewerSchemaAndRefusesAMissingOne(t *testing.T) {
 	w := newWorld(t)
 	check := func() error {
-		return w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) })
+		return w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) })
 	}
 	w.D.Exec(t, `UPDATE auth_schema SET version = $1`, migrations.Version+1)
 	if err := check(); err != nil {

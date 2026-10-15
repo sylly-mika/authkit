@@ -22,6 +22,7 @@ import (
 // second factor gets Result.SecondStep instead of a session; VerifySecondStep
 // completes the sign-in.
 func (s *Module) Login(ctx context.Context, q db.Querier, aud authkit.Audience, login, pw string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}

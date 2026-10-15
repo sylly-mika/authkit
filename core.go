@@ -33,6 +33,7 @@ func (c *Core) Principals() Principals { return c.s.principals }
 
 // Fresh returns the caller's open session and whether it authenticated within window.
 func (c *Core) Fresh(ctx context.Context, q db.Querier, cl *Claims, window time.Duration, now time.Time) (Session, bool, error) {
+	q = c.Q(q)
 	sess, err := session.LockOpen(ctx, q, cl.SessionID, cl.Subject, now)
 	if errors.Is(err, db.ErrNoRows) {
 		return Session{}, false, nil
@@ -48,26 +49,31 @@ func (c *Core) Fresh(ctx context.Context, q db.Querier, cl *Claims, window time.
 
 // LockSession locks the caller's open session for the transaction and returns it; an ended session is db.ErrNoRows.
 func (c *Core) LockSession(ctx context.Context, q db.Querier, cl *Claims, now time.Time) (Session, error) {
+	q = c.Q(q)
 	return session.LockOpen(ctx, q, cl.SessionID, cl.Subject, now)
 }
 
 // MarkAuthenticated stamps sess as authenticated now.
 func (c *Core) MarkAuthenticated(ctx context.Context, q db.Querier, sess uuid.UUID, now time.Time) error {
+	q = c.Q(q)
 	return session.SetAuthenticated(ctx, q, sess, now)
 }
 
 // RevokeAll ends every session of principal, recording reason.
 func (c *Core) RevokeAll(ctx context.Context, q db.Querier, principal uuid.UUID, reason string, now time.Time) error {
+	q = c.Q(q)
 	return session.RevokeAll(ctx, q, principal, reason, now)
 }
 
 // RevokeOthers ends every session of principal except keep, recording reason.
 func (c *Core) RevokeOthers(ctx context.Context, q db.Querier, principal, keep uuid.UUID, reason string, now time.Time) error {
+	q = c.Q(q)
 	return session.RevokeOthers(ctx, q, principal, keep, reason, now)
 }
 
 // ResetCredentials deletes every passkey of p and clears its login throttle under aud, and returns how many passkeys it deleted.
 func (c *Core) ResetCredentials(ctx context.Context, q db.Querier, p Principal, aud Audience) (passkeys int, err error) {
+	q = c.Q(q)
 	passkeys, err = deleteAllPasskeys(ctx, q, p.ID)
 	if err != nil {
 		return 0, err
@@ -80,6 +86,7 @@ func (c *Core) ResetCredentials(ctx context.Context, q db.Querier, p Principal, 
 
 // Record writes a sign-in log row for src and runs OnEvent on q. A zero e.At takes the Service's clock.
 func (c *Core) Record(ctx context.Context, q db.Querier, src string, e Event) error {
+	q = c.Q(q)
 	at := e.At
 	if at.IsZero() {
 		at = c.s.now()
@@ -94,6 +101,7 @@ func (c *Core) Throttle(login string, aud Audience, now time.Time) LoginThrottle
 
 // MarkSessionFactor records f as the second factor of sess, if sess has none.
 func (c *Core) MarkSessionFactor(ctx context.Context, q db.Querier, sess uuid.UUID, f FactorKind) error {
+	q = c.Q(q)
 	_, err := q.Exec(ctx, `UPDATE auth_sessions SET second_factor = $2 WHERE id = $1 AND second_factor = ''`, sess, string(f))
 	return err
 }
@@ -107,16 +115,19 @@ type LoginThrottle struct {
 
 // Locked reports whether the login is locked, and until when.
 func (t LoginThrottle) Locked(ctx context.Context, q db.Querier) (until time.Time, locked bool, err error) {
+	q = t.s.names.Q(q)
 	return throttle.Locked(ctx, q, t.key, t.aud, t.now)
 }
 
 // Fail counts one failed attempt against the login.
 func (t LoginThrottle) Fail(ctx context.Context, q db.Querier) error {
+	q = t.s.names.Q(q)
 	return throttle.Fail(ctx, q, t.key, t.aud, t.now, t.s.cfg.Throttle)
 }
 
 // Clear forgets the failed attempts counted against the login.
 func (t LoginThrottle) Clear(ctx context.Context, q db.Querier) error {
+	q = t.s.names.Q(q)
 	return throttle.Clear(ctx, q, t.key, t.aud)
 }
 

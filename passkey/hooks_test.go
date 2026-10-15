@@ -35,7 +35,7 @@ func TestPasskeyOwnerHandlerRefusesAnotherUsersHandle(t *testing.T) {
 		var user webauthn.User
 		var err error
 		if txErr := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-			user, err = passkey.PasskeyOwnerHandler(w.Ctx, q, cred.ID, userHandle)
+			user, err = passkey.PasskeyOwnerHandler(w.Ctx, w.Svc.Passkeys, q, cred.ID, userHandle)
 			return nil
 		}); txErr != nil {
 			t.Fatalf("lookup: %v", txErr)

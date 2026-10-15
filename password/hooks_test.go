@@ -88,7 +88,7 @@ func TestTheCountComesBeforeTheVerify(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := holder.ExecContext(w.Ctx, `SELECT 1 FROM auth_throttle WHERE login = $1 FOR UPDATE`, tc.key); err != nil {
+		if _, err := holder.ExecContext(w.Ctx, w.D.SQL(`SELECT 1 FROM auth_throttle WHERE login = $1 FOR UPDATE`), tc.key); err != nil {
 			t.Fatal(err)
 		}
 		var calls atomic.Int64
@@ -255,7 +255,7 @@ func TestChangePasswordHashesBeforeItLocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.Ctx, `SELECT 1 FROM auth_credentials WHERE principal_id = $1 FOR UPDATE`, id); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL(`SELECT 1 FROM auth_credentials WHERE principal_id = $1 FOR UPDATE`), id); err != nil {
 		t.Fatal(err)
 	}
 	conn, c := w.Pinned(id), w.Claims(keep)

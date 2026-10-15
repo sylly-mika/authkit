@@ -21,6 +21,7 @@ import (
 // says whether the caller's own session survives (RevokeOthers) or is
 // replaced by a new one (RevokeAll).
 func (s *Module) ChangePassword(ctx context.Context, q db.Querier, c *authkit.Claims, current, next string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -106,6 +107,7 @@ func (s *Module) changeEvent(p authkit.Principal, sess authkit.Session, m authki
 // then calls this in the same transaction) and logs password_set. It revokes nothing, so
 // replacing a password goes through ChangePassword or CompleteReset.
 func (s *Module) SetPassword(ctx context.Context, q db.Querier, p authkit.Principal, aud authkit.Audience, pw string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -141,6 +143,7 @@ func (s *Module) SetPassword(ctx context.Context, q db.Querier, p authkit.Princi
 // logs bad_password and is refused with ErrInvalidCredentials; the caller
 // commits the event. It does not touch the throttle.
 func (s *Module) VerifyPassword(ctx context.Context, q db.Querier, p authkit.Principal, aud authkit.Audience, pw string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -223,6 +226,7 @@ func setCredential(ctx context.Context, q db.Querier, id uuid.UUID, hash string,
 // HasCredential reports whether the principal has a password. A bare
 // connection is fine.
 func (s *Module) HasCredential(ctx context.Context, q db.Querier, principal uuid.UUID) (bool, error) {
+	q = s.core.Q(q)
 	_, has, err := credentialOf(ctx, q, principal)
 	return has, err
 }

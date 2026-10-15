@@ -64,9 +64,10 @@ func AdminDSN() string {
 // DB is one test's database. Owner owns every table and, under FORCE RLS, is
 // bound like an app's role; App is a non-owner with DML grants only.
 type DB struct {
-	Name  string
-	Owner *sql.DB
-	App   *sql.DB
+	Name   string
+	Owner  *sql.DB
+	App    *sql.DB
+	schema string
 }
 
 // Option configures NewDB.
@@ -100,7 +101,7 @@ func NewDB(t testing.TB, opts ...Option) *DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { drop(t, name) })
-	return &DB{Name: name, Owner: open(t, OwnerRole, name), App: open(t, AppRole, name)}
+	return &DB{Name: name, Owner: open(t, OwnerRole, name), App: open(t, AppRole, name), schema: o.schema}
 }
 
 // NewEmptyDB is a database with no schema, owned by OwnerRole, for a
@@ -384,10 +385,13 @@ func (d *DB) NewInvite(t testing.TB, scope uuid.UUID) uuid.UUID {
 	return id
 }
 
+// SQL qualifies query's authkit table names with the database's schema, for a test's own statements.
+func (d *DB) SQL(query string) string { return nsql.Rewrite(d.schema, query) }
+
 // Exec runs on Owner with no setting bound and returns the rows affected.
 func (d *DB) Exec(t testing.TB, query string, args ...any) int64 {
 	t.Helper()
-	res, err := d.Owner.ExecContext(context.Background(), query, args...)
+	res, err := d.Owner.ExecContext(context.Background(), d.SQL(query), args...)
 	if err != nil {
 		t.Fatalf("authkittest: Exec: %v", err)
 	}
@@ -401,7 +405,7 @@ func (d *DB) Exec(t testing.TB, query string, args ...any) int64 {
 // Row runs on Owner with no setting bound.
 func (d *DB) Row(t testing.TB, query string, args ...any) *sql.Row {
 	t.Helper()
-	row := d.Owner.QueryRowContext(context.Background(), query, args...)
+	row := d.Owner.QueryRowContext(context.Background(), d.SQL(query), args...)
 	if err := row.Err(); err != nil {
 		t.Fatalf("authkittest: Row: %v", err)
 	}

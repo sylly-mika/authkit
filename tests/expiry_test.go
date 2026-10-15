@@ -118,7 +118,7 @@ func TestPruneKeepsEventsForTheRetention(t *testing.T) {
 func TestCheckSchemaRefusesVersionOne(t *testing.T) {
 	w := newWorld(t)
 	w.D.Exec(t, `UPDATE auth_schema SET version = 1`)
-	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
 		t.Fatalf("a v0.1 schema = %v, want ErrSchemaBehind: v0.2 needs 0002's absolute_expires_at", err)
 	}
 }

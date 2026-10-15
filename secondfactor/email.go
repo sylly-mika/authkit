@@ -13,6 +13,7 @@ import (
 
 // BeginEmailCodeSetup starts turning on the email code factor: it stores a code row for the caller and returns its ID for the app to mail; MintEmailCode makes the code at send time. A second request replaces the code, at most once per Rules.ResendEvery and Rules.MaxSends times. Needs a recent sign-in and a transaction.
 func (s *Module) BeginEmailCodeSetup(ctx context.Context, q db.Querier, c *authkit.Claims, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -49,6 +50,7 @@ func (s *Module) BeginEmailCodeSetup(ctx context.Context, q db.Querier, c *authk
 
 // ConfirmEmailCode turns on the email code factor with the mailed code. When it is the caller's first factor the authkit.Result carries ten recovery codes, shown once. Needs a recent sign-in and a transaction.
 func (s *Module) ConfirmEmailCode(ctx context.Context, q db.Querier, c *authkit.Claims, code string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -109,6 +111,7 @@ func (s *Module) ConfirmEmailCode(ctx context.Context, q db.Querier, c *authkit.
 
 // RequestEmailProof stores an email code the caller can give as proof to DisableSecondFactor; the app mails it as for BeginEmailCodeSetup. Needs the email factor, a recent sign-in and a transaction.
 func (s *Module) RequestEmailProof(ctx context.Context, q db.Querier, c *authkit.Claims, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.Result{}, err
 	}
@@ -145,6 +148,7 @@ func (s *Module) RequestEmailProof(ctx context.Context, q db.Querier, c *authkit
 
 // MintEmailCode makes the 6-digit code for a stored code row at send time and returns it with its principal and purpose; minting again replaces the code. authkit.ErrCodeEnded when the row was replaced, expired or used up. Needs a transaction.
 func (s *Module) MintEmailCode(ctx context.Context, q db.Querier, id uuid.UUID) (authkit.EmailCodeMail, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return authkit.EmailCodeMail{}, err
 	}
