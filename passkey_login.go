@@ -11,8 +11,8 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
 	"github.com/sylly-mika/authkit/internal/ceremony"
+	"github.com/sylly-mika/authkit/internal/events"
 )
 
 type passkeyRow struct {

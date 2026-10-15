@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/password"
 	"github.com/sylly-mika/authkit/session"
-	"github.com/sylly-mika/authkit/throttle"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 

@@ -14,10 +14,10 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/internal/token"
 	"github.com/sylly-mika/authkit/session"
-	"github.com/sylly-mika/authkit/throttle"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 

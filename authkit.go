@@ -22,14 +22,14 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
 	"github.com/sylly-mika/authkit/internal/ceremony"
+	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/migrations"
 	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/password"
 	"github.com/sylly-mika/authkit/session"
-	"github.com/sylly-mika/authkit/throttle"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 

@@ -13,10 +13,10 @@ import (
 	"github.com/pquerna/otp/totp"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/session"
-	"github.com/sylly-mika/authkit/throttle"
 )
 
 // FactorKind names a second factor: a stored factor, a recovery code, or a passkey sign-in.

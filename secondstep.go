@@ -10,10 +10,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/internal/token"
-	"github.com/sylly-mika/authkit/throttle"
 )
 
 // VerifySecondStep completes a sign-in that returned Result.SecondStep, with an authenticator code, an emailed code or a recovery code. A wrong code counts on the challenge and on the login's throttle; the refusal's writes must be committed.

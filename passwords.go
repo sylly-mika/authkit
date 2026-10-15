@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/session"
 )
 
