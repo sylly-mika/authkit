@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.2
+
+Tests: the black-box tests live in `tests/` and share their setup through `internal/kittest`; the hook tests stay in `hooks_test.go`. No API change.
+
 ## v0.4.1
 
 Fix: the Service compares times at the database's microsecond precision; with a real clock, the first email code of a fresh row was refused as sent too soon about half the time.

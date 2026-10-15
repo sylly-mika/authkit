@@ -305,6 +305,8 @@ Needs Docker and a local `gofmt`: vet, tests and fuzzing run in the
   golang-migrate against the database.
 - `make verify` runs gofmt, `go vet`, `go test -race`, the round trip and the
   fuzz targets.
+- Tests that need internal hooks live in the root `hooks_test.go`; the rest
+  live in `tests/`.
 
 ## License
 

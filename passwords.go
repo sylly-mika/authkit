@@ -3,6 +3,9 @@ package authkit
 import (
 	"context"
 	"errors"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/events"
@@ -176,4 +179,65 @@ func (s *Service) VerifyPassword(ctx context.Context, q db.Querier, p Principal,
 		return Result{}, err
 	}
 	return Result{Refusal: ErrInvalidCredentials}, nil
+}
+
+// AcquireHashSlot takes one of the Service's argon2id slots before the app
+// opens its transaction. Under the returned context, Login,
+// VerifyPassword, ChangePassword, CompleteReset and SetPassword hash on that
+// slot and take no other, so a wait for a slot holds no connection. release
+// is idempotent and always non-nil; call it when the request ends. A full
+// ceiling after HashWait is Result.Refusal ErrBusy (count nothing, answer
+// 503); error is only ctx's.
+func (s *Service) AcquireHashSlot(ctx context.Context) (context.Context, func(), Result, error) {
+	held, release, err := s.hasher.Hold(ctx)
+	if errors.Is(err, ErrBusy) {
+		return ctx, release, Result{Refusal: ErrBusy}, nil
+	}
+	if err != nil {
+		return ctx, release, Result{}, err
+	}
+	return held, release, Result{}, nil
+}
+
+func credentialOf(ctx context.Context, q db.Querier, id uuid.UUID) (hash string, ok bool, err error) {
+	return scanCredential(q.QueryRow(ctx, `SELECT password_hash FROM auth_credentials WHERE principal_id = $1`, id))
+}
+
+func lockCredential(ctx context.Context, q db.Querier, id uuid.UUID) (hash string, ok bool, err error) {
+	return scanCredential(q.QueryRow(ctx, `SELECT password_hash FROM auth_credentials WHERE principal_id = $1 FOR UPDATE`, id))
+}
+
+func scanCredential(row db.Row) (string, bool, error) {
+	var hash string
+	err := row.Scan(&hash)
+	if errors.Is(err, db.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return hash, true, nil
+}
+
+// WHY: the update is conditional on the stored hash, so a change or reset committed since the read wins.
+// WHY: changed_at stays, since a rehash is not a password change.
+func rehashCredential(ctx context.Context, q db.Querier, id uuid.UUID, old, hash string) error {
+	_, err := q.Exec(ctx, `UPDATE auth_credentials SET password_hash = $3 WHERE principal_id = $1 AND password_hash = $2`, id, old, hash)
+	return err
+}
+
+// WHY: it passes the self policy on a pinned connection and the _auth policy without one.
+func setCredential(ctx context.Context, q db.Querier, id uuid.UUID, hash string, now time.Time) error {
+	_, err := q.Exec(ctx, `
+		INSERT INTO auth_credentials (principal_id, password_hash, changed_at) VALUES ($1, $2, $3)
+		ON CONFLICT (principal_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, changed_at = EXCLUDED.changed_at`,
+		id, hash, now)
+	return err
+}
+
+// HasCredential reports whether the principal has a password. A bare
+// connection is fine.
+func (s *Service) HasCredential(ctx context.Context, q db.Querier, principal uuid.UUID) (bool, error) {
+	_, has, err := credentialOf(ctx, q, principal)
+	return has, err
 }

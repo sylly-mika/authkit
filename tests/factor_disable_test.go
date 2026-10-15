@@ -1,4 +1,4 @@
-package authkit_test
+package tests
 
 import (
 	"errors"
@@ -14,42 +14,42 @@ import (
 
 func TestDisableNeedsARecentSignIn(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	secret, _ := w.setUpTOTP(c)
 	w.enrolEmail(c)
 	_, before, _ := w.totpRow(ada)
-	w.clock.Advance(5*time.Minute + time.Second)
+	w.Clock.Advance(5*time.Minute + time.Second)
 
-	res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.t, secret, w.clock.Now())})
+	res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.T, secret, w.Clock.Now())})
 	if !errors.Is(res.Refusal, authkit.ErrReauthRequired) {
 		t.Fatalf("DisableSecondFactor after 5m = %v, want ErrReauthRequired", res.Refusal)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1 AND confirmed_at IS NOT NULL`, ada); n != 2 {
+	if n := w.Count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1 AND confirmed_at IS NOT NULL`, ada); n != 2 {
 		t.Errorf("confirmed factor rows = %d, want 2", n)
 	}
 	if _, after, _ := w.totpRow(ada); after != before {
 		t.Errorf("totp last_step changed from %v to %v", before, after)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1`, ada); n != 10 {
+	if n := w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1`, ada); n != 10 {
 		t.Errorf("recovery rows = %d, want 10", n)
 	}
 	if n := w.events(ada, "factor_removed"); n != 0 {
 		t.Errorf("factor_removed events = %d, want 0", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_throttle`); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_throttle`); n != 0 {
 		t.Errorf("throttle rows = %d, want 0", n)
 	}
 }
 
 func TestDisableNeedsACurrentCode(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	secret, _ := w.setUpTOTP(c)
-	w.clock.Advance(30 * time.Second)
+	w.Clock.Advance(30 * time.Second)
 	for _, proof := range []authkit.FactorProof{
 		{Method: authkit.FactorTOTP, Code: w.wrongTOTP(secret)},
 		{},
@@ -62,14 +62,14 @@ func TestDisableNeedsACurrentCode(t *testing.T) {
 	if _, _, confirmed := w.totpRow(ada); !confirmed {
 		t.Errorf("the totp factor was removed by a refused disable")
 	}
-	if n := w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NULL`, ada); n != 10 {
+	if n := w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NULL`, ada); n != 10 {
 		t.Errorf("unused recovery rows = %d, want 10", n)
 	}
-	if n := w.count(`SELECT failures FROM auth_throttle WHERE login = 'ada@example.invalid' AND audience = 'staff'`); n != 3 {
+	if n := w.Count(`SELECT failures FROM auth_throttle WHERE login = 'ada@example.invalid' AND audience = 'staff'`); n != 3 {
 		t.Errorf("throttle failures = %d, want 3", n)
 	}
 	var kinds []string
-	rows, err := w.d.Owner.Query(`SELECT second_factor FROM auth_events WHERE principal_id = $1 AND source = 'second_factor' AND result = 'bad_code' ORDER BY second_factor`, ada)
+	rows, err := w.D.Owner.Query(`SELECT second_factor FROM auth_events WHERE principal_id = $1 AND source = 'second_factor' AND result = 'bad_code' ORDER BY second_factor`, ada)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,34 +88,34 @@ func TestDisableNeedsACurrentCode(t *testing.T) {
 		t.Errorf("factor_removed events = %d, want 0", n)
 	}
 
-	if res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.t, secret, w.clock.Now())}); res.Refusal != nil {
+	if res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.T, secret, w.Clock.Now())}); res.Refusal != nil {
 		t.Errorf("control disable with a current code = %v, want nil", res.Refusal)
 	}
 }
 
 func TestDisableTheLastFactorWithItsOwnCode(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	a := w.signIn("ada@example.invalid", "the right password")
-	c := w.claims(a)
-	a2 := w.signIn("ada@example.invalid", "the right password")
+	ada := w.User("ada@example.invalid", "the right password")
+	a := w.SignIn("ada@example.invalid", "the right password")
+	c := w.Claims(a)
+	a2 := w.SignIn("ada@example.invalid", "the right password")
 
 	secret, _ := w.setUpTOTP(c)
-	w.clock.Advance(30 * time.Second)
-	res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.t, secret, w.clock.Now())})
+	w.Clock.Advance(30 * time.Second)
+	res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.T, secret, w.Clock.Now())})
 	if res.Refusal != nil || res.RecoveryCodesLeft != nil {
 		t.Fatalf("DisableSecondFactor = %v, RecoveryCodesLeft %v; want nil and nil", res.Refusal, res.RecoveryCodesLeft)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1`, ada); n != 0 {
 		t.Errorf("factor rows = %d, want 0", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1`, ada); n != 0 {
 		t.Errorf("recovery rows = %d, want 0", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND source = 'second_factor' AND result = 'factor_removed' AND second_factor = 'totp'`, ada); n != 1 {
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND source = 'second_factor' AND result = 'factor_removed' AND second_factor = 'totp'`, ada); n != 1 {
 		t.Errorf("factor_removed events = %d, want 1", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_sessions WHERE id IN ($1, $2) AND revoked_at IS NULL`, a.Session.ID, a2.Session.ID); n != 2 {
+	if n := w.Count(`SELECT count(*) FROM auth_sessions WHERE id IN ($1, $2) AND revoked_at IS NULL`, a.Session.ID, a2.Session.ID); n != 2 {
 		t.Errorf("live sessions = %d, want 2", n)
 	}
 	if got := w.sessionFactor(a.Session.ID); got != "totp" {
@@ -126,37 +126,37 @@ func TestDisableTheLastFactorWithItsOwnCode(t *testing.T) {
 
 func TestDisableKeepsRecoveryCodesWhileAFactorRemains(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	secret, _ := w.setUpTOTP(c)
 	w.enrolEmail(c)
 	if r := w.requestProof(c); r.Refusal != nil {
 		t.Fatalf("RequestEmailProof = %v", r.Refusal)
 	}
-	w.clock.Advance(30 * time.Second)
-	res := w.disable(c, authkit.FactorEmail, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.t, secret, w.clock.Now())})
+	w.Clock.Advance(30 * time.Second)
+	res := w.disable(c, authkit.FactorEmail, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.T, secret, w.Clock.Now())})
 	if res.Refusal != nil {
 		t.Fatalf("DisableSecondFactor(email) = %v, want nil", res.Refusal)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1 AND kind = 'totp' AND confirmed_at IS NOT NULL`, ada); n != 1 {
+	if n := w.Count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1 AND kind = 'totp' AND confirmed_at IS NOT NULL`, ada); n != 1 {
 		t.Errorf("totp factor rows = %d, want 1", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1`, ada); n != 1 {
+	if n := w.Count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1`, ada); n != 1 {
 		t.Errorf("factor rows = %d, want only the totp row", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NULL`, ada); n != 10 {
+	if n := w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NULL`, ada); n != 10 {
 		t.Errorf("unused recovery rows = %d, want 10", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_email_codes WHERE principal_id = $1`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_email_codes WHERE principal_id = $1`, ada); n != 0 {
 		t.Errorf("email code rows = %d, want 0", n)
 	}
 }
 
 func TestDisableWithARecoveryCodeSpendsItOnce(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	_, codes := w.setUpTOTP(c)
 	w.enrolEmail(c)
@@ -164,7 +164,7 @@ func TestDisableWithARecoveryCodeSpendsItOnce(t *testing.T) {
 	if res.Refusal != nil || res.RecoveryCodesLeft == nil || *res.RecoveryCodesLeft != 9 {
 		t.Fatalf("disable with a recovery code = %v, left %v; want nil and 9", res.Refusal, res.RecoveryCodesLeft)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at = $2`, ada, w.clock.Now()); n != 1 {
+	if n := w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at = $2`, ada, w.Clock.Now()); n != 1 {
 		t.Errorf("recovery rows used now = %d, want 1", n)
 	}
 	if res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[0]}); !errors.Is(res.Refusal, authkit.ErrBadCode) {
@@ -173,22 +173,22 @@ func TestDisableWithARecoveryCodeSpendsItOnce(t *testing.T) {
 	if _, _, confirmed := w.totpRow(ada); !confirmed {
 		t.Errorf("the totp factor was removed by a refused disable")
 	}
-	if n := w.count(`SELECT failures FROM auth_throttle WHERE login = 'ada@example.invalid' AND audience = 'staff'`); n != 1 {
+	if n := w.Count(`SELECT failures FROM auth_throttle WHERE login = 'ada@example.invalid' AND audience = 'staff'`); n != 1 {
 		t.Errorf("throttle failures = %d, want 1", n)
 	}
 	res = w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[1]})
 	if res.Refusal != nil || res.RecoveryCodesLeft == nil || *res.RecoveryCodesLeft != 0 {
 		t.Fatalf("last disable with a recovery code = %v, left %v; want nil and 0", res.Refusal, res.RecoveryCodesLeft)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1`, ada); n != 0 {
 		t.Errorf("recovery rows = %d, want 0", n)
 	}
 }
 
 func TestDisableWithAnEmailProofSpendsIt(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	w.setUpTOTP(c)
 	w.enrolEmail(c)
@@ -206,7 +206,7 @@ func TestDisableWithAnEmailProofSpendsIt(t *testing.T) {
 	if res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorEmail, Code: m.Code}); res.Refusal != nil {
 		t.Fatalf("disable with the email proof = %v, want nil", res.Refusal)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_email_codes WHERE principal_id = $1 AND purpose = 'proof'`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_email_codes WHERE principal_id = $1 AND purpose = 'proof'`, ada); n != 0 {
 		t.Errorf("proof rows after use = %d, want 0", n)
 	}
 
@@ -217,7 +217,7 @@ func TestDisableWithAnEmailProofSpendsIt(t *testing.T) {
 	if _, _, confirmed := w.totpRow(ada); !confirmed {
 		t.Errorf("the totp factor was removed by a refused disable")
 	}
-	if n := w.count(`SELECT count(*) FROM auth_throttle`); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_throttle`); n != 0 {
 		t.Errorf("throttle rows = %d, want 0", n)
 	}
 	if n := w.events(ada, "bad_code"); n != 0 {
@@ -227,27 +227,27 @@ func TestDisableWithAnEmailProofSpendsIt(t *testing.T) {
 
 func TestRequestEmailProofNeedsTheEmailFactor(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	w.setUpTOTP(c)
 	res := w.requestProof(c)
 	if !errors.Is(res.Refusal, authkit.ErrFactorNotFound) || res.EmailCode != nil {
 		t.Errorf("RequestEmailProof without the email factor = %v, want ErrFactorNotFound", res.Refusal)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_email_codes WHERE principal_id = $1`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_email_codes WHERE principal_id = $1`, ada); n != 0 {
 		t.Errorf("email code rows = %d, want 0", n)
 	}
 }
 
 func TestDisableAnAbsentFactorIsNotFound(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	secret, _ := w.setUpTOTP(c)
-	w.clock.Advance(30 * time.Second)
-	code := totpCode(w.t, secret, w.clock.Now())
+	w.Clock.Advance(30 * time.Second)
+	code := totpCode(w.T, secret, w.Clock.Now())
 	_, lastBefore, _ := w.totpRow(ada)
 	for _, kind := range []authkit.FactorKind{authkit.FactorEmail, authkit.FactorRecovery} {
 		if res := w.disable(c, kind, authkit.FactorProof{Method: authkit.FactorTOTP, Code: code}); !errors.Is(res.Refusal, authkit.ErrFactorNotFound) {
@@ -257,10 +257,10 @@ func TestDisableAnAbsentFactorIsNotFound(t *testing.T) {
 	if _, last, _ := w.totpRow(ada); last != lastBefore {
 		t.Errorf("totp last_step changed from %v to %v", lastBefore, last)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_throttle`); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_throttle`); n != 0 {
 		t.Errorf("throttle rows = %d, want 0", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'bad_code'`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'bad_code'`, ada); n != 0 {
 		t.Errorf("bad_code events = %d, want 0", n)
 	}
 	if res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: code}); res.Refusal != nil {
@@ -270,15 +270,15 @@ func TestDisableAnAbsentFactorIsNotFound(t *testing.T) {
 
 func TestALockedLoginRefusesDisable(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	secret, _ := w.setUpTOTP(c)
 	for i := 0; i < 10; i++ {
-		w.login("staff", "ada@example.invalid", "wrong")
+		w.Login("staff", "ada@example.invalid", "wrong")
 	}
-	w.clock.Advance(30 * time.Second)
-	res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.t, secret, w.clock.Now())})
+	w.Clock.Advance(30 * time.Second)
+	res := w.disable(c, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorTOTP, Code: totpCode(w.T, secret, w.Clock.Now())})
 	var locked authkit.ErrLocked
 	if !errors.As(res.Refusal, &locked) || locked.RetryAfter <= 0 {
 		t.Fatalf("DisableSecondFactor on a locked login = %v, want ErrLocked", res.Refusal)
@@ -293,19 +293,19 @@ func TestALockedLoginRefusesDisable(t *testing.T) {
 
 func TestTwoDisablesLeaveNoCodesWithoutAFactor(t *testing.T) {
 	w := newWorld(t, withSecondFactors)
-	ada := w.user("ada@example.invalid", "the right password")
-	c1 := w.claims(w.signIn("ada@example.invalid", "the right password"))
-	c2 := w.claims(w.signIn("ada@example.invalid", "the right password"))
+	ada := w.User("ada@example.invalid", "the right password")
+	c1 := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
+	c2 := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
 
 	_, codes := w.setUpTOTP(c1)
 	w.enrolEmail(c1)
 
-	tx1, err := w.d.App.BeginTx(w.ctx, nil)
+	tx1, err := w.D.App.BeginTx(w.Ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx1.Rollback()
-	res1, err := w.svc.DisableSecondFactor(w.ctx, sqldb.Tx(tx1), c1, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[0]}, fm)
+	res1, err := w.Svc.DisableSecondFactor(w.Ctx, sqldb.Tx(tx1), c1, authkit.FactorTOTP, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[0]}, fm)
 	if err != nil || res1.Refusal != nil {
 		t.Fatalf("first DisableSecondFactor = %v, %v; want nil", res1.Refusal, err)
 	}
@@ -317,14 +317,14 @@ func TestTwoDisablesLeaveNoCodesWithoutAFactor(t *testing.T) {
 	out := make(chan outcome, 1)
 	go func() {
 		var res authkit.Result
-		err := w.d.InAuthTx(w.ctx, func(q db.Querier) error {
+		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 			var err error
-			res, err = w.svc.DisableSecondFactor(w.ctx, q, c2, authkit.FactorEmail, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[1]}, fm)
+			res, err = w.Svc.DisableSecondFactor(w.Ctx, q, c2, authkit.FactorEmail, authkit.FactorProof{Method: authkit.FactorRecovery, Code: codes[1]}, fm)
 			return err
 		})
 		out <- outcome{res, err}
 	}()
-	w.d.WaitForLockWaiters(t, 1)
+	w.D.WaitForLockWaiters(t, 1)
 	if err := tx1.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -332,10 +332,10 @@ func TestTwoDisablesLeaveNoCodesWithoutAFactor(t *testing.T) {
 	if got.err != nil || got.res.Refusal != nil || got.res.RecoveryCodesLeft == nil || *got.res.RecoveryCodesLeft != 0 {
 		t.Fatalf("second DisableSecondFactor = %v, %v; want nil with 0 codes left", got.res.Refusal, got.err)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_second_factors WHERE principal_id = $1`, ada); n != 0 {
 		t.Errorf("factor rows = %d, want 0", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1`, ada); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1`, ada); n != 0 {
 		t.Errorf("recovery rows = %d, want 0", n)
 	}
 	if n := w.events(ada, "factor_removed"); n != 2 {

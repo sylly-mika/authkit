@@ -1,4 +1,4 @@
-package authkit_test
+package tests
 
 import (
 	"context"
@@ -51,81 +51,81 @@ var (
 
 func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 	w := newWorld(t)
-	id := w.user("ada@example.invalid", "the right password")
-	res := w.signIn("ada@example.invalid", "the right password")
+	id := w.User("ada@example.invalid", "the right password")
+	res := w.SignIn("ada@example.invalid", "the right password")
 	var n int
-	c, q := w.claims(res), counted{Querier: sqldb.Conn(w.pinned(id)), n: &n}
-	p, links, ctx := authkit.Principal{ID: id, Login: "ada@example.invalid"}, w.svc.OneTime(), w.ctx
+	c, q := w.Claims(res), counted{Querier: sqldb.Conn(w.Pinned(id)), n: &n}
+	p, links, ctx := authkit.Principal{ID: id, Login: "ada@example.invalid"}, w.Svc.OneTime(), w.Ctx
 	calls := map[string]func() error{
-		"Login": func() error { _, err := w.svc.Login(ctx, q, "staff", p.Login, "x", authkit.Meta{}); return err },
+		"Login": func() error { _, err := w.Svc.Login(ctx, q, "staff", p.Login, "x", authkit.Meta{}); return err },
 		"Refresh": func() error {
-			_, err := w.svc.Refresh(ctx, q, "staff", res.Tokens.RefreshToken, authkit.Meta{})
+			_, err := w.Svc.Refresh(ctx, q, "staff", res.Tokens.RefreshToken, authkit.Meta{})
 			return err
 		},
-		"Logout": func() error { _, err := w.svc.Logout(ctx, q, c, authkit.Meta{}); return err },
+		"Logout": func() error { _, err := w.Svc.Logout(ctx, q, c, authkit.Meta{}); return err },
 		"ChangePassword": func() error {
-			_, err := w.svc.ChangePassword(ctx, q, c, "the right password", "another password", authkit.Meta{})
+			_, err := w.Svc.ChangePassword(ctx, q, c, "the right password", "another password", authkit.Meta{})
 			return err
 		},
-		"RevokeSession": func() error { _, err := w.svc.RevokeSession(ctx, q, c, res.Session.ID, authkit.Meta{}); return err },
-		"RequestReset":  func() error { _, err := w.svc.RequestReset(ctx, q, "staff", p.Login); return err },
+		"RevokeSession": func() error { _, err := w.Svc.RevokeSession(ctx, q, c, res.Session.ID, authkit.Meta{}); return err },
+		"RequestReset":  func() error { _, err := w.Svc.RequestReset(ctx, q, "staff", p.Login); return err },
 		"CompleteReset": func() error {
-			_, err := w.svc.CompleteReset(ctx, q, "staff", "x", "another password", authkit.Meta{})
+			_, err := w.Svc.CompleteReset(ctx, q, "staff", "x", "another password", authkit.Meta{})
 			return err
 		},
 		"SetPassword": func() error {
-			_, err := w.svc.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
+			_, err := w.Svc.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
 			return err
 		},
-		"VerifyPassword": func() error { _, err := w.svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
-		"OpenSession":    func() error { _, err := w.svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
+		"VerifyPassword": func() error { _, err := w.Svc.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{}); return err },
+		"OpenSession":    func() error { _, err := w.Svc.OpenSession(ctx, q, p, "staff", authkit.Meta{}); return err },
 		"VerifySecondStep": func() error {
-			_, err := w.svc.VerifySecondStep(ctx, q, "staff", "x", authkit.FactorTOTP, "123456", authkit.Meta{})
+			_, err := w.Svc.VerifySecondStep(ctx, q, "staff", "x", authkit.FactorTOTP, "123456", authkit.Meta{})
 			return err
 		},
 		"SendSecondStepEmail": func() error {
-			_, err := w.svc.SendSecondStepEmail(ctx, q, "staff", "x", authkit.Meta{})
+			_, err := w.Svc.SendSecondStepEmail(ctx, q, "staff", "x", authkit.Meta{})
 			return err
 		},
-		"BeginPasskeyLogin": func() error { _, err := w.svc.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
+		"BeginPasskeyLogin": func() error { _, err := w.Svc.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
 		"FinishPasskeyLogin": func() error {
-			_, err := w.svc.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
+			_, err := w.Svc.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
 			return err
 		},
-		"BeginPasskeyRegistration": func() error { _, err := w.svc.BeginPasskeyRegistration(ctx, q, c, authkit.Meta{}); return err },
+		"BeginPasskeyRegistration": func() error { _, err := w.Svc.BeginPasskeyRegistration(ctx, q, c, authkit.Meta{}); return err },
 		"FinishPasskeyRegistration": func() error {
-			_, err := w.svc.FinishPasskeyRegistration(ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
+			_, err := w.Svc.FinishPasskeyRegistration(ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
 			return err
 		},
-		"RenamePasskey":           func() error { _, err := w.svc.RenamePasskey(ctx, q, c, uuid.New(), "x"); return err },
-		"DeletePasskey":           func() error { _, err := w.svc.DeletePasskey(ctx, q, c, uuid.New(), authkit.Meta{}); return err },
-		"BeginTOTPSetup":          func() error { _, err := w.svc.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
-		"ConfirmTOTP":             func() error { _, err := w.svc.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
-		"RegenerateRecoveryCodes": func() error { _, err := w.svc.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
-		"BeginEmailCodeSetup":     func() error { _, err := w.svc.BeginEmailCodeSetup(ctx, q, c, authkit.Meta{}); return err },
+		"RenamePasskey":           func() error { _, err := w.Svc.RenamePasskey(ctx, q, c, uuid.New(), "x"); return err },
+		"DeletePasskey":           func() error { _, err := w.Svc.DeletePasskey(ctx, q, c, uuid.New(), authkit.Meta{}); return err },
+		"BeginTOTPSetup":          func() error { _, err := w.Svc.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
+		"ConfirmTOTP":             func() error { _, err := w.Svc.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
+		"RegenerateRecoveryCodes": func() error { _, err := w.Svc.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
+		"BeginEmailCodeSetup":     func() error { _, err := w.Svc.BeginEmailCodeSetup(ctx, q, c, authkit.Meta{}); return err },
 		"ConfirmEmailCode": func() error {
-			_, err := w.svc.ConfirmEmailCode(ctx, q, c, "x", authkit.Meta{})
+			_, err := w.Svc.ConfirmEmailCode(ctx, q, c, "x", authkit.Meta{})
 			return err
 		},
-		"RequestEmailProof": func() error { _, err := w.svc.RequestEmailProof(ctx, q, c, authkit.Meta{}); return err },
+		"RequestEmailProof": func() error { _, err := w.Svc.RequestEmailProof(ctx, q, c, authkit.Meta{}); return err },
 		"DisableSecondFactor": func() error {
-			_, err := w.svc.DisableSecondFactor(ctx, q, c, authkit.FactorTOTP, authkit.FactorProof{}, authkit.Meta{})
+			_, err := w.Svc.DisableSecondFactor(ctx, q, c, authkit.FactorTOTP, authkit.FactorProof{}, authkit.Meta{})
 			return err
 		},
-		"MintEmailCode": func() error { _, err := w.svc.MintEmailCode(ctx, q, uuid.New()); return err },
+		"MintEmailCode": func() error { _, err := w.Svc.MintEmailCode(ctx, q, uuid.New()); return err },
 		"OpenSessionFrom": func() error {
-			_, err := w.svc.OpenSessionFrom(ctx, q, res.Session.ID, p, "staff", authkit.Meta{})
+			_, err := w.Svc.OpenSessionFrom(ctx, q, res.Session.ID, p, "staff", authkit.Meta{})
 			return err
 		},
 		"RevokeAllSessions": func() error {
-			_, err := w.svc.RevokeAllSessions(ctx, q, id, authkit.ReasonAdmin, authkit.Meta{})
+			_, err := w.Svc.RevokeAllSessions(ctx, q, id, authkit.ReasonAdmin, authkit.Meta{})
 			return err
 		},
 		"AuthenticateSession": func() error {
-			_, err := w.svc.AuthenticateSession(ctx, q, "staff", res.Tokens.RefreshToken, authkit.Meta{})
+			_, err := w.Svc.AuthenticateSession(ctx, q, "staff", res.Tokens.RefreshToken, authkit.Meta{})
 			return err
 		},
-		"Prune":          func() error { return w.svc.Prune(ctx, q) },
+		"Prune":          func() error { return w.Svc.Prune(ctx, q) },
 		"OneTime.Lock":   func() error { return links.Lock(ctx, q, "reset", id) },
 		"OneTime.Create": func() error { _, err := links.Create(ctx, q, "reset", id, time.Hour); return err },
 		"OneTime.Mint":   func() error { _, err := links.Mint(ctx, q, uuid.New()); return err },
@@ -154,32 +154,32 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 
 func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	w := newWorld(t, withPasskeys, withSecondFactors)
-	id := w.user("ada@example.invalid", "the right password")
-	res := w.signIn("ada@example.invalid", "the right password")
+	id := w.User("ada@example.invalid", "the right password")
+	res := w.SignIn("ada@example.invalid", "the right password")
 	pk := w.addStoredPasskey(id, "Laptop", false)
-	bob := w.user("bob@example.invalid", "x")
+	bob := w.User("bob@example.invalid", "x")
 	w.addStoredPasskey(bob, "Bob key", false)
-	w.d.Exec(w.t, "INSERT INTO auth_second_factors (principal_id, kind, secret, last_step, created_at, confirmed_at) VALUES ($1, 'totp', $2, NULL, $3, $3)", id, []byte{1}, w.clock.Now())
+	w.D.Exec(w.T, "INSERT INTO auth_second_factors (principal_id, kind, secret, last_step, created_at, confirmed_at) VALUES ($1, 'totp', $2, NULL, $3, $3)", id, []byte{1}, w.Clock.Now())
 	w.seedRecoveryCodes(id, 2)
-	w.d.Exec(w.t, "INSERT INTO auth_second_factors (principal_id, kind, secret, last_step, created_at, confirmed_at) VALUES ($1, 'email', NULL, NULL, $2, $2)", bob, w.clock.Now())
+	w.D.Exec(w.T, "INSERT INTO auth_second_factors (principal_id, kind, secret, last_step, created_at, confirmed_at) VALUES ($1, 'email', NULL, NULL, $2, $2)", bob, w.Clock.Now())
 	w.seedRecoveryCodes(bob, 5)
-	q, c := sqldb.Conn(w.pinned(id)), w.claims(res)
-	if got, err := w.svc.Authenticate(w.ctx, q, c); err != nil || got.Refusal != nil {
+	q, c := sqldb.Conn(w.Pinned(id)), w.Claims(res)
+	if got, err := w.Svc.Authenticate(w.Ctx, q, c); err != nil || got.Refusal != nil {
 		t.Errorf("Authenticate = %v, %v", got.Refusal, err)
 	}
-	if _, total, err := w.svc.ListSessions(w.ctx, q, c, 10, 0); err != nil || total != 1 {
+	if _, total, err := w.Svc.ListSessions(w.Ctx, q, c, 10, 0); err != nil || total != 1 {
 		t.Errorf("ListSessions = %d, %v", total, err)
 	}
-	if _, total, err := w.svc.ListEvents(w.ctx, q, id, nil, 10, 0); err != nil || total != 1 {
+	if _, total, err := w.Svc.ListEvents(w.Ctx, q, id, nil, 10, 0); err != nil || total != 1 {
 		t.Errorf("ListEvents = %d, %v", total, err)
 	}
-	if has, err := w.svc.HasCredential(w.ctx, q, id); err != nil || !has {
+	if has, err := w.Svc.HasCredential(w.Ctx, q, id); err != nil || !has {
 		t.Errorf("HasCredential = %v, %v", has, err)
 	}
-	if list, err := w.svc.ListPasskeys(w.ctx, q, id); err != nil || len(list) != 1 || list[0].ID != pk {
+	if list, err := w.Svc.ListPasskeys(w.Ctx, q, id); err != nil || len(list) != 1 || list[0].ID != pk {
 		t.Errorf("ListPasskeys = %d passkeys, %v, want the one passkey %s", len(list), err, pk)
 	}
-	if status, err := w.svc.SecondFactorStatus(w.ctx, q, c); err != nil || status != (authkit.FactorStatus{TOTP: true, RecoveryCodesLeft: 2}) {
+	if status, err := w.Svc.SecondFactorStatus(w.Ctx, q, c); err != nil || status != (authkit.FactorStatus{TOTP: true, RecoveryCodesLeft: 2}) {
 		t.Errorf("SecondFactorStatus = %+v, %v, want the TOTP factor on with 2 recovery codes", status, err)
 	}
 }
@@ -242,11 +242,16 @@ func sqlViolations(re *regexp.Regexp, path string, src []byte) []string {
 
 func librarySources(t *testing.T, fn func(path string, src []byte, migration bool)) {
 	t.Helper()
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+	// WHY: go test runs in tests/, so the library root is the parent directory.
+	err := filepath.WalkDir("..", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		slash := filepath.ToSlash(path)
+		rel, err := filepath.Rel("..", path)
+		if err != nil {
+			return err
+		}
+		slash := filepath.ToSlash(rel)
 		if d.IsDir() {
 			if slash == "cmd" || slash == "docs" {
 				return filepath.SkipDir

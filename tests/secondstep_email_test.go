@@ -1,4 +1,4 @@
-package authkit_test
+package tests
 
 import (
 	"errors"
@@ -21,46 +21,46 @@ func emailWorld(t *testing.T, tweaks ...func(*authkit.Config)) *world {
 }
 
 func (w *world) emailUser() uuid.UUID {
-	w.t.Helper()
-	id := w.user("ada@example.invalid", pw)
-	w.d.Exec(w.t, "INSERT INTO auth_second_factors (principal_id, kind, created_at, confirmed_at) VALUES ($1, 'email', $2, $2)", id, w.clock.Now())
+	w.T.Helper()
+	id := w.User("ada@example.invalid", pw)
+	w.D.Exec(w.T, "INSERT INTO auth_second_factors (principal_id, kind, created_at, confirmed_at) VALUES ($1, 'email', $2, $2)", id, w.Clock.Now())
 	return id
 }
 
 func (w *world) stepSend(aud authkit.Audience, tok string) authkit.Result {
-	w.t.Helper()
-	return w.inAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.svc.SendSecondStepEmail(w.ctx, q, aud, tok, meta)
+	w.T.Helper()
+	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.SendSecondStepEmail(w.Ctx, q, aud, tok, meta)
 	})
 }
 
 func (w *world) codeRow(id uuid.UUID) emailRowState {
-	w.t.Helper()
+	w.T.Helper()
 	row, ok := w.emailRow(id, "sign_in")
 	if !ok {
-		w.t.Fatalf("no sign-in code row for %v", id)
+		w.T.Fatalf("no sign-in code row for %v", id)
 	}
 	return row
 }
 
 func (w *world) codeRows(id uuid.UUID) int {
-	w.t.Helper()
-	return w.count(`SELECT count(*) FROM auth_email_codes WHERE principal_id = $1 AND purpose = 'sign_in'`, id)
+	w.T.Helper()
+	return w.Count(`SELECT count(*) FROM auth_email_codes WHERE principal_id = $1 AND purpose = 'sign_in'`, id)
 }
 
 func (w *world) sessionCount(id uuid.UUID) int {
-	w.t.Helper()
-	return w.count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1`, id)
+	w.T.Helper()
+	return w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1`, id)
 }
 
 func (w *world) challengeTries(tok string) int {
-	w.t.Helper()
-	return w.count(`SELECT tries FROM auth_second_step_challenges WHERE challenge_hash = $1`, token.Hash(tok))
+	w.T.Helper()
+	return w.Count(`SELECT tries FROM auth_second_step_challenges WHERE challenge_hash = $1`, token.Hash(tok))
 }
 
 func (w *world) throttleFailures() int {
-	w.t.Helper()
-	return w.count(`SELECT failures FROM auth_throttle WHERE login = 'ada@example.invalid' AND audience = 'staff'`)
+	w.T.Helper()
+	return w.Count(`SELECT failures FROM auth_throttle WHERE login = 'ada@example.invalid' AND audience = 'staff'`)
 }
 
 func TestSendSecondStepEmailIssuesASignInCode(t *testing.T) {
@@ -68,12 +68,12 @@ func TestSendSecondStepEmailIssuesASignInCode(t *testing.T) {
 	w := emailWorld(t)
 	id := w.emailUser()
 	tok := w.challenge(login)
-	ev := w.count(`SELECT count(*) FROM auth_events`)
+	ev := w.Count(`SELECT count(*) FROM auth_events`)
 	res := w.stepSend("staff", tok)
 	if res.Refusal != nil || res.EmailCode == nil || res.EmailCode.ID == uuid.Nil {
 		t.Fatalf("send: refusal %v, email code %v", res.Refusal, res.EmailCode)
 	}
-	if want := w.clock.Now().Add(10 * time.Minute); !res.EmailCode.ExpiresAt.Equal(want) {
+	if want := w.Clock.Now().Add(10 * time.Minute); !res.EmailCode.ExpiresAt.Equal(want) {
 		t.Fatalf("expires %v, want %v", res.EmailCode.ExpiresAt, want)
 	}
 	if res.Principal.ID != id || res.Principal.Login != login {
@@ -86,13 +86,13 @@ func TestSendSecondStepEmailIssuesASignInCode(t *testing.T) {
 	if row.ID != res.EmailCode.ID || row.Hashed || row.Tries != 0 || row.Sends != 1 {
 		t.Fatalf("code row %+v, want id %v, unhashed, tries 0, sends 1", row, res.EmailCode.ID)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_events`); n != ev {
+	if n := w.Count(`SELECT count(*) FROM auth_events`); n != ev {
 		t.Fatalf("send wrote %d events, want %d", n, ev)
 	}
 	if n := w.challengeTries(tok); n != 0 {
 		t.Fatalf("challenge tries %d, want 0", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_throttle WHERE login = $1`, login); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_throttle WHERE login = $1`, login); n != 0 {
 		t.Fatalf("send wrote %d throttle rows, want 0", n)
 	}
 	mail, err := w.mint(res.EmailCode.ID)
@@ -121,19 +121,19 @@ func TestSecondStepEmailCodeSignsIn(t *testing.T) {
 	if res.Refusal != nil || res.Session == nil || res.Tokens == nil {
 		t.Fatalf("verify refused: %v", res.Refusal)
 	}
-	if got := w.claims(res).App["factor"]; got != "email" {
+	if got := w.Claims(res).App["factor"]; got != "email" {
 		t.Fatalf("claim factor = %v, want email", got)
 	}
 	if got := w.sessionFactor(res.Session.ID); got != "email" {
 		t.Fatalf("session factor %q, want email", got)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_events WHERE source = 'second_step' AND result = 'signed_in' AND second_factor = 'email'`); n != 1 {
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE source = 'second_step' AND result = 'signed_in' AND second_factor = 'email'`); n != 1 {
 		t.Fatalf("signed_in events for email = %d, want 1", n)
 	}
 	if n := w.codeRows(id); n != 0 {
 		t.Fatalf("code rows after sign-in %d, want 0", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_second_step_challenges WHERE challenge_hash = $1 AND used_at IS NOT NULL`, token.Hash(tok)); n != 1 {
+	if n := w.Count(`SELECT count(*) FROM auth_second_step_challenges WHERE challenge_hash = $1 AND used_at IS NOT NULL`, token.Hash(tok)); n != 1 {
 		t.Fatalf("challenge not spent")
 	}
 }
@@ -174,7 +174,7 @@ func TestSecondStepEmailResendKillsTheOldCode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint first: %v", err)
 	}
-	w.clock.Advance(61 * time.Second)
+	w.Clock.Advance(61 * time.Second)
 	r2 := w.stepSend("staff", tok)
 	if r2.Refusal != nil || r2.EmailCode == nil || r2.EmailCode.ID == r1.EmailCode.ID {
 		t.Fatalf("resend: refusal %v, same id %v", r2.Refusal, r2.EmailCode != nil && r2.EmailCode.ID == r1.EmailCode.ID)
@@ -209,7 +209,7 @@ func TestSecondStepEmailResendWaitsResendEvery(t *testing.T) {
 	id := w.emailUser()
 	tok := w.challenge(login)
 	r1 := w.stepSend("staff", tok)
-	w.clock.Advance(30 * time.Second)
+	w.Clock.Advance(30 * time.Second)
 	r2 := w.stepSend("staff", tok)
 	var tooSoon authkit.ErrResendTooSoon
 	if !errors.As(r2.Refusal, &tooSoon) || tooSoon.RetryAfter != 30*time.Second || r2.EmailCode != nil {
@@ -218,7 +218,7 @@ func TestSecondStepEmailResendWaitsResendEvery(t *testing.T) {
 	if row := w.codeRow(id); row.ID != r1.EmailCode.ID || row.Sends != 1 {
 		t.Fatalf("code row %+v, want the first code with sends 1", row)
 	}
-	w.clock.Advance(30 * time.Second)
+	w.Clock.Advance(30 * time.Second)
 	if r3 := w.stepSend("staff", tok); r3.Refusal != nil {
 		t.Fatalf("resend after ResendEvery: %v", r3.Refusal)
 	}
@@ -234,7 +234,7 @@ func TestSecondStepEmailStopsAtMaxSends(t *testing.T) {
 	tok := w.challenge(login)
 	last := w.stepSend("staff", tok)
 	for i := 2; i <= 5; i++ {
-		w.clock.Advance(60 * time.Second)
+		w.Clock.Advance(60 * time.Second)
 		last = w.stepSend("staff", tok)
 		if last.Refusal != nil {
 			t.Fatalf("send %d: %v", i, last.Refusal)
@@ -243,7 +243,7 @@ func TestSecondStepEmailStopsAtMaxSends(t *testing.T) {
 	if row := w.codeRow(id); row.Sends != 5 {
 		t.Fatalf("sends %d, want 5", row.Sends)
 	}
-	w.clock.Advance(60 * time.Second)
+	w.Clock.Advance(60 * time.Second)
 	sixth := w.stepSend("staff", tok)
 	var tooSoon authkit.ErrResendTooSoon
 	if !errors.As(sixth.Refusal, &tooSoon) || tooSoon.RetryAfter != 9*time.Minute {
@@ -252,7 +252,7 @@ func TestSecondStepEmailStopsAtMaxSends(t *testing.T) {
 	if row := w.codeRow(id); row.Sends != 5 || row.ID != last.EmailCode.ID {
 		t.Fatalf("code row %+v, want the last code with sends 5", row)
 	}
-	w.clock.Advance(9 * time.Minute)
+	w.Clock.Advance(9 * time.Minute)
 	tok2 := w.challenge(login)
 	if r := w.stepSend("staff", tok2); r.Refusal != nil {
 		t.Fatalf("send after the row ended: %v", r.Refusal)
@@ -278,7 +278,7 @@ func TestSendSecondStepEmailRefusesAnEndedChallenge(t *testing.T) {
 	refused("unknown token", w.stepSend("staff", "not-a-token"))
 	tok := w.challenge(login)
 	refused("other audience", w.stepSend("client", tok))
-	w.clock.Advance(10*time.Minute + time.Second)
+	w.Clock.Advance(10*time.Minute + time.Second)
 	refused("expired", w.stepSend("staff", tok))
 	tok2 := w.challenge(login)
 	for i := 0; i < 4; i++ {
@@ -308,9 +308,9 @@ func TestSendSecondStepEmailRefusesAnEndedChallenge(t *testing.T) {
 func TestSendSecondStepEmailNeedsAConfirmedEmailFactor(t *testing.T) {
 	login := "ada@example.invalid"
 	w := emailWorld(t)
-	id := w.user(login, pw)
-	w.d.Exec(w.t, `INSERT INTO auth_second_factors (principal_id, kind, secret, created_at, confirmed_at) VALUES ($1, 'totp', '\x01'::bytea, $2, $2)`, id, w.clock.Now())
-	w.d.Exec(w.t, `INSERT INTO auth_second_factors (principal_id, kind, secret, created_at, confirmed_at) VALUES ($1, 'email', NULL, $2, NULL)`, id, w.clock.Now())
+	id := w.User(login, pw)
+	w.D.Exec(w.T, `INSERT INTO auth_second_factors (principal_id, kind, secret, created_at, confirmed_at) VALUES ($1, 'totp', '\x01'::bytea, $2, $2)`, id, w.Clock.Now())
+	w.D.Exec(w.T, `INSERT INTO auth_second_factors (principal_id, kind, secret, created_at, confirmed_at) VALUES ($1, 'email', NULL, $2, NULL)`, id, w.Clock.Now())
 	tok := w.challenge(login)
 	res := w.stepSend("staff", tok)
 	if !errors.Is(res.Refusal, authkit.ErrFactorNotFound) || res.EmailCode != nil {
@@ -403,7 +403,7 @@ func TestSecondStepEmailCodeExpires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
-	w.clock.Advance(2*time.Minute + time.Second)
+	w.Clock.Advance(2*time.Minute + time.Second)
 	res := w.verify("staff", tok, authkit.FactorEmail, mail.Code)
 	if !errors.Is(res.Refusal, authkit.ErrBadCode) || res.Session != nil {
 		t.Fatalf("expired code: refusal %v, want ErrBadCode", res.Refusal)
@@ -439,13 +439,13 @@ func TestSecondStepEmailWrongCodeIsCounted(t *testing.T) {
 	if n := w.throttleFailures(); n != 1 {
 		t.Fatalf("throttle failures %d, want 1", n)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'bad_code'`, id); n != 1 {
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'bad_code'`, id); n != 1 {
 		t.Fatalf("bad_code events %d, want 1", n)
 	}
 	if res := w.verify("staff", tok, authkit.FactorEmail, mail.Code); res.Session == nil {
 		t.Fatalf("right code after one wrong: %v", res.Refusal)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_throttle WHERE login = 'ada@example.invalid' AND failures > 0`); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_throttle WHERE login = 'ada@example.invalid' AND failures > 0`); n != 0 {
 		t.Fatalf("throttle rows with failures %d after sign-in, want 0", n)
 	}
 }
@@ -456,7 +456,44 @@ func TestSendSecondStepEmailIsOffWithoutAKey(t *testing.T) {
 	if !errors.Is(res.Refusal, authkit.ErrSecondFactorsOff) || res.EmailCode != nil {
 		t.Fatalf("send without a key: refusal %v, want ErrSecondFactorsOff", res.Refusal)
 	}
-	if n := w.count(`SELECT count(*) FROM auth_email_codes`); n != 0 {
+	if n := w.Count(`SELECT count(*) FROM auth_email_codes`); n != 0 {
 		t.Fatalf("code rows %d, want 0", n)
+	}
+}
+
+// WHY: PostgreSQL rounds timestamptz to the nearest microsecond, so this clock's 700ns tail is stored 300ns later than it reads in Go.
+type roundingClock struct{}
+
+func (roundingClock) Now() time.Time {
+	return time.Date(2040, time.January, 1, 12, 0, 0, 1_000_700, time.UTC)
+}
+
+func withRoundingClock(c *authkit.Config) { c.Clock = roundingClock{} }
+
+func TestAFreshEmailCodeIsNotRefusedAsSentTooSoon(t *testing.T) {
+	rows := []struct {
+		name string
+		send func(t *testing.T) authkit.Result
+	}{
+		{"begin email setup", func(t *testing.T) authkit.Result {
+			w := newWorld(t, withSecondFactors, withRoundingClock)
+			w.User("ada@example.invalid", "the right password")
+			c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
+			return w.beginEmail(c)
+		}},
+		{"second step email", func(t *testing.T) authkit.Result {
+			login := "ada@example.invalid"
+			w := emailWorld(t, withRoundingClock)
+			w.emailUser()
+			return w.stepSend("staff", w.challenge(login))
+		}},
+	}
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			res := r.send(t)
+			if res.Refusal != nil || res.EmailCode == nil {
+				t.Fatalf("first send: refusal %v, email code %v; want a code and no refusal", res.Refusal, res.EmailCode)
+			}
+		})
 	}
 }

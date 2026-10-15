@@ -1,4 +1,4 @@
-package authkit_test
+package tests
 
 import (
 	"fmt"
