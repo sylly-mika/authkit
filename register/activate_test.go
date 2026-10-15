@@ -325,6 +325,24 @@ func TestActivateOnce(t *testing.T) {
 	}
 }
 
+func TestActivateSpentLinkRegistrationRemains(t *testing.T) {
+	f := newActFixture(t)
+	_, raw := f.link(ada)
+	if err := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		_, err := f.Svc.OneTime().Spend(f.Ctx, q, raw, authkit.PurposeRegister)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res := f.activate(raw, good)
+	if res.Refusal != authkit.ErrTokenUnknown || res.Session != nil {
+		t.Fatalf("refusal %v, session %v; want ErrTokenUnknown and no session", res.Refusal, res.Session)
+	}
+	if f.users(ada) != 0 || f.pending(ada) != 1 {
+		t.Fatalf("users %d, pending %d; want 0 and 1", f.users(ada), f.pending(ada))
+	}
+}
+
 func TestActivateCreateRace(t *testing.T) {
 	f := newActFixture(t)
 	tok, raw := f.link(ada)
