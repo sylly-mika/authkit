@@ -208,3 +208,75 @@ func authOn(w *world, k *kittest.Kit, id uuid.UUID, c *authkit.Claims) authkit.R
 	}
 	return res
 }
+
+func TestCoreMethodsQualifyTheirStatements(t *testing.T) {
+	const login = "ada@example.invalid"
+	w := newWorld(t)
+	b := addInstall(w, "kit_iso")
+	core, err := b.Attach("fixc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := w.User(login, "")
+	p := authkit.Principal{ID: id, Login: login}
+	openOn(w, w.Svc, p)
+	c := w.Claims(openOn(w, b, p))
+	now := w.Clock.Now()
+	if err := authkittest.InConnTx(w.Ctx, w.Pinned(id), func(q db.Querier) error {
+		_, fresh, err := core.Fresh(w.Ctx, q, c, time.Hour, now)
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			t.Fatal("Fresh on the other install = not fresh, want the open session")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := authkittest.InConnTx(w.Ctx, w.Pinned(id), func(q db.Querier) error {
+		return core.RevokeAll(w.Ctx, q, id, authkit.ReasonPasswordChanged, now)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := countIn(w, "kit_iso", "SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoked_at IS NULL", id); n != 0 {
+		t.Fatalf("the other install holds %d open sessions after RevokeAll, want 0", n)
+	}
+	if n := w.Count("SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoked_at IS NULL", id); n != 1 {
+		t.Fatalf("the world's install holds %d open sessions after the other install's RevokeAll, want 1", n)
+	}
+}
+
+func TestOneTimePruneStaysInItsInstall(t *testing.T) {
+	const login = "ada@example.invalid"
+	w := newWorld(t)
+	b := addInstall(w, "kit_iso")
+	id := w.User(login, "")
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		if _, err := w.Svc.OneTime().Create(w.Ctx, q, authkit.PurposeReset, id, time.Hour); err != nil {
+			return err
+		}
+		_, err := b.OneTime().Create(w.Ctx, q, authkit.PurposeReset, id, time.Hour)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w.Clock.Advance(40 * 24 * time.Hour)
+	var pruned int64
+	if err := w.D.InGlobalSystemTx(w.Ctx, func(q db.Querier) error {
+		var err error
+		pruned, err = b.OneTime().Prune(w.Ctx, q, w.Clock.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 {
+		t.Fatalf("Prune on the other install deleted %d rows, want its 1 expired row", pruned)
+	}
+	if n := countIn(w, "kit_iso", "SELECT count(*) FROM auth_tokens"); n != 0 {
+		t.Fatalf("the other install holds %d tokens after its prune, want 0", n)
+	}
+	if n := w.Count("SELECT count(*) FROM auth_tokens"); n != 1 {
+		t.Fatalf("the world's install holds %d tokens after the other install's prune, want 1", n)
+	}
+}

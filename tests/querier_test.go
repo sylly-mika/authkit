@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sylly-mika/authkit"
@@ -167,18 +168,26 @@ func (r *recordingPrincipals) Admit(ctx context.Context, q db.Querier, p authkit
 	return r.Principals.Admit(ctx, q, p)
 }
 
+func (r *recordingPrincipals) Lookup(ctx context.Context, q db.Querier, login string, aud authkit.Audience) (authkit.Principal, error) {
+	r.seen = append(r.seen, q)
+	return r.Principals.Lookup(ctx, q, login, aud)
+}
+
+func (r *recordingPrincipals) ByID(ctx context.Context, q db.Querier, id uuid.UUID, aud authkit.Audience) (authkit.Principal, error) {
+	r.seen = append(r.seen, q)
+	return r.Principals.ByID(ctx, q, id, aud)
+}
+
 func TestPrincipalsGetTheCallersQuerier(t *testing.T) {
 	t.Setenv("AUTHKIT_TEST_SCHEMA", "kit_ns")
 	w := newWorld(t)
-	p := authkit.Principal{ID: w.User("ada@example.invalid", ""), Login: "ada@example.invalid"}
+	const login, pw = "ada@example.invalid", "the right password"
+	p := authkit.Principal{ID: w.User(login, pw), Login: login}
 	id := p.ID
 	rec := &recordingPrincipals{Principals: w.P}
-	svc, err := authkit.New(w.Cfg.Config, rec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-		res, err := svc.OpenSession(w.Ctx, q, p, "staff", authkit.Meta{})
+	k := w.BuildWith(w.Cfg, rec)
+	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		res, err := k.OpenSession(w.Ctx, q, p, "staff", authkit.Meta{})
 		if err != nil {
 			return err
 		}
@@ -195,6 +204,54 @@ func TestPrincipalsGetTheCallersQuerier(t *testing.T) {
 	}
 	if n := w.Count("SELECT count(*) FROM auth_sessions WHERE principal_id = $1", id); n != 1 {
 		t.Fatalf("sessions written = %d; want 1", n)
+	}
+
+	rec.seen = nil
+	var res authkit.Result
+	err = w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		var err error
+		res, err = k.Password.Login(w.Ctx, q, "staff", login, pw, authkit.Meta{})
+		if err != nil {
+			return err
+		}
+		if len(rec.seen) == 0 {
+			t.Fatal("Login made no principal call")
+		}
+		for _, got := range rec.seen {
+			if got != q {
+				t.Fatal("Login's Lookup or Admit got a querier other than the caller's")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Session == nil {
+		t.Fatalf("Login refused: %v", res.Refusal)
+	}
+
+	rec.seen = nil
+	err = w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		out, err := k.Password.ChangePassword(w.Ctx, q, w.Claims(res), pw, "another right password", authkit.Meta{})
+		if err != nil {
+			return err
+		}
+		if out.Refusal != nil {
+			t.Fatalf("ChangePassword refused: %v", out.Refusal)
+		}
+		if len(rec.seen) == 0 {
+			t.Fatal("ChangePassword made no principal call")
+		}
+		for _, got := range rec.seen {
+			if got != q {
+				t.Fatal("ChangePassword's ByID got a querier other than the caller's")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
