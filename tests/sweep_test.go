@@ -21,9 +21,11 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
+	"github.com/sylly-mika/authkit/oidc"
 	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
+	"github.com/sylly-mika/authkit/register"
 	"github.com/sylly-mika/authkit/secondfactor"
 )
 
@@ -48,12 +50,14 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
-	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Password.Hash", "Attach"}
+	sweptReads = []string{"Authenticate", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.Identities"}
+	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Password.Hash", "Attach", "OIDC.Providers", "Register.Floor"}
 )
 
 func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 	w := newWorld(t)
+	w.withOIDC(true)
+	w.withRegister(false)
 	id := w.User("ada@example.invalid", "the right password")
 	res := w.SignIn("ada@example.invalid", "the right password")
 	var n int
@@ -145,6 +149,24 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 		"OneTime.Spend":  func() error { _, err := links.Spend(ctx, q, "x", "reset"); return err },
 		"OneTime.Revoke": func() error { return links.Revoke(ctx, q, "reset", id) },
 		"OneTime.Prune":  func() error { _, err := links.Prune(ctx, q, time.Now()); return err },
+		"OIDC.Begin":     func() error { _, err := w.Svc.OIDC.Begin(ctx, q, "google", "staff", authkit.Meta{}); return err },
+		"OIDC.Finish": func() error {
+			_, _, err := w.Svc.OIDC.Finish(ctx, q, oidc.Callback{State: "x", Code: "x"}, "x", authkit.Meta{})
+			return err
+		},
+		"OIDC.SignUp": func() error { _, err := w.Svc.OIDC.SignUp(ctx, q, "x", id, "staff", authkit.Meta{}); return err },
+		"OIDC.Link":   func() error { _, err := w.Svc.OIDC.Link(ctx, q, c, "google", authkit.Meta{}); return err },
+		"OIDC.Unlink": func() error { return w.Svc.OIDC.Unlink(ctx, q, c, "google", authkit.Meta{}) },
+		"Register.Start": func() error {
+			_, err := w.Svc.Register.Start(ctx, q, "staff", "new@example.invalid", nil)
+			return err
+		},
+		"Register.Mint": func() error { _, err := w.Svc.Register.Mint(ctx, q, uuid.New()); return err },
+		"Register.Activate": func() error {
+			_, err := w.Svc.Register.Activate(ctx, q, "x", "a long enough password", authkit.Meta{})
+			return err
+		},
+		"Register.CountMail": func() error { _, err := w.Svc.Register.CountMail(ctx, q, "staff", "new@example.invalid"); return err },
 	}
 	for name, call := range calls {
 		n = 0
@@ -155,7 +177,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			t.Errorf("%s ran %d statements on a bare connection before refusing it", name, n)
 		}
 	}
-	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module](), "Factors.": reflect.TypeFor[*secondfactor.Module]()} {
+	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module](), "Factors.": reflect.TypeFor[*secondfactor.Module](), "OIDC.": reflect.TypeFor[*oidc.Module](), "Register.": reflect.TypeFor[*register.Module]()} {
 		for i := range typ.NumMethod() {
 			name := prefix + typ.Method(i).Name
 			if _, swept := calls[name]; !swept && !slices.Contains(sweptReads, name) && !slices.Contains(sweptPure, name) {
