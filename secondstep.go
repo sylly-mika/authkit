@@ -14,6 +14,7 @@ import (
 	"github.com/sylly-mika/authkit/internal/factor"
 	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/internal/token"
+	"github.com/sylly-mika/authkit/internal/totp"
 )
 
 // VerifySecondStep completes a sign-in that returned Result.SecondStep, with an authenticator code, an emailed code or a recovery code. A wrong code counts on the challenge and on the login's throttle; the refusal's writes must be committed.
@@ -230,7 +231,7 @@ func (s *Service) checkFactor(ctx context.Context, q db.Querier, id uuid.UUID, m
 		if err != nil {
 			return false, fmt.Errorf("authkit: open the authenticator secret: %w", err)
 		}
-		step, ok := factor.VerifyTOTP(secret, code, now, f.LastStep)
+		step, ok := totp.VerifyTOTP(secret, code, now, f.LastStep)
 		if !ok {
 			return false, nil
 		}

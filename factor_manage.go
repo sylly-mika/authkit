@@ -10,12 +10,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pquerna/otp"
-	"github.com/pquerna/otp/totp"
+	pqtotp "github.com/pquerna/otp/totp"
 
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/factor"
 	"github.com/sylly-mika/authkit/internal/throttle"
+	"github.com/sylly-mika/authkit/internal/totp"
 	"github.com/sylly-mika/authkit/session"
 )
 
@@ -112,11 +113,11 @@ func (s *Service) BeginTOTPSetup(ctx context.Context, q db.Querier, c *Claims, m
 	if err != nil {
 		return Result{}, err
 	}
-	secret, err := factor.NewSecret(s.cfg.Rand)
+	secret, err := totp.NewSecret(s.cfg.Rand)
 	if err != nil {
 		return Result{}, err
 	}
-	key, err := totp.Generate(totp.GenerateOpts{Issuer: s.cfg.SecondFactors.Issuer, AccountName: p.Login, Period: 30, Secret: secret, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
+	key, err := pqtotp.Generate(pqtotp.GenerateOpts{Issuer: s.cfg.SecondFactors.Issuer, AccountName: p.Login, Period: 30, Secret: secret, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
 	if err != nil {
 		return Result{}, err
 	}
@@ -181,7 +182,7 @@ func (s *Service) ConfirmTOTP(ctx context.Context, q db.Querier, c *Claims, code
 	if err != nil {
 		return Result{}, err
 	}
-	step, ok := factor.VerifyTOTP(secret, code, now, f.LastStep)
+	step, ok := totp.VerifyTOTP(secret, code, now, f.LastStep)
 	if !ok {
 		if err := s.record(ctx, q, now, SourceSecondFactor, events.Event{PrincipalID: &c.Subject, SessionID: &c.SessionID, ScopeID: sess.ScopeID, Audience: c.Audience, Result: ResultBadCode, IP: m.IP, UserAgent: m.UserAgent, SecondFactor: string(FactorTOTP)}); err != nil {
 			return Result{}, err
@@ -390,7 +391,7 @@ func (s *Service) checkDisableProof(ctx context.Context, q db.Querier, c *Claims
 		if err != nil {
 			return factor.CodeBad, nil
 		}
-		step, ok := factor.VerifyTOTP(secret, proof.Code, now, f.LastStep)
+		step, ok := totp.VerifyTOTP(secret, proof.Code, now, f.LastStep)
 		if !ok {
 			return factor.CodeBad, nil
 		}

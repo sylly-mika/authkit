@@ -1,4 +1,5 @@
-package factor
+// Package totp makes TOTP secrets, checks six-digit codes and builds the enrolment an authenticator app reads.
+package totp
 
 import (
 	"bytes"
@@ -11,12 +12,12 @@ import (
 	"time"
 
 	"github.com/pquerna/otp"
-	"github.com/pquerna/otp/totp"
+	pqtotp "github.com/pquerna/otp/totp"
 )
 
 const totpStepSeconds = 30
 
-var totpOpts = totp.ValidateOpts{Period: totpStepSeconds, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1}
+var totpOpts = pqtotp.ValidateOpts{Period: totpStepSeconds, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1}
 
 // Enrolment is what an authenticator app needs to add a secret.
 type Enrolment struct {
@@ -49,7 +50,7 @@ func VerifyTOTP(secret []byte, code string, now time.Time, lastStep *int64) (ste
 	b32 := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)
 	failed := false
 	for c := s - 1; c <= s+1; c++ {
-		want, err := totp.GenerateCodeCustom(b32, time.Unix(c*totpStepSeconds, 0), totpOpts)
+		want, err := pqtotp.GenerateCodeCustom(b32, time.Unix(c*totpStepSeconds, 0), totpOpts)
 		if err != nil {
 			failed = true
 			continue
@@ -70,7 +71,7 @@ func VerifyTOTP(secret []byte, code string, now time.Time, lastStep *int64) (ste
 
 // TOTPEnrolment builds the otpauth URI, the base32 secret and a 256x256 PNG QR code for secret.
 func TOTPEnrolment(issuer, account string, secret []byte) (Enrolment, error) {
-	key, err := totp.Generate(totp.GenerateOpts{Issuer: issuer, AccountName: account, Period: totpStepSeconds, Secret: secret, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
+	key, err := pqtotp.Generate(pqtotp.GenerateOpts{Issuer: issuer, AccountName: account, Period: totpStepSeconds, Secret: secret, Digits: otp.DigitsSix, Algorithm: otp.AlgorithmSHA1})
 	if err != nil {
 		return Enrolment{}, fmt.Errorf("authkit: TOTP enrolment: %w", err)
 	}
