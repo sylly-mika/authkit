@@ -2,6 +2,7 @@ package password
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -101,3 +102,10 @@ func (s *Module) record(ctx context.Context, q db.Querier, at time.Time, src str
 	e.At = at
 	return s.core.Record(ctx, q, src, e)
 }
+
+var (
+	// ErrCredentialExists refuses SetHash for a principal that has a password already.
+	ErrCredentialExists = errors.New("password: the principal has a password already")
+	// ErrNoHash refuses SetHash with the zero Hash.
+	ErrNoHash = errors.New("password: empty hash")
+)
