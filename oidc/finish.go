@@ -99,10 +99,31 @@ func (m *Module) Finish(ctx context.Context, q db.Querier, cb Callback, binding 
 		idTok.Subject == "" {
 		return refuseBad(ctx, q, a)
 	}
+	sub := idTok.Subject
+	if c.kind == "link" {
+		who, err := m.core.Principals().ByID(ctx, q, c.principal.UUID, aud)
+		if errors.Is(err, authkit.ErrUnknownLogin) {
+			return refuseBad(ctx, q, a)
+		}
+		if err != nil {
+			return authkit.Result{}, nil, err
+		}
+		linked, err := linkIdentity(ctx, qc, uuid.New(), who.ID, c.provider, sub, cl.Email, now)
+		if err != nil {
+			return authkit.Result{}, nil, err
+		}
+		if !linked {
+			return authkit.Result{Refusal: ErrIdentityTaken}, nil, nil
+		}
+		ev := authkit.Event{PrincipalID: &who.ID, Audience: string(aud), Login: who.Login, Result: authkit.ResultIdentityLinked, IP: meta.IP, UserAgent: meta.UserAgent}
+		if err := m.core.Record(ctx, q, authkit.SourceOIDC, ev); err != nil {
+			return authkit.Result{}, nil, err
+		}
+		return authkit.Result{Principal: who}, nil, nil
+	}
 	if c.kind != "signin" {
 		return refuseBad(ctx, q, a)
 	}
-	sub := idTok.Subject
 	verified := cl.EmailVerified != nil && bool(*cl.EmailVerified)
 
 	id, found, err := findIdentity(ctx, qc, c.provider, sub)

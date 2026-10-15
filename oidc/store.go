@@ -75,3 +75,11 @@ func touchIdentity(ctx context.Context, q db.Querier, provider, subject string, 
 	_, err := q.Exec(ctx, `UPDATE auth_identities SET last_used_at = $3 WHERE provider = $1 AND subject = $2`, provider, subject, now)
 	return err
 }
+
+func linkIdentity(ctx context.Context, q db.Querier, id, principal uuid.UUID, provider, subject, email string, now time.Time) (bool, error) {
+	n, err := q.Exec(ctx, `INSERT INTO auth_identities (id, principal_id, provider, subject, email, created_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING`, id, principal, provider, subject, email, now)
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}

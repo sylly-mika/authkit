@@ -612,3 +612,70 @@ func TestFinishNoSecretInErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestFinishLinkBranch(t *testing.T) {
+	rows := []struct {
+		name    string
+		subject string
+		taken   bool
+	}{
+		{"identity taken", "s-3", true},
+		{"identity free", "s-4", false},
+	}
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			w, m, fakes := newWorld(t, nil, oidcfake.Google)
+			f := fakes[oidcfake.Google]
+			ann := w.User("ann@example.test", "pw")
+			bob := w.User("bob@example.test", "pw")
+			seedIdentity(w, bob, "google", "s-3", "bob@example.test")
+			var rd oidc.Redirect
+			err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+				var err error
+				rd, err = oidc.BeginLink(m, w.Ctx, q, "google", aud, ann)
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cb := f.Authorize(t, rd, oidcfake.User{Subject: r.subject, Email: "ann@example.test", EmailVerified: true})
+			res, sup := finish(w, m, cb, rd.Binding)
+			if sup != nil {
+				t.Error("a link returned a sign-up ticket")
+			}
+			if n := w.Count("SELECT count(*) FROM auth_sessions"); n != 0 {
+				t.Errorf("sessions = %d, want 0", n)
+			}
+			if r.taken {
+				if res.Refusal != oidc.ErrIdentityTaken {
+					t.Fatalf("Refusal = %v, want ErrIdentityTaken", res.Refusal)
+				}
+				if n := w.Count("SELECT count(*) FROM auth_identities WHERE subject = 's-3' AND principal_id = $1", bob); n != 1 {
+					t.Errorf("s-3 is bob's %d times, want 1", n)
+				}
+				if n := w.Count("SELECT count(*) FROM auth_identities WHERE principal_id = $1", ann); n != 0 {
+					t.Errorf("ann's identities = %d, want 0", n)
+				}
+				if n := w.Count("SELECT count(*) FROM auth_events WHERE result = 'identity_linked'"); n != 0 {
+					t.Errorf("identity_linked events = %d, want 0", n)
+				}
+				return
+			}
+			if res.Refusal != nil {
+				t.Fatalf("Refusal = %v, want none", res.Refusal)
+			}
+			if res.Principal.ID != ann {
+				t.Errorf("Principal = %v, want ann", res.Principal.ID)
+			}
+			if res.Session != nil {
+				t.Error("a link opened a session")
+			}
+			if n := w.Count("SELECT count(*) FROM auth_identities WHERE principal_id = $1 AND provider = 'google' AND subject = 's-4'", ann); n != 1 {
+				t.Errorf("ann's google identity = %d, want 1", n)
+			}
+			if n := w.Count("SELECT count(*) FROM auth_events WHERE result = 'identity_linked' AND principal_id = $1", ann); n != 1 {
+				t.Errorf("identity_linked events for ann = %d, want 1", n)
+			}
+		})
+	}
+}
