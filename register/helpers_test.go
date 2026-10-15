@@ -2,8 +2,12 @@ package register_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
@@ -58,4 +62,41 @@ func newFixture(t *testing.T, tweaks ...func(*register.Rules)) *fixture {
 
 func stub(context.Context, db.Querier, register.Pending) (authkit.Principal, error) {
 	return authkit.Principal{}, errors.New("register test: Create runs only at activation")
+}
+
+func (f *fixture) start(aud authkit.Audience, email, payload string) register.Started {
+	f.T.Helper()
+	var st register.Started
+	err := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		var err error
+		st, err = f.Reg.Start(f.Ctx, q, aud, email, json.RawMessage(payload))
+		return err
+	})
+	if err != nil {
+		f.T.Fatal(err)
+	}
+	return st
+}
+
+func (f *fixture) count(aud authkit.Audience, email string) time.Duration {
+	f.T.Helper()
+	var d time.Duration
+	err := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		var err error
+		d, err = f.Reg.CountMail(f.Ctx, q, aud, email)
+		return err
+	})
+	if err != nil {
+		f.T.Fatal(err)
+	}
+	return d
+}
+
+func (f *fixture) regID(aud, email string) uuid.UUID {
+	f.T.Helper()
+	var id uuid.UUID
+	if err := f.D.Row(f.T, "SELECT id FROM auth_registrations WHERE audience = $1 AND email = $2", aud, email).Scan(&id); err != nil {
+		f.T.Fatal(err)
+	}
+	return id
 }

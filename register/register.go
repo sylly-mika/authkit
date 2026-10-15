@@ -12,6 +12,7 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/token"
 	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/password"
 )
@@ -102,3 +103,52 @@ func New(svc *authkit.Service, pw *password.Module, r Rules) (*Module, error) {
 
 // Floor is the minimum time the app's register handler takes.
 func (m *Module) Floor() time.Duration { return m.r.Floor }
+
+// Start records a registration for email, or finds the principal already holding it.
+func (m *Module) Start(ctx context.Context, q db.Querier, aud authkit.Audience, email string, payload json.RawMessage) (Started, error) {
+	q = m.core.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return Started{}, err
+	}
+	now := m.core.Now()
+	n := authkit.Normalize(email)
+	if len(payload) == 0 {
+		payload = json.RawMessage("{}")
+	}
+	d, err := m.CountMail(ctx, q, aud, n)
+	if err != nil {
+		return Started{}, err
+	}
+	if d > 0 {
+		return Started{RetryAfter: d}, nil
+	}
+	p, err := m.principals.Lookup(ctx, q, n, aud)
+	switch {
+	case err == nil:
+		return Started{Holder: &p}, nil
+	case !errors.Is(err, authkit.ErrUnknownLogin):
+		return Started{}, err
+	}
+	id, err := token.ID(m.core.Rand())
+	if err != nil {
+		return Started{}, err
+	}
+	if _, err := q.Exec(ctx, `
+		INSERT INTO auth_registrations (id, audience, email, payload, created_at, expires_at)
+		VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+		ON CONFLICT (audience, email) DO UPDATE SET
+		  payload = EXCLUDED.payload, created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at`,
+		id, string(aud), n, string(payload), now, now.Add(m.r.TTL)); err != nil {
+		return Started{}, err
+	}
+	var regID uuid.UUID
+	if err := q.QueryRow(ctx, `SELECT id FROM auth_registrations WHERE audience = $1 AND email = $2`,
+		string(aud), n).Scan(&regID); err != nil {
+		return Started{}, err
+	}
+	tok, err := m.links.Create(ctx, q, authkit.PurposeRegister, regID, m.r.TTL)
+	if err != nil {
+		return Started{}, err
+	}
+	return Started{TokenID: &tok}, nil
+}
