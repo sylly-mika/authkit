@@ -10,6 +10,7 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
+	"github.com/sylly-mika/authkit/authkittest/oidcfake"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/kittest"
 )
@@ -135,6 +136,55 @@ func TestGateEveryPath(t *testing.T) {
 			t.Errorf("challenges = %d, want 0", n)
 		}
 		wantSources(t, rec.take(), "passkey_login")
+	})
+
+	t.Run("oidc", func(t *testing.T) {
+		w := newWorld(t, factors)
+		fake := w.withOIDC(false)
+		rec := withSourceLog(w)
+		ada := w.User(gateLogin, "")
+		w.seedTOTP(ada)
+		w.seedIdentity(ada, "google", "g-ada")
+		rec.take()
+		res, su := w.googleSignIn(fake, oidcfake.User{Subject: "g-ada", Email: gateLogin, EmailVerified: true})
+		if res.Refusal != nil || su != nil || res.SecondStep == nil || !slices.Contains(res.SecondStep.Methods, authkit.FactorTOTP) {
+			t.Fatalf("oidc sign-in: refusal %v, sign-up set %v, second step %v", res.Refusal, su != nil, res.SecondStep != nil)
+		}
+		gateNoSession(t, res)
+		if n := w.sessions(ada); n != 0 {
+			t.Errorf("sessions = %d, want 0", n)
+		}
+		if n := w.challenges(ada); n != 1 {
+			t.Errorf("challenges = %d, want 1", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in'`, ada); n != 0 {
+			t.Errorf("signed_in events = %d, want 0", n)
+		}
+		wantSources(t, rec.take(), "oidc")
+	})
+
+	t.Run("register", func(t *testing.T) {
+		w := newWorld(t, factors)
+		w.withRegister(true)
+		rec := withSourceLog(w)
+		raw := w.registerLink(gateLogin)
+		rec.take()
+		res := w.activate(raw, gateNewPassword)
+		if res.Refusal != nil || res.SecondStep == nil {
+			t.Fatalf("activate: refusal %v, second step %v", res.Refusal, res.SecondStep != nil)
+		}
+		id := res.Principal.ID
+		gateNoSession(t, res)
+		if n := w.sessions(id); n != 0 {
+			t.Errorf("sessions = %d, want 0", n)
+		}
+		if n := w.challenges(id); n != 1 {
+			t.Errorf("challenges = %d, want 1", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_credentials WHERE principal_id = $1`, id); n != 1 {
+			t.Errorf("credentials = %d, want 1", n)
+		}
+		wantSources(t, rec.take(), "register")
 	})
 
 	t.Run("change password", func(t *testing.T) {
