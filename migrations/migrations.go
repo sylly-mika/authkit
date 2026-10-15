@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/sylly-mika/authkit/internal/nsql"
 )
 
 //go:embed *.sql
@@ -125,4 +127,16 @@ func Render(sql, principals string) (string, error) {
 		return "", fmt.Errorf("authkit: %q is not a lower-case table name", principals)
 	}
 	return strings.ReplaceAll(sql, placeholder, principals), nil
+}
+
+// RenderIn renders one migration file as Render does and qualifies its authkit tables with schema; an empty schema is Render.
+func RenderIn(sql, principals, schema string) (string, error) {
+	out, err := Render(sql, principals)
+	if err != nil || schema == "" {
+		return out, err
+	}
+	if err := nsql.Check(schema); err != nil {
+		return "", err
+	}
+	return nsql.Rewrite(schema, out), nil
 }
