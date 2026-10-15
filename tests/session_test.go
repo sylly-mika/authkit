@@ -13,10 +13,10 @@ import (
 	"github.com/sylly-mika/authkit/internal/kittest"
 )
 
-func sessionWorld(t *testing.T, tweaks ...func(*authkit.Config)) *world {
+func sessionWorld(t *testing.T, tweaks ...func(*kittest.Rules)) *world {
 	t.Helper()
-	session := func(c *authkit.Config) { c.Transport, c.Issuer, c.Secret = authkit.TransportSession, "", nil }
-	return newWorld(t, append([]func(*authkit.Config){kittest.DefaultRules, session}, tweaks...)...)
+	session := func(c *kittest.Rules) { c.Transport, c.Issuer, c.Secret = authkit.TransportSession, "", nil }
+	return newWorld(t, append([]func(*kittest.Rules){kittest.DefaultRules, session}, tweaks...)...)
 }
 
 func (w *world) authenticateSession(aud authkit.Audience, raw string) authkit.Result {
@@ -192,7 +192,7 @@ func TestRotationSwapsTheTokenAfterRotateEvery(t *testing.T) {
 }
 
 func TestANegativeRotateEveryNeverRotates(t *testing.T) {
-	w := sessionWorld(t, func(c *authkit.Config) { c.Session.RotateEvery = -1 })
+	w := sessionWorld(t, func(c *kittest.Rules) { c.Session.RotateEvery = -1 })
 	w.User("ada@example.invalid", "the right password")
 	signed := w.SignIn("ada@example.invalid", "the right password")
 	for range 3 {
@@ -241,7 +241,7 @@ func TestThePreviousTokenWithinTheGrace(t *testing.T) {
 
 func TestThePreviousTokenPastTheGraceRevokes(t *testing.T) {
 	var c captured
-	w := sessionWorld(t, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	w := sessionWorld(t, func(cfg *kittest.Rules) { cfg.OnEvent = c.onEvent })
 	id := w.User("ada@example.invalid", "the right password")
 	signed := w.SignIn("ada@example.invalid", "the right password")
 	w.Clock.Advance(15 * time.Minute)
@@ -273,7 +273,7 @@ func TestConcurrentRotationsHaveOneWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.Ctx, `SELECT 1 FROM auth_sessions WHERE id = $1 FOR UPDATE`, signed.Session.ID); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL(`SELECT 1 FROM auth_sessions WHERE id = $1 FOR UPDATE`), signed.Session.ID); err != nil {
 		t.Fatal(err)
 	}
 	const n = 8

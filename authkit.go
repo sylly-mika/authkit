@@ -14,22 +14,22 @@ package authkit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
-	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
-	"github.com/sylly-mika/authkit/internal/ceremony"
+	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/internal/nsql"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/migrations"
 	"github.com/sylly-mika/authkit/onetime"
-	"github.com/sylly-mika/authkit/password"
 	"github.com/sylly-mika/authkit/session"
-	"github.com/sylly-mika/authkit/throttle"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 
@@ -49,6 +49,8 @@ type Proposal struct {
 	ScopeID   *uuid.UUID
 	// SecondFactor is the factor that completed the sign-in this admit is for: empty for a password alone.
 	SecondFactor FactorKind
+	// Source is the flow asking: one of the Source* constants.
+	Source string
 }
 
 // Admission is Admit's answer for a session it allows.
@@ -163,11 +165,12 @@ func (r Result) Claims() *Claims {
 type Service struct {
 	cfg        Config
 	principals Principals
-	hasher     *password.Hasher
+	names      *nsql.Names
 	codec      *bearer.Codec
 	links      *onetime.Store
-	rps        map[Audience]*webauthn.WebAuthn
-	onVerify   func()
+	mu         sync.Mutex
+	attached   map[string]bool
+	verifier   SecondStepVerifier
 }
 
 // New builds the Service. It reads no database: the app calls CheckSchema at
@@ -182,22 +185,39 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
-	hasher, err := password.NewHasher(cfg.Hashing, cfg.HashConcurrency, cfg.HashWait, cfg.Rand)
-	if err != nil {
+	if cfg.Schema != "" {
+		if err := nsql.Check(cfg.Schema); err != nil {
+			return nil, err
+		}
+	}
+	var err error
+	s := &Service{cfg: cfg, principals: principals, names: nsql.NewNames(cfg.Schema), attached: map[string]bool{}}
+	if cfg.Schema != "" {
+		s.principals = plainPrincipals{app: principals}
+	}
+	if s.links, err = onetime.NewIn(cfg.Schema, s.now, cfg.Rand); err != nil {
 		return nil, err
 	}
-	rps, err := relyingParties(cfg.Passkeys)
-	if err != nil {
-		return nil, err
-	}
-	s := &Service{cfg: cfg, principals: principals, hasher: hasher, rps: rps}
-	s.links = onetime.New(s.now, cfg.Rand)
 	if cfg.Transport == TransportBearer {
 		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, s.now); err != nil {
 			return nil, err
 		}
 	}
 	return s, nil
+}
+
+// Attach registers a module by name and returns its Core. Call it at startup, once per name; a taken name is ErrAttached.
+func (s *Service) Attach(name string) (*Core, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if name == "" {
+		return nil, errors.New("authkit: Attach needs a module name")
+	}
+	if s.attached[name] {
+		return nil, ErrAttached
+	}
+	s.attached[name] = true
+	return &Core{s: s, name: name}, nil
 }
 
 // WHY: PostgreSQL stores timestamptz at microseconds, so a value written and read back must compare the same in Go.
@@ -230,18 +250,22 @@ func (s *Service) Codec() *bearer.Codec { return s.codec }
 // OneTime is the one-time link store for the app's own purposes (invites).
 func (s *Service) OneTime() *onetime.Store { return s.links }
 
-// ResetFloor is how long a reset request answers at the least (PadSince).
-func (s *Service) ResetFloor() time.Duration { return s.cfg.ResetFloor }
-
-// CheckPassword applies the password policy alone, for an app that validates
-// before it writes.
-func (s *Service) CheckPassword(pw string) error { return s.cfg.Password.Check(pw) }
-
 // CheckSchema refuses a database whose auth_schema.version is older than this
-// library's migrations. The app calls it once at startup.
+// library's migrations. The app calls it once at startup. With Config.Schema
+// set, call Service.CheckSchema.
 func CheckSchema(ctx context.Context, q db.Querier) error {
+	return checkSchema(ctx, q, "auth_schema")
+}
+
+// CheckSchema checks the tables in this Service's Config.Schema as the package func CheckSchema checks the search path.
+func (s *Service) CheckSchema(ctx context.Context, q db.Querier) error {
+	q = s.names.Q(q)
+	return checkSchema(ctx, q, nsql.Rewrite(s.cfg.Schema, "auth_schema"))
+}
+
+func checkSchema(ctx context.Context, q db.Querier, table string) error {
 	var exists bool
-	if err := q.QueryRow(ctx, `SELECT to_regclass('auth_schema') IS NOT NULL`).Scan(&exists); err != nil {
+	if err := q.QueryRow(ctx, `SELECT to_regclass($1::text) IS NOT NULL`, table).Scan(&exists); err != nil {
 		return fmt.Errorf("authkit: look for auth_schema: %w", err)
 	}
 	if !exists {
@@ -271,6 +295,7 @@ const ceremonyRetention = time.Hour
 // expiry, and sign-in events older than EventRetention unless it is negative.
 // The app's worker runs it with no workspace bound.
 func (s *Service) Prune(ctx context.Context, q db.Querier) error {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return err
 	}
@@ -286,7 +311,8 @@ func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 			return err
 		}
 	}
-	if _, err := ceremony.Prune(ctx, q, now.Add(-ceremonyRetention)); err != nil {
+	// WHY: the same DELETE as ceremony.Prune, so the core does not import the passkey ceremony package.
+	if _, err := q.Exec(ctx, `DELETE FROM auth_passkey_ceremonies WHERE expires_at < $1`, now.Add(-ceremonyRetention)); err != nil {
 		return err
 	}
 	if _, err := factor.PruneChallenges(ctx, q, now.Add(-ceremonyRetention)); err != nil {
@@ -294,4 +320,29 @@ func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 	}
 	_, err := s.links.Prune(ctx, q, now.Add(-retention))
 	return err
+}
+
+// PadSince sleeps until floor has passed since start. The app's
+// reset-request handler calls it after its transaction commits, so a known
+// and an unknown email take as long.
+func PadSince(start time.Time, floor time.Duration) {
+	if d := floor - time.Since(start); d > 0 {
+		time.Sleep(d)
+	}
+}
+
+// Ceremony is a passkey begin's answer: the id the finish sends back, the options for navigator.credentials, and when it expires.
+type Ceremony struct {
+	ID        string
+	Options   json.RawMessage
+	ExpiresAt time.Time
+}
+
+// Passkey is one of a principal's registered passkeys as the app lists it.
+type Passkey struct {
+	ID         uuid.UUID
+	Label      string
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+	BackedUp   bool
 }

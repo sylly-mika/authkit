@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
+	"github.com/sylly-mika/authkit/internal/pwerr"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/onetime"
-	"github.com/sylly-mika/authkit/password"
 	"github.com/sylly-mika/authkit/session"
-	"github.com/sylly-mika/authkit/throttle"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
 
@@ -26,7 +26,10 @@ var (
 	ErrInvalidToken  = bearer.ErrInvalid
 	ErrWrongAudience = bearer.ErrWrongAudience
 	ErrTokenUnknown  = onetime.ErrUnknown
-	ErrBusy          = password.ErrBusy
+	ErrBusy          = pwerr.ErrBusy
+
+	// ErrAttached refuses a second module under a name already attached.
+	ErrAttached = errors.New("authkit: module already attached")
 )
 
 // ErrLocked refuses a login whose throttle is locked.
@@ -43,7 +46,7 @@ func (e ErrResendTooSoon) Error() string {
 	return fmt.Sprintf("authkit: a code was sent moments ago; retry in %s", e.RetryAfter)
 }
 
-// ErrPasskeysOff is the error of every passkey method while Config.Passkeys.RPID is empty.
+// ErrPasskeysOff is the error of every passkey method while passkey.Rules.RPID is empty.
 var ErrPasskeysOff = errors.New("authkit: passkeys are off")
 
 // Passkey refusals, returned in Result.Refusal.
@@ -73,7 +76,7 @@ var (
 // Aliases of the sub-packages' types an app meets through the Service.
 type (
 	ErrTokenGone = onetime.ErrGone
-	PolicyError  = password.PolicyError
+	PolicyError  = pwerr.PolicyError
 	Claims       = bearer.Claims
 	Session      = session.Session
 	Event        = events.Event
@@ -119,12 +122,14 @@ const (
 	SourceRevokeAll           = "revoke_all"
 	SourceRefresh             = "refresh"
 	SourceAuthenticateSession = "authenticate_session"
-	SourcePasskeyLogin        = "passkey_login"
-	SourcePasskeyRegister     = "passkey_register"
-	SourceDeletePasskey       = "delete_passkey"
-	SourceSecondStep          = "second_step"
-	SourceSecondFactor        = "second_factor"
-	SourceRequestReset        = "request_reset" // RequestReset records no event; reserved
+	// SourceAuthenticate is the Proposal.Source of Authenticate; no event carries it.
+	SourceAuthenticate    = "authenticate"
+	SourcePasskeyLogin    = "passkey_login"
+	SourcePasskeyRegister = "passkey_register"
+	SourceDeletePasskey   = "delete_passkey"
+	SourceSecondStep      = "second_step"
+	SourceSecondFactor    = "second_factor"
+	SourceRequestReset    = "request_reset" // RequestReset records no event; reserved
 )
 
 // Revoke reasons, as auth_sessions_revoke_reason lists them.

@@ -23,16 +23,16 @@ const pw = "the right password"
 
 var meta = authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"}
 
-func factors(c *authkit.Config) {
-	c.SecondFactors.Key = bytes.Repeat([]byte{0x07}, 32)
+func factors(c *kittest.Rules) {
+	c.Factors.Key = bytes.Repeat([]byte{0x07}, 32)
 }
 
-func throttleAt(n int) func(*authkit.Config) {
-	return func(c *authkit.Config) { c.Throttle.Failures = n }
+func throttleAt(n int) func(*kittest.Rules) {
+	return func(c *kittest.Rules) { c.Throttle.Failures = n }
 }
 
-func maxTries(n int) func(*authkit.Config) {
-	return func(c *authkit.Config) { c.SecondFactors.MaxTries = n }
+func maxTries(n int) func(*kittest.Rules) {
+	return func(c *kittest.Rules) { c.Factors.MaxTries = n }
 }
 
 func (w *world) code(secret string) string {
@@ -54,7 +54,7 @@ func (w *world) enrolTOTP(login string) (uuid.UUID, string, []string) {
 	id := w.User(login, pw)
 	c := w.Claims(w.SignIn(login, pw))
 	setup := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, meta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, meta)
 	})
 	if setup.TOTPSetup == nil {
 		w.T.Fatalf("begin the authenticator: %v", setup.Refusal)
@@ -65,7 +65,7 @@ func (w *world) enrolTOTP(login string) (uuid.UUID, string, []string) {
 	}
 	secret := key.Secret()
 	conf := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ConfirmTOTP(w.Ctx, q, c, w.code(secret), meta)
+		return w.Svc.Factors.ConfirmTOTP(w.Ctx, q, c, w.code(secret), meta)
 	})
 	if conf.Refusal != nil {
 		w.T.Fatalf("confirm the authenticator: %v", conf.Refusal)
@@ -96,20 +96,25 @@ func (w *world) challenge(login string) string {
 func (w *world) offline(key []byte) {
 	w.T.Helper()
 	cfg := w.Cfg
-	cfg.SecondFactors.Key = key
-	w.Svc = w.Service(cfg)
+	cfg.Factors.Key = key
+	w.Svc = w.Build(cfg)
+}
+
+func (w *world) unplugged() {
+	w.T.Helper()
+	w.Svc = w.BuildNoFactors(w.Cfg)
 }
 
 func (w *world) sessionMode() {
 	w.T.Helper()
 	cfg := w.Cfg
 	cfg.Transport, cfg.Issuer, cfg.Secret = authkit.TransportSession, "", nil
-	w.Svc = w.Service(cfg)
+	w.Svc = w.Build(cfg)
 }
 
 func (w *world) eventResults(id uuid.UUID, source string) []string {
 	w.T.Helper()
-	rows, err := w.D.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = $2 ORDER BY at, id`, id, source)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = $2 ORDER BY at, id`), id, source)
 	if err != nil {
 		w.T.Fatal(err)
 	}
@@ -669,7 +674,7 @@ func TestTheSecondStepLeaksNoSecret(t *testing.T) {
 	if first.Refusal != authkit.ErrBadCode || second.Refusal != nil {
 		t.Fatalf("second step outcomes %v, %v", first.Refusal, second.Refusal)
 	}
-	rows, err := w.D.Owner.Query(`SELECT concat_ws('|', login, result, ip, user_agent, source, second_factor) FROM auth_events WHERE principal_id = $1`, id)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT concat_ws('|', login, result, ip, user_agent, source, second_factor) FROM auth_events WHERE principal_id = $1`), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -817,7 +822,7 @@ func TestAnUnconfirmedAuthenticatorAsksNoSecondStep(t *testing.T) {
 	w.User(login, pw)
 	c := w.Claims(w.SignIn(login, pw))
 	w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginTOTPSetup(w.Ctx, q, c, meta)
+		return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, meta)
 	})
 	res := w.Login("staff", login, pw)
 	if res.Refusal != nil || res.Session == nil || res.SecondStep != nil {

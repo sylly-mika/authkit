@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"os"
 	"testing"
 	"time"
 
@@ -17,63 +18,130 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/nsql"
+	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
+	"github.com/sylly-mika/authkit/secondfactor"
 )
 
 // Cheap is the argon2id cost the tests hash with.
 // WHY: cheap hashing keeps -race runs fast.
 var Cheap = password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen: 32}
 
-// World is one test's Service and the fixtures it runs over.
+// Rules is the configuration a World builds its Kit from.
+type Rules struct {
+	authkit.Config
+	Password password.Config
+	Passkeys passkey.Rules
+	Factors  secondfactor.Rules
+}
+
+// Kit is the Service under test and its password, passkey and second-factor modules.
+type Kit struct {
+	*authkit.Service
+	Password *password.Module
+	Passkeys *passkey.Module
+	Factors  *secondfactor.Module
+}
+
+// World is one test's Kit and the fixtures it runs over.
 type World struct {
 	T     *testing.T              // the test the world belongs to
 	Ctx   context.Context         // the context every call runs under
 	D     *authkittest.DB         // the throwaway database
 	P     *authkittest.Principals // the principal fixture
 	Clock *authkittest.Clock      // the clock the Service reads
-	Cfg   authkit.Config          // the config Svc was built from
-	Svc   *authkit.Service        // the Service under test
+	Cfg   Rules                   // the rules Svc was built from
+	Svc   *Kit                    // the Kit under test
 }
 
 // New builds a World on a throwaway database with PinnedRules applied, then
 // each tweak in order.
-func New(t *testing.T, tweaks ...func(*authkit.Config)) *World {
+func New(t *testing.T, tweaks ...func(*Rules)) *World {
 	t.Helper()
-	w := &World{T: t, Ctx: context.Background(), D: authkittest.NewDB(t), P: authkittest.NewPrincipals(), Clock: authkittest.NewClock()}
-	w.Cfg = authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Hashing: Cheap,
-		HashWait: 200 * time.Millisecond, Clock: w.Clock, Rand: authkittest.Rand(7)}
+	schema := os.Getenv("AUTHKIT_TEST_SCHEMA")
+	var opts []authkittest.Option
+	if schema != "" {
+		opts = append(opts, authkittest.Schema(schema))
+	}
+	w := &World{T: t, Ctx: context.Background(), D: authkittest.NewDB(t, opts...), P: authkittest.NewPrincipals(), Clock: authkittest.NewClock()}
+	w.Cfg = Rules{Config: authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"), Clock: w.Clock, Rand: authkittest.Rand(7), Schema: schema},
+		Password: password.Config{Hashing: Cheap, HashWait: 200 * time.Millisecond}}
 	PinnedRules(&w.Cfg)
 	for _, f := range tweaks {
 		f(&w.Cfg)
 	}
-	w.Svc = w.Service(w.Cfg)
+	w.Svc = w.Build(w.Cfg)
 	return w
 }
 
 // PinnedRules sets the session, throttle, event and reset rules the tests
 // pin to fixed values.
-func PinnedRules(c *authkit.Config) {
+func PinnedRules(c *Rules) {
 	c.Session = authkit.SessionRules{IdleTTL: 7 * 24 * time.Hour, AbsoluteTTL: -1}
 	c.Throttle = authkit.Throttle{Failures: 10, Window: 15 * time.Minute, Lockout: 15 * time.Minute, CountAfterVerify: true, PlainLoginKey: true}
 	c.Events.ChangeLogsReset = true
-	c.Reset.MayCreateCredential = true
+	c.Password.Reset.MayCreateCredential = true
 	c.EventRetention = -1
 }
 
 // DefaultRules clears the rules PinnedRules sets, so the Service runs on
 // their zero values.
-func DefaultRules(c *authkit.Config) {
-	c.Session, c.Throttle, c.Events, c.Reset, c.EventRetention = authkit.SessionRules{}, authkit.Throttle{}, authkit.EventRules{}, authkit.ResetRules{}, 0
+func DefaultRules(c *Rules) {
+	c.Session, c.Throttle, c.Events, c.Password.Reset, c.EventRetention = authkit.SessionRules{}, authkit.Throttle{}, authkit.EventRules{}, authkit.ResetRules{}, 0
 }
 
-// Service builds a Service from cfg over the world's principals.
-func (w *World) Service(cfg authkit.Config) *authkit.Service {
+// Build builds a Kit from r over the world's principals.
+func (w *World) Build(r Rules) *Kit {
 	w.T.Helper()
-	svc, err := authkit.New(cfg, w.P)
+	return w.BuildWith(r, w.P)
+}
+
+// BuildWith builds a Kit from r over the principals p.
+func (w *World) BuildWith(r Rules, p authkit.Principals) *Kit {
+	w.T.Helper()
+	kit, err := NewKit(r, p)
 	if err != nil {
 		w.T.Fatal(err)
 	}
-	return svc
+	return kit
+}
+
+// NewKit builds a Kit from r over the principals p.
+func NewKit(r Rules, p authkit.Principals) (*Kit, error) {
+	return newKit(r, p, true)
+}
+
+// BuildNoFactors builds a Kit from r over the world's principals with no secondfactor module attached.
+func (w *World) BuildNoFactors(r Rules) *Kit {
+	w.T.Helper()
+	kit, err := newKit(r, w.P, false)
+	if err != nil {
+		w.T.Fatal(err)
+	}
+	return kit
+}
+
+func newKit(r Rules, p authkit.Principals, factors bool) (*Kit, error) {
+	svc, err := authkit.New(r.Config, p)
+	if err != nil {
+		return nil, err
+	}
+	pw, err := password.New(svc, r.Password)
+	if err != nil {
+		return nil, err
+	}
+	pk, err := passkey.New(svc, r.Passkeys)
+	if err != nil {
+		return nil, err
+	}
+	kit := &Kit{Service: svc, Password: pw, Passkeys: pk}
+	if factors {
+		if kit.Factors, err = secondfactor.New(svc, r.Factors); err != nil {
+			return nil, err
+		}
+	}
+	return kit, nil
 }
 
 // User creates a principal with the login and, when pw is not empty, a
@@ -82,7 +150,7 @@ func (w *World) User(login, pw string) uuid.UUID {
 	w.T.Helper()
 	id := w.D.NewPrincipal(w.T, login)
 	if pw != "" {
-		hash, err := password.Encode(w.Cfg.Hashing, crand.Reader, pw)
+		hash, err := password.Encode(w.Cfg.Password.Hashing, crand.Reader, pw)
 		if err != nil {
 			w.T.Fatal(err)
 		}
@@ -126,7 +194,7 @@ func (w *World) InConn(conn *sql.Conn, fn func(q db.Querier) (authkit.Result, er
 func (w *World) Login(aud authkit.Audience, login, pw string) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.Login(w.Ctx, q, aud, login, pw, authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"})
+		return w.Svc.Password.Login(w.Ctx, q, aud, login, pw, authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"})
 	})
 }
 
@@ -153,6 +221,9 @@ func (w *World) Claims(res authkit.Result) *authkit.Claims {
 // Pinned returns a connection pinned to id's scope and the staff audience.
 func (w *World) Pinned(id uuid.UUID) *sql.Conn { return w.D.Pinned(w.T, id, w.P.Scope, "staff") }
 
+// Q qualifies authkit's table names in q with the world's schema, for a test that calls an internal package directly.
+func (w *World) Q(q db.Querier) db.Querier { return nsql.NewNames(w.Cfg.Config.Schema).Q(q) }
+
 // Count runs a query that returns one integer and returns it.
 func (w *World) Count(query string, args ...any) int {
 	w.T.Helper()
@@ -176,7 +247,7 @@ func (w *World) StoredHash(id uuid.UUID) string {
 // Results lists the result of each auth event of id, oldest first.
 func (w *World) Results(id uuid.UUID) []string {
 	w.T.Helper()
-	rows, err := w.D.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 ORDER BY at, result`, id)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT result FROM auth_events WHERE principal_id = $1 ORDER BY at, result`), id)
 	if err != nil {
 		w.T.Fatal(err)
 	}

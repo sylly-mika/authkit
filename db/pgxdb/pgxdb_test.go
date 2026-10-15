@@ -114,7 +114,7 @@ func TestTheServiceRunsOverPgx(t *testing.T) {
 	cheap := password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen: 32}
 	d.Exec(t, `CREATE TABLE event_mirror (id uuid PRIMARY KEY, result text NOT NULL)`)
 	d.Exec(t, `GRANT SELECT, INSERT ON event_mirror TO authkit_app`)
-	svc, err := authkit.New(authkit.Config{Transport: authkit.TransportSession, Hashing: cheap, Clock: clock, Rand: authkittest.Rand(11),
+	svc, err := authkit.New(authkit.Config{Transport: authkit.TransportSession, Clock: clock, Rand: authkittest.Rand(11),
 		OnEvent: func(ctx context.Context, q db.Querier, e authkit.Event) error {
 			tx, ok := pgxdb.Unwrap(q)
 			if !ok {
@@ -123,6 +123,10 @@ func TestTheServiceRunsOverPgx(t *testing.T) {
 			_, err := tx.Exec(ctx, `INSERT INTO event_mirror (id, result) VALUES ($1, $2)`, e.ID, e.Result)
 			return err
 		}}, authkittest.NewPrincipals())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw, err := password.New(svc, password.Config{Hashing: cheap})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,12 +139,12 @@ func TestTheServiceRunsOverPgx(t *testing.T) {
 	meta := authkit.Meta{IP: "192.0.2.8", UserAgent: "authkit-test"}
 
 	if res := inTx(t, p, func(q db.Querier) (authkit.Result, error) {
-		return svc.Login(ctx, q, "staff", "ada@example.invalid", "a wrong password", meta)
+		return pw.Login(ctx, q, "staff", "ada@example.invalid", "a wrong password", meta)
 	}); !errors.Is(res.Refusal, authkit.ErrInvalidCredentials) {
 		t.Fatalf("a wrong password over pgx = %v", res.Refusal)
 	}
 	signed := inTx(t, p, func(q db.Querier) (authkit.Result, error) {
-		return svc.Login(ctx, q, "staff", "ada@example.invalid", "the old password", meta)
+		return pw.Login(ctx, q, "staff", "ada@example.invalid", "the old password", meta)
 	})
 	if signed.Refusal != nil || signed.SessionToken == "" {
 		t.Fatalf("Login over pgx = %+v", signed)
@@ -153,7 +157,7 @@ func TestTheServiceRunsOverPgx(t *testing.T) {
 		t.Fatalf("AuthenticateSession over pgx = %+v; want admitted and rotated", rotated)
 	}
 	reset := inTx(t, p, func(q db.Querier) (authkit.Result, error) {
-		return svc.RequestReset(ctx, q, "staff", "ada@example.invalid")
+		return pw.RequestReset(ctx, q, "staff", "ada@example.invalid")
 	})
 	var raw string
 	inTx(t, p, func(q db.Querier) (authkit.Result, error) {
@@ -162,7 +166,7 @@ func TestTheServiceRunsOverPgx(t *testing.T) {
 		return authkit.Result{}, err
 	})
 	fresh := inTx(t, p, func(q db.Querier) (authkit.Result, error) {
-		return svc.CompleteReset(ctx, q, "staff", raw, "the new password", meta)
+		return pw.CompleteReset(ctx, q, "staff", raw, "the new password", meta)
 	})
 	if fresh.Refusal != nil || fresh.SessionToken == "" {
 		t.Fatalf("CompleteReset over pgx = %+v", fresh)
@@ -174,7 +178,7 @@ func TestTheServiceRunsOverPgx(t *testing.T) {
 	inTx(t, p, func(q db.Querier) (authkit.Result, error) {
 		return svc.RevokeAllSessions(ctx, q, id, authkit.ReasonAdmin, meta)
 	})
-	if has, err := svc.HasCredential(ctx, pgxdb.Pool(p), id); err != nil || !has {
+	if has, err := pw.HasCredential(ctx, pgxdb.Pool(p), id); err != nil || !has {
 		t.Fatalf("HasCredential over the pool = %v, %v", has, err)
 	}
 	events, total, err := svc.ListEvents(ctx, pgxdb.Pool(p), id, []string{authkit.ResultBadPassword}, 10, 0)

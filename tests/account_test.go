@@ -77,24 +77,24 @@ func TestAccountMethodsCleanMeta(t *testing.T) {
 		t.Fatalf("RevokeSession with a NUL in its metadata = %v", res.Refusal)
 	}
 	if res := w.InConn(conn, func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ChangePassword(w.Ctx, q, c, "the old password", "the new password", dirty)
+		return w.Svc.Password.ChangePassword(w.Ctx, q, c, "the old password", "the new password", dirty)
 	}); res.Refusal != nil {
 		t.Fatalf("ChangePassword with a NUL in its metadata = %v", res.Refusal)
 	}
 	raw := w.mintLink(*w.requestReset("ada@example.invalid").TokenID)
 	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.CompleteReset(w.Ctx, q, "staff", raw, "the reset password", dirty)
+		return w.Svc.Password.CompleteReset(w.Ctx, q, "staff", raw, "the reset password", dirty)
 	}); res.Refusal != nil {
 		t.Fatalf("CompleteReset with a NUL in its metadata = %v", res.Refusal)
 	}
 	p := authkit.Principal{ID: invited, Login: "invited@example.invalid"}
 	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.SetPassword(w.Ctx, q, p, "staff", "a first password", dirty)
+		return w.Svc.Password.SetPassword(w.Ctx, q, p, "staff", "a first password", dirty)
 	}); res.Refusal != nil {
 		t.Fatalf("SetPassword with a NUL in its metadata = %v", res.Refusal)
 	}
 	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.VerifyPassword(w.Ctx, q, p, "staff", "a wrong password", dirty)
+		return w.Svc.Password.VerifyPassword(w.Ctx, q, p, "staff", "a wrong password", dirty)
 	}); !errors.Is(res.Refusal, authkit.ErrInvalidCredentials) {
 		t.Fatalf("VerifyPassword with a NUL in its metadata = %v, want ErrInvalidCredentials", res.Refusal)
 	}
@@ -159,11 +159,11 @@ func TestPruneDeletesOnlyWhatIsPastRetention(t *testing.T) {
 
 func TestCheckSchema(t *testing.T) {
 	w := newWorld(t)
-	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); err != nil {
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); err != nil {
 		t.Fatalf("a current schema = %v", err)
 	}
 	w.D.Exec(t, `UPDATE auth_schema SET version = 0`)
-	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
 		t.Fatalf("an older schema = %v, want ErrSchemaBehind", err)
 	}
 }
@@ -224,7 +224,7 @@ func TestAccountMethodsReachOnlyTheirPrincipal(t *testing.T) {
 	}
 
 	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ChangePassword(w.Ctx, q, c, "the old password", "the new password", authkit.Meta{})
+		return w.Svc.Password.ChangePassword(w.Ctx, q, c, "the old password", "the new password", authkit.Meta{})
 	}); res.Refusal != nil || !bobOpen() {
 		t.Fatalf("ada's change = %v; bob's session open: %v", res.Refusal, bobOpen())
 	}
@@ -273,7 +273,7 @@ func TestPruneKeepsEachTableUntilItsRetentionPasses(t *testing.T) {
 func TestCheckSchemaAcceptsANewerSchemaAndRefusesAMissingOne(t *testing.T) {
 	w := newWorld(t)
 	check := func() error {
-		return w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) })
+		return w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) })
 	}
 	w.D.Exec(t, `UPDATE auth_schema SET version = $1`, migrations.Version+1)
 	if err := check(); err != nil {

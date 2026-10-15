@@ -18,14 +18,15 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
 	"github.com/sylly-mika/authkit/internal/kittest"
+	"github.com/sylly-mika/authkit/passkey"
 )
 
 var regOrigins = map[authkit.Audience][]string{"staff": {kittest.StaffOrigin}, "client": {kittest.ClientOrigin}}
 
 func regWorld(t *testing.T, origins map[authkit.Audience][]string) *world {
-	return newWorld(t, func(c *authkit.Config) {
-		c.Passkeys = authkit.PasskeyRules{RPID: "localhost", Origins: origins, CeremonyTTL: 2 * time.Minute, Reauth: 5 * time.Minute, Max: 10}
-		c.RevokeOnPasswordChange = authkit.RevokeOthers
+	return newWorld(t, func(c *kittest.Rules) {
+		c.Passkeys = passkey.Rules{RPID: "localhost", Origins: origins, CeremonyTTL: 2 * time.Minute, Reauth: 5 * time.Minute, Max: 10}
+		c.Password.RevokeOnPasswordChange = authkit.RevokeOthers
 	})
 }
 
@@ -38,14 +39,14 @@ func regUser(w *world, login string) (uuid.UUID, authkit.Result) {
 func regBegin(w *world, c *authkit.Claims) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginPasskeyRegistration(w.Ctx, q, c, authkit.Meta{IP: "203.0.113.7", UserAgent: "UA-1"})
+		return w.Svc.Passkeys.BeginPasskeyRegistration(w.Ctx, q, c, authkit.Meta{IP: "203.0.113.7", UserAgent: "UA-1"})
 	})
 }
 
 func regFinish(w *world, c *authkit.Claims, id string, resp []byte, label string) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.FinishPasskeyRegistration(w.Ctx, q, c, id, resp, label, authkit.Meta{IP: "203.0.113.7", UserAgent: "UA-1"})
+		return w.Svc.Passkeys.FinishPasskeyRegistration(w.Ctx, q, c, id, resp, label, authkit.Meta{IP: "203.0.113.7", UserAgent: "UA-1"})
 	})
 }
 
@@ -333,8 +334,8 @@ func TestPasskeyRegistrationNeedsPasskeysOn(t *testing.T) {
 	var begin, finish authkit.Result
 	var beginErr, finishErr error
 	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-		begin, beginErr = w.Svc.BeginPasskeyRegistration(w.Ctx, q, c, authkit.Meta{})
-		finish, finishErr = w.Svc.FinishPasskeyRegistration(w.Ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
+		begin, beginErr = w.Svc.Passkeys.BeginPasskeyRegistration(w.Ctx, q, c, authkit.Meta{})
+		finish, finishErr = w.Svc.Passkeys.FinishPasskeyRegistration(w.Ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -514,7 +515,7 @@ func TestChangingThePasswordRestartsTheReauthWindow(t *testing.T) {
 	c := w.Claims(res)
 	w.Clock.Advance(6 * time.Minute)
 	changed := w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.ChangePassword(w.Ctx, q, c, "the right password", "another password", authkit.Meta{})
+		return w.Svc.Password.ChangePassword(w.Ctx, q, c, "the right password", "another password", authkit.Meta{})
 	})
 	if changed.Refusal != nil || changed.Session == nil || changed.Session.ID != c.SessionID {
 		t.Fatalf("change password: refusal %v, the session was kept %v", changed.Refusal, changed.Session != nil && changed.Session.ID == c.SessionID)
@@ -605,7 +606,7 @@ func TestTwoFinishesCannotPassTheCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	held, err := w.Svc.FinishPasskeyRegistration(w.Ctx, sqldb.Tx(holder), c1, b1.Ceremony.ID, r1, "Laptop", authkit.Meta{})
+	held, err := w.Svc.Passkeys.FinishPasskeyRegistration(w.Ctx, sqldb.Tx(holder), c1, b1.Ceremony.ID, r1, "Laptop", authkit.Meta{})
 	if err != nil || held.Refusal != nil || held.Passkey == nil {
 		t.Fatalf("first finish: error %v, refusal %v, passkey given %v", err, held.Refusal, held.Passkey != nil)
 	}
@@ -616,7 +617,7 @@ func TestTwoFinishesCannotPassTheCap(t *testing.T) {
 	go func() {
 		defer close(done)
 		gotErr = w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-			r, err := w.Svc.FinishPasskeyRegistration(w.Ctx, q, c2, b2.Ceremony.ID, r2, "Laptop", authkit.Meta{})
+			r, err := w.Svc.Passkeys.FinishPasskeyRegistration(w.Ctx, q, c2, b2.Ceremony.ID, r2, "Laptop", authkit.Meta{})
 			got = r
 			return err
 		})
@@ -704,7 +705,7 @@ func TestAKnownCredentialIsRefusedOnAPinnedConnection(t *testing.T) {
 	w.D.Exec(t, `INSERT INTO auth_passkeys (id, principal_id, credential_id, label, data, created_at) VALUES ($1, $2, $3, 'seed', '{}', $4)`,
 		uuid.New(), bob, regRawID(t, resp), w.Clock.Now())
 	finish := w.InConn(w.Pinned(ada), func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.FinishPasskeyRegistration(w.Ctx, q, c, begin.Ceremony.ID, resp, "Laptop", authkit.Meta{})
+		return w.Svc.Passkeys.FinishPasskeyRegistration(w.Ctx, q, c, begin.Ceremony.ID, resp, "Laptop", authkit.Meta{})
 	})
 	regRefused(t, finish, authkit.ErrPasskeyExists)
 	if n := regPasskeys(w, ada); n != 0 {

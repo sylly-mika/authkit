@@ -6,15 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
-	"net/url"
-	"slices"
-	"strings"
 	"time"
 
-	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/password"
 )
 
 // Transport is how a Service's sessions travel. The zero value is Bearer.
@@ -59,46 +53,6 @@ type EventRules struct {
 	ChangeLogsReset bool
 }
 
-// PasskeyRules configure passkey sign-in. A zero RPID switches passkeys off.
-type PasskeyRules struct {
-	// RPID is the relying party's domain, such as "example.com": no scheme, port or path.
-	RPID string
-	// RPName is the name the browser shows. Zero is "authkit".
-	RPName string
-	// Origins lists, per audience, the pages allowed to run a ceremony, as scheme://host[:port].
-	Origins map[Audience][]string
-	// CeremonyTTL is how long a begun ceremony may be finished. Zero is 2 minutes.
-	CeremonyTTL time.Duration
-	// Reauth is how recent a sign-in must be to add or remove a passkey. Zero is 5 minutes.
-	Reauth time.Duration
-	// Max is the most passkeys one principal may hold. Zero is 10.
-	Max int
-}
-
-// SecondFactorRules configure two-factor sign-in. An empty Key switches second factors off.
-type SecondFactorRules struct {
-	// Key is 32 random bytes that seal authenticator secrets and key the code hashes. Empty is off.
-	Key []byte
-	// Issuer names the app in authenticator apps. Zero is "authkit".
-	Issuer string
-	// ChallengeTTL is how long a password sign-in's second step may be finished. Zero is 10 minutes.
-	ChallengeTTL time.Duration
-	// EmailCodeTTL is how long an emailed code is valid. Zero is 10 minutes.
-	EmailCodeTTL time.Duration
-	// SetupTTL is how long a begun authenticator setup may be confirmed. Zero is 15 minutes.
-	SetupTTL time.Duration
-	// ResendEvery is the least time between two emailed codes. Zero is 60 seconds.
-	ResendEvery time.Duration
-	// Reauth is how recent a sign-in must be to change sign-in methods. Zero is 5 minutes.
-	Reauth time.Duration
-	// MaxTries is how many wrong codes end a second step or an emailed code. Zero is 5.
-	MaxTries int
-	// MaxSends is how many times one emailed code may be sent. Zero is 5.
-	MaxSends int
-	// RecoveryCodes is how many recovery codes one set holds. Zero is 10.
-	RecoveryCodes int
-}
-
 // RevokeOnChange is which sessions ChangePassword revokes.
 type RevokeOnChange int
 
@@ -121,30 +75,19 @@ type Config struct {
 	// Deprecated: RefreshTTL is Session.IdleTTL's v0.1 name. When it is set it wins.
 	RefreshTTL    time.Duration
 	RefreshTTLFor map[Audience]time.Duration // a per-audience IdleTTL
-	ResetTTL      time.Duration
-	ResetFloor    time.Duration
-	Reset         ResetRules
-	Password      password.Policy
-	Hashing       password.Params
 	Throttle      Throttle
-	// RevokeOnPasswordChange: RevokeOthers (zero) or RevokeAll.
-	RevokeOnPasswordChange RevokeOnChange
-	Events                 EventRules
+	Events        EventRules
 	// EventRetention is how long Prune keeps auth_events rows. Zero is 90
 	// days; negative keeps them forever.
 	EventRetention time.Duration
 	// OnEvent runs straight after authkit records an event, on the same
 	// querier, so in the same transaction. Its error fails the method. Nil is none.
-	OnEvent         func(ctx context.Context, q db.Querier, e Event) error
-	HashConcurrency int
-	HashWait        time.Duration
-	ReuseGrace      time.Duration
-	Clock           Clock
-	Rand            io.Reader
-	// Passkeys configure passkey sign-in; the zero value leaves passkeys off.
-	Passkeys PasskeyRules
-	// SecondFactors configure two-factor sign-in; the zero value leaves it off.
-	SecondFactors SecondFactorRules
+	OnEvent    func(ctx context.Context, q db.Querier, e Event) error
+	ReuseGrace time.Duration
+	Clock      Clock
+	Rand       io.Reader
+	// Schema is the PostgreSQL schema that holds authkit's tables; "" uses the search path, as before.
+	Schema string
 }
 
 func withDefaults(c Config) Config {
@@ -160,50 +103,13 @@ func withDefaults(c Config) Config {
 	def(&c.Session.IdleTTL, 30*time.Minute)
 	def(&c.Session.AbsoluteTTL, 12*time.Hour)
 	def(&c.Session.RotateEvery, 15*time.Minute)
-	def(&c.ResetTTL, time.Hour)
-	def(&c.ResetFloor, 500*time.Millisecond)
 	def(&c.EventRetention, 90*24*time.Hour)
-	def(&c.HashWait, 2*time.Second)
 	def(&c.ReuseGrace, 30*time.Second)
-	if c.Passkeys.RPName == "" {
-		c.Passkeys.RPName = "authkit"
-	}
-	def(&c.Passkeys.CeremonyTTL, 2*time.Minute)
-	def(&c.Passkeys.Reauth, 5*time.Minute)
-	if c.Passkeys.Max == 0 {
-		c.Passkeys.Max = 10
-	}
-	if c.SecondFactors.Issuer == "" {
-		c.SecondFactors.Issuer = "authkit"
-	}
-	def(&c.SecondFactors.ChallengeTTL, 10*time.Minute)
-	def(&c.SecondFactors.EmailCodeTTL, 10*time.Minute)
-	def(&c.SecondFactors.SetupTTL, 15*time.Minute)
-	def(&c.SecondFactors.ResendEvery, time.Minute)
-	def(&c.SecondFactors.Reauth, 5*time.Minute)
-	if c.SecondFactors.MaxTries == 0 {
-		c.SecondFactors.MaxTries = 5
-	}
-	if c.SecondFactors.MaxSends == 0 {
-		c.SecondFactors.MaxSends = 5
-	}
-	if c.SecondFactors.RecoveryCodes == 0 {
-		c.SecondFactors.RecoveryCodes = 10
-	}
-	if c.Password == (password.Policy{}) {
-		c.Password = password.DefaultPolicy
-	}
-	if c.Hashing == (password.Params{}) {
-		c.Hashing = password.Default
-	}
 	if c.Throttle.Failures == 0 {
 		c.Throttle.Failures = 5
 	}
 	def(&c.Throttle.Window, 15*time.Minute)
 	def(&c.Throttle.Lockout, 15*time.Minute)
-	if c.HashConcurrency == 0 {
-		c.HashConcurrency = 4
-	}
 	if c.Clock == nil {
 		c.Clock = systemClock{}
 	}
@@ -229,119 +135,18 @@ func (c Config) check() error {
 	if t := c.Throttle; t.Failures < 1 || t.Window <= 0 || t.Lockout <= 0 {
 		return fmt.Errorf("authkit: Config.Throttle needs a positive limit, window and lockout: %+v", t)
 	}
-	if p := c.Password; p.MinRunes < 1 || p.MaxRunes < p.MinRunes {
-		return fmt.Errorf("authkit: Config.Password needs 1 <= MinRunes <= MaxRunes: %+v", p)
-	}
 	if c.RefreshTTL < 0 {
 		return fmt.Errorf("authkit: Config.RefreshTTL must be positive, not %v", c.RefreshTTL)
-	}
-	if c.RevokeOnPasswordChange != RevokeOthers && c.RevokeOnPasswordChange != RevokeAll {
-		return fmt.Errorf("authkit: Config.RevokeOnPasswordChange %d is neither RevokeOthers nor RevokeAll", c.RevokeOnPasswordChange)
 	}
 	for _, d := range []struct {
 		field string
 		v     time.Duration
-	}{{"Session.IdleTTL", c.Session.IdleTTL}, {"ResetTTL", c.ResetTTL}, {"ResetFloor", c.ResetFloor}, {"HashWait", c.HashWait}, {"ReuseGrace", c.ReuseGrace}} {
+	}{{"Session.IdleTTL", c.Session.IdleTTL}, {"ReuseGrace", c.ReuseGrace}} {
 		if d.v <= 0 {
 			return fmt.Errorf("authkit: Config.%s must be positive, not %v", d.field, d.v)
 		}
 	}
-	if err := c.Passkeys.check(); err != nil {
-		return err
-	}
-	if err := c.SecondFactors.check(); err != nil {
-		return err
-	}
 	return c.checkSessions()
-}
-
-func (r SecondFactorRules) check() error {
-	if len(r.Key) != 0 && len(r.Key) != 32 {
-		return fmt.Errorf("authkit: Config.SecondFactors.Key must be 32 bytes, not %d", len(r.Key))
-	}
-	// WHY: the otpauth label is Issuer:account; a colon in the issuer splits it wrongly in authenticator apps.
-	if strings.Contains(r.Issuer, ":") {
-		return fmt.Errorf("authkit: Config.SecondFactors.Issuer %q must not contain a colon", r.Issuer)
-	}
-	for _, d := range []struct {
-		field string
-		v     time.Duration
-	}{{"ChallengeTTL", r.ChallengeTTL}, {"EmailCodeTTL", r.EmailCodeTTL}, {"SetupTTL", r.SetupTTL}} {
-		if d.v <= 0 || d.v > time.Hour {
-			return fmt.Errorf("authkit: Config.SecondFactors.%s must be in (0, 1h], not %v", d.field, d.v)
-		}
-	}
-	for _, d := range []struct {
-		field string
-		v     time.Duration
-	}{{"ResendEvery", r.ResendEvery}, {"Reauth", r.Reauth}} {
-		if d.v <= 0 || d.v > 10*time.Minute {
-			return fmt.Errorf("authkit: Config.SecondFactors.%s must be in (0, 10m], not %v", d.field, d.v)
-		}
-	}
-	if r.MaxTries < 1 || r.MaxTries > 10 {
-		return fmt.Errorf("authkit: Config.SecondFactors.MaxTries must be in [1, 10], not %d", r.MaxTries)
-	}
-	if r.MaxSends < 1 || r.MaxSends > 20 {
-		return fmt.Errorf("authkit: Config.SecondFactors.MaxSends must be in [1, 20], not %d", r.MaxSends)
-	}
-	if r.RecoveryCodes < 8 || r.RecoveryCodes > 16 {
-		return fmt.Errorf("authkit: Config.SecondFactors.RecoveryCodes must be in [8, 16], not %d", r.RecoveryCodes)
-	}
-	return nil
-}
-
-func (p PasskeyRules) check() error {
-	if p.RPID == "" {
-		if len(p.Origins) > 0 {
-			return errors.New("authkit: Config.Passkeys.Origins needs Config.Passkeys.RPID")
-		}
-		return nil
-	}
-	if err := protocol.ValidateRPID(p.RPID); err != nil {
-		return fmt.Errorf("authkit: Config.Passkeys.RPID %q is not a domain: %v", p.RPID, err)
-	}
-	if p.RPID != strings.ToLower(p.RPID) {
-		return fmt.Errorf("authkit: Config.Passkeys.RPID %q must be lower case", p.RPID)
-	}
-	if len(p.Origins) == 0 {
-		return errors.New("authkit: Config.Passkeys.Origins is empty")
-	}
-	seen := map[string]Audience{}
-	for _, aud := range slices.Sorted(maps.Keys(p.Origins)) {
-		if len(p.Origins[aud]) == 0 {
-			return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] is empty", aud)
-		}
-		for _, o := range p.Origins[aud] {
-			u, err := url.Parse(o)
-			if err != nil || u.Host == "" || o != u.Scheme+"://"+u.Host {
-				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q is not an origin (scheme://host[:port])", aud, o)
-			}
-			if u.Scheme != "https" && !(u.Scheme == "http" && p.RPID == "localhost") {
-				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q must use https", aud, o)
-			}
-			if host := u.Hostname(); host != p.RPID && !strings.HasSuffix(host, "."+p.RPID) {
-				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q is outside RPID %q", aud, o, p.RPID)
-			}
-			// WHY: a surface must not accept the other surface's page.
-			if prev, ok := seen[o]; ok && prev != aud {
-				return fmt.Errorf("authkit: Config.Passkeys.Origins %q is listed for both %q and %q", o, prev, aud)
-			}
-			seen[o] = aud
-		}
-	}
-	for _, d := range []struct {
-		field string
-		v     time.Duration
-	}{{"CeremonyTTL", p.CeremonyTTL}, {"Reauth", p.Reauth}} {
-		if d.v <= 0 || d.v > 10*time.Minute {
-			return fmt.Errorf("authkit: Config.Passkeys.%s must be in (0, 10m], not %v", d.field, d.v)
-		}
-	}
-	if p.Max < 1 || p.Max > 100 {
-		return fmt.Errorf("authkit: Config.Passkeys.Max must be in [1, 100], not %d", p.Max)
-	}
-	return nil
 }
 
 func (c Config) checkSessions() error {

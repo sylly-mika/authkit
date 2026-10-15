@@ -35,5 +35,9 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race -count=1 ./...
+      - name: Tests with the tables in schema kit_ns
+        run: go test -race -count=1 ./...
+        env:
+          AUTHKIT_TEST_SCHEMA: kit_ns
       - run: go test ./transport/bearer -run='^$' -fuzz='^FuzzParse$' -fuzztime=20s
       - run: go test ./transport/bearer -run='^$' -fuzz='^FuzzFromHeader$' -fuzztime=20s

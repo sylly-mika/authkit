@@ -3,30 +3,31 @@ package authkit
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/internal/token"
-	"github.com/sylly-mika/authkit/throttle"
 )
 
 // VerifySecondStep completes a sign-in that returned Result.SecondStep, with an authenticator code, an emailed code or a recovery code. A wrong code counts on the challenge and on the login's throttle; the refusal's writes must be committed.
 func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audience, token string, method FactorKind, code string, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}
-	if len(s.cfg.SecondFactors.Key) == 0 {
+	if s.verifier == nil {
 		return Result{Refusal: ErrSecondFactorsOff}, nil
 	}
 	m = m.clean()
 	now := s.now()
-	ch, ok, err := factor.LockChallenge(ctx, q, token, string(aud), now, s.cfg.SecondFactors.MaxTries)
+	_, maxTries := s.verifier.ChallengeRules()
+	ch, ok, err := factor.LockChallenge(ctx, q, token, string(aud), now, maxTries)
 	if err != nil {
 		return Result{}, err
 	}
@@ -53,9 +54,9 @@ func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audien
 		return Result{Refusal: ErrLocked{RetryAfter: until.Sub(now)}}, nil
 	}
 	if method != FactorTOTP && method != FactorEmail && method != FactorRecovery {
-		return s.failSecondStep(ctx, q, ch, aud, now, ev)
+		return s.failSecondStep(ctx, q, ch, aud, now, ev, maxTries)
 	}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: method})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: method, Source: SourceSecondStep})
 	if err != nil {
 		return Result{}, err
 	}
@@ -66,12 +67,12 @@ func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audien
 		}
 		return Result{Refusal: refusal.Err}, nil
 	}
-	ok, err = s.checkFactor(ctx, q, p.ID, method, code, now)
+	ok, err = s.verifier.Verify(ctx, q, p.ID, method, code)
 	if err != nil {
 		return Result{}, err
 	}
 	if !ok {
-		return s.failSecondStep(ctx, q, ch, aud, now, ev)
+		return s.failSecondStep(ctx, q, ch, aud, now, ev, maxTries)
 	}
 	if err := factor.SpendChallenge(ctx, q, ch.ID, now); err != nil {
 		return Result{}, err
@@ -84,7 +85,7 @@ func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audien
 		return Result{}, err
 	}
 	if method == FactorRecovery {
-		left, err := factor.RecoveryCodesLeft(ctx, q, p.ID)
+		left, err := s.verifier.RecoveryCodesLeft(ctx, q, p.ID)
 		if err != nil {
 			return Result{}, err
 		}
@@ -93,7 +94,7 @@ func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audien
 	return res, nil
 }
 
-func (s *Service) failSecondStep(ctx context.Context, q db.Querier, ch factor.Challenge, aud Audience, now time.Time, ev events.Event) (Result, error) {
+func (s *Service) failSecondStep(ctx context.Context, q db.Querier, ch factor.Challenge, aud Audience, now time.Time, ev events.Event, maxTries int) (Result, error) {
 	if err := factor.FailChallenge(ctx, q, ch.ID); err != nil {
 		return Result{}, err
 	}
@@ -104,17 +105,13 @@ func (s *Service) failSecondStep(ctx context.Context, q db.Querier, ch factor.Ch
 	if err := s.record(ctx, q, now, SourceSecondStep, ev); err != nil {
 		return Result{}, err
 	}
-	if ch.Tries+1 >= s.cfg.SecondFactors.MaxTries {
+	if ch.Tries+1 >= maxTries {
 		return Result{Refusal: ErrChallengeEnded}, nil
 	}
 	return Result{Refusal: ErrBadCode}, nil
 }
 
-func (s *Service) secondFactorMethods(ctx context.Context, q db.Querier, id uuid.UUID) ([]FactorKind, error) {
-	kinds, err := factor.ConfirmedKinds(ctx, q, id)
-	if err != nil {
-		return nil, err
-	}
+func (s *Service) secondFactorMethods(ctx context.Context, q db.Querier, id uuid.UUID, kinds []string) ([]FactorKind, error) {
 	held := make(map[string]bool, len(kinds))
 	for _, k := range kinds {
 		held[k] = true
@@ -127,7 +124,7 @@ func (s *Service) secondFactorMethods(ctx context.Context, q db.Querier, id uuid
 		methods = append(methods, FactorEmail)
 	}
 	if len(kinds) > 0 {
-		left, err := factor.RecoveryCodesLeft(ctx, q, id)
+		left, err := s.verifier.RecoveryCodesLeft(ctx, q, id)
 		if err != nil {
 			return nil, err
 		}
@@ -139,7 +136,8 @@ func (s *Service) secondFactorMethods(ctx context.Context, q db.Querier, id uuid
 }
 
 func (s *Service) issueSecondStep(ctx context.Context, q db.Querier, source string, p Principal, aud Audience, origin, throttleKey string, methods []FactorKind, scope *uuid.UUID, m Meta, now time.Time) (Result, error) {
-	raw, exp, err := factor.CreateChallenge(ctx, q, s.cfg.Rand, p.ID, string(aud), origin, throttleKey, now, s.cfg.SecondFactors.ChallengeTTL)
+	ttl, _ := s.verifier.ChallengeRules()
+	raw, exp, err := factor.CreateChallenge(ctx, q, s.cfg.Rand, p.ID, string(aud), origin, throttleKey, now, ttl)
 	if err != nil {
 		return Result{}, err
 	}
@@ -152,19 +150,21 @@ func (s *Service) issueSecondStep(ctx context.Context, q db.Querier, source stri
 
 // SendSecondStepEmail issues an emailed sign-in code for a live second-step challenge. The code is minted later by MintEmailCode and never returned here. Needs a transaction.
 func (s *Service) SendSecondStepEmail(ctx context.Context, q db.Querier, aud Audience, raw string, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}
-	if len(s.cfg.SecondFactors.Key) == 0 {
+	if s.verifier == nil {
 		return Result{Refusal: ErrSecondFactorsOff}, nil
 	}
 	m = m.clean()
 	now := s.now()
+	_, maxTries := s.verifier.ChallengeRules()
 	var principalID uuid.UUID
 	var throttleKey string
 	err := q.QueryRow(ctx, `SELECT principal_id, throttle_key FROM auth_second_step_challenges
 		WHERE challenge_hash = $1 AND audience = $2 AND used_at IS NULL AND expires_at > $3 AND tries < $4`,
-		token.Hash(raw), string(aud), now, s.cfg.SecondFactors.MaxTries).Scan(&principalID, &throttleKey)
+		token.Hash(raw), string(aud), now, maxTries).Scan(&principalID, &throttleKey)
 	if errors.Is(err, db.ErrNoRows) {
 		return Result{Refusal: ErrChallengeEnded}, nil
 	}
@@ -185,7 +185,7 @@ func (s *Service) SendSecondStepEmail(ctx context.Context, q db.Querier, aud Aud
 	if !slices.Contains(confirmed, string(FactorEmail)) {
 		return Result{Refusal: ErrFactorNotFound}, nil
 	}
-	id, exp, retryAfter, err := factor.RequestEmailCode(ctx, q, s.cfg.Rand, principalID, factor.PurposeSignIn, now, s.emailRules())
+	req, retryAfter, err := s.verifier.SendCode(ctx, q, principalID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -196,50 +196,5 @@ func (s *Service) SendSecondStepEmail(ctx context.Context, q db.Querier, aud Aud
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Principal: p, EmailCode: &EmailCodeRequest{ID: id, ExpiresAt: exp}}, nil
-}
-
-func (s *Service) checkEmailStep(ctx context.Context, q db.Querier, principalID uuid.UUID, code string, now time.Time) (bool, error) {
-	keys := factor.DeriveKeys(s.cfg.SecondFactors.Key)
-	confirmed, err := factor.ConfirmedKinds(ctx, q, principalID)
-	if err != nil {
-		return false, err
-	}
-	if !slices.Contains(confirmed, string(FactorEmail)) {
-		return false, nil
-	}
-	c, err := factor.CheckEmailCode(ctx, q, keys.EmailKey, principalID, factor.PurposeSignIn, code, now, s.cfg.SecondFactors.MaxTries)
-	if err != nil {
-		return false, err
-	}
-	return c == factor.CodeOK, nil
-}
-
-func (s *Service) checkFactor(ctx context.Context, q db.Querier, id uuid.UUID, method FactorKind, code string, now time.Time) (bool, error) {
-	keys := factor.DeriveKeys(s.cfg.SecondFactors.Key)
-	switch method {
-	case FactorTOTP:
-		f, found, err := factor.Load(ctx, q, id, string(FactorTOTP))
-		if err != nil {
-			return false, err
-		}
-		if !found || f.ConfirmedAt == nil {
-			return false, nil
-		}
-		secret, err := keys.Open(f.Secret, id)
-		if err != nil {
-			return false, fmt.Errorf("authkit: open the authenticator secret: %w", err)
-		}
-		step, ok := factor.VerifyTOTP(secret, code, now, f.LastStep)
-		if !ok {
-			return false, nil
-		}
-		return factor.AcceptStep(ctx, q, id, step)
-	case FactorEmail:
-		return s.checkEmailStep(ctx, q, id, code, now)
-	case FactorRecovery:
-		hash := factor.HashCode(keys.RecoveryKey, id, "recovery", factor.NormalizeCode(code))
-		return factor.SpendRecoveryCode(ctx, q, id, hash, now)
-	}
-	return false, nil
+	return Result{Principal: p, EmailCode: &req}, nil
 }

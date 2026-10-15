@@ -19,7 +19,7 @@ type Sessions interface {
 	AuthenticateSession(ctx context.Context, q db.Querier, aud authkit.Audience, raw string, m authkit.Meta) (authkit.Result, error)
 }
 
-// HashSlots is what HashSlot needs; *authkit.Service implements it.
+// HashSlots is what HashSlot needs; *password.Module implements it.
 type HashSlots interface {
 	AcquireHashSlot(ctx context.Context) (context.Context, func(), authkit.Result, error)
 }
@@ -93,9 +93,9 @@ func RequireOrigin(allow []string) echo.MiddlewareFunc {
 	}
 }
 
-// HashSlot holds one hash slot for the rest of the request, taken before the
-// app's transaction middleware: authkit.ErrBusy (render 503) when the ceiling
-// stays full.
+// HashSlot holds one hash slot of s (the app's *password.Module) for the rest
+// of the request, taken before the app's transaction middleware:
+// authkit.ErrBusy (render 503) when the ceiling stays full.
 func HashSlot(s HashSlots) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {

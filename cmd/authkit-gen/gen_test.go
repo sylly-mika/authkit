@@ -279,3 +279,213 @@ func TestAnUnknownFormatIsRefused(t *testing.T) {
 		t.Fatalf("the refusal wrote the lock (%v)", err)
 	}
 }
+
+const customerSchema = "customer_auth"
+
+func dirCount(t *testing.T, dir string) int {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(entries)
+}
+
+func TestRunWithASchemaNamesTheFilesAfterIt(t *testing.T) {
+	dir, lock := appDir(t, "000001_init.up.sql")
+	written, err := run(options{principals: "users", out: dir, lock: lock, schema: customerSchema, version: "v0.1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"000002_authkit_customer_auth_core.up.sql", "000002_authkit_customer_auth_core.down.sql",
+		"000003_authkit_customer_auth_absolute_expiry.up.sql", "000003_authkit_customer_auth_absolute_expiry.down.sql",
+		"000004_authkit_customer_auth_passkeys.up.sql", "000004_authkit_customer_auth_passkeys.down.sql",
+		"000005_authkit_customer_auth_second_factors.up.sql", "000005_authkit_customer_auth_second_factors.down.sql",
+	}
+	if !slices.Equal(names(written), want) {
+		t.Fatalf("wrote %v, want %v", names(written), want)
+	}
+	var l lockFile
+	b, _ := os.ReadFile(lock)
+	if err := json.Unmarshal(b, &l); err != nil || l.Schema != customerSchema || len(l.Migrations) == 0 || l.Migrations[0].File != "000002_authkit_customer_auth_core" {
+		t.Fatalf("lock = %+v (%v)", l, err)
+	}
+}
+
+func TestRunWithASchemaCreatesItFirst(t *testing.T) {
+	dir, lock := appDir(t, "000001_init.up.sql")
+	written, err := run(options{principals: "users", out: dir, lock: lock, schema: customerSchema, version: "v0.1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := migrations.All()
+	rendered, err := migrations.RenderIn(all[0].Up, "users", customerSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, _ := os.ReadFile(written[0])
+	if want := header("v0.1.0", all[0]) + "CREATE SCHEMA IF NOT EXISTS customer_auth;\n" + rendered; string(up) != want {
+		t.Fatalf("first file = %s, want %s", up, want)
+	}
+	creates := 0
+	for _, p := range written {
+		b, _ := os.ReadFile(p)
+		if strings.Contains(string(b), "CREATE SCHEMA") {
+			creates++
+		}
+		if strings.Contains(string(b), "DROP SCHEMA") {
+			t.Errorf("%s drops the schema", filepath.Base(p))
+		}
+	}
+	if creates != 1 {
+		t.Errorf("%d files create the schema, want 1", creates)
+	}
+	down, _ := os.ReadFile(written[1])
+	if !strings.Contains(string(down), "DROP TABLE customer_auth.auth_schema;") {
+		t.Errorf("0001 down = %s, want it to drop customer_auth.auth_schema", down)
+	}
+
+	gdir, glock := appDir(t)
+	gw, err := run(options{principals: "users", out: gdir, lock: glock, format: "goose", schema: customerSchema, version: "v0.1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gw) == 0 || filepath.Base(gw[0]) != "00001_authkit_customer_auth_core.sql" {
+		t.Fatalf("goose wrote %v, want 00001_authkit_customer_auth_core.sql first", names(gw))
+	}
+	gb, _ := os.ReadFile(gw[0])
+	if body := strings.TrimPrefix(string(gb), header("v0.1.0", all[0])); !strings.HasPrefix(body, "-- +goose Up\nCREATE SCHEMA IF NOT EXISTS customer_auth;\n") {
+		t.Fatalf("goose body starts %.80q", body)
+	}
+}
+
+func TestRunWithoutASchemaKeepsTheV042Output(t *testing.T) {
+	dir, lock := appDir(t, "000003_x.up.sql")
+	written, err := run(options{principals: "users", out: dir, lock: lock, version: "v0.1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := migrations.All()
+	if len(written) != 2*len(all) {
+		t.Fatalf("wrote %d files, want %d", len(written), 2*len(all))
+	}
+	for i, m := range all {
+		for j, sql := range []string{m.Up, m.Down} {
+			body, err := migrations.Render(sql, "users")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, _ := os.ReadFile(written[2*i+j])
+			if want := header("v0.1.0", m) + body; string(got) != want {
+				t.Errorf("%s = %q, want the v0.4.2 bytes", filepath.Base(written[2*i+j]), got)
+			}
+		}
+	}
+	for _, p := range written {
+		if b, _ := os.ReadFile(p); strings.Contains(string(b), "CREATE SCHEMA") {
+			t.Errorf("%s creates a schema without -schema", filepath.Base(p))
+		}
+	}
+	if lb, _ := os.ReadFile(lock); !strings.Contains(string(lb), `"schema": ""`) {
+		t.Errorf("lock = %s, want \"schema\": \"\"", lb)
+	}
+}
+
+func TestTheLockKeepsOneSchema(t *testing.T) {
+	dir, lock := appDir(t)
+	if _, err := run(options{principals: "users", out: dir, lock: lock, schema: customerSchema, version: "v0.1.0"}); err != nil {
+		t.Fatal(err)
+	}
+	if written, err := run(options{principals: "users", out: dir, lock: lock, schema: customerSchema, version: "v0.1.0"}); err != nil || len(written) != 0 {
+		t.Fatalf("rerun wrote %v (%v), want nothing", names(written), err)
+	}
+	before, _ := os.ReadFile(lock)
+	entries := dirCount(t, dir)
+	for _, schema := range []string{"", "other_auth"} {
+		written, err := run(options{principals: "users", out: dir, lock: lock, schema: schema, version: "v0.1.0"})
+		want := fmt.Sprintf("was generated for schema %q, not %q", customerSchema, schema)
+		if err == nil || !strings.Contains(err.Error(), want) || len(written) != 0 {
+			t.Errorf("run with schema %q wrote %v (%v), want %q", schema, names(written), err, want)
+		}
+		if after, _ := os.ReadFile(lock); string(after) != string(before) || dirCount(t, dir) != entries {
+			t.Errorf("run with schema %q changed the lock or the directory", schema)
+		}
+	}
+
+	legacyDir, legacyLock := appDir(t)
+	legacy := `{"library": "v0.4.2", "principals": "users", "format": "golang-migrate", "migrations": [{"id": 1, "name": "core", "file": "000004_authkit_core", "sha256": "x"}]}`
+	if err := os.WriteFile(legacyLock, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	written, err := run(options{principals: "users", out: legacyDir, lock: legacyLock, schema: customerSchema, version: "v0.1.0"})
+	if want := `was generated for schema "", not "customer_auth"`; err == nil || !strings.Contains(err.Error(), want) || len(written) != 0 {
+		t.Fatalf("a schema run over a lock without one wrote %v (%v), want %q", names(written), err, want)
+	}
+	if n := dirCount(t, legacyDir); n != 0 {
+		t.Errorf("the refused run left %d files", n)
+	}
+}
+
+func TestRunWithASchemaDefaultsTheLockName(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if _, err := run(options{principals: "users", out: t.TempDir(), schema: customerSchema, version: "v0.1.0"}); err != nil {
+		t.Fatal(err)
+	}
+	var l lockFile
+	b, err := os.ReadFile("authkit.customer_auth.lock")
+	if err != nil || json.Unmarshal(b, &l) != nil || l.Schema != customerSchema {
+		t.Fatalf("authkit.customer_auth.lock = %+v (%v)", l, err)
+	}
+	if _, err := os.Stat("authkit.lock"); !os.IsNotExist(err) {
+		t.Errorf("a schema run wrote authkit.lock (%v)", err)
+	}
+	if _, err := run(options{principals: "users", out: t.TempDir(), version: "v0.1.0"}); err != nil {
+		t.Fatal(err)
+	}
+	var plain lockFile
+	b, err = os.ReadFile("authkit.lock")
+	if err != nil || json.Unmarshal(b, &plain) != nil || plain.Schema != "" {
+		t.Fatalf("authkit.lock = %+v (%v), want no schema", plain, err)
+	}
+}
+
+func TestRunRefusesABadSchema(t *testing.T) {
+	for _, schema := range []string{"public", "Kit", "pg_x"} {
+		dir, lock := appDir(t)
+		written, err := run(options{principals: "users", out: dir, lock: lock, schema: schema, version: "v0.1.0"})
+		if err == nil || !strings.HasPrefix(err.Error(), "authkit-gen: -schema ") || len(written) != 0 {
+			t.Errorf("schema %q: wrote %v (%v), want a refusal naming -schema", schema, names(written), err)
+		}
+		if n := dirCount(t, dir); n != 0 {
+			t.Errorf("schema %q left %d files", schema, n)
+		}
+		if _, err := os.Stat(lock); !os.IsNotExist(err) {
+			t.Errorf("schema %q wrote the lock (%v)", schema, err)
+		}
+	}
+}
+
+func TestTwoInstallsShareOneDirectory(t *testing.T) {
+	dir, lockA := appDir(t, "000001_init.up.sql")
+	if _, err := run(options{principals: "users", out: dir, lock: lockA, version: "v0.1.0"}); err != nil {
+		t.Fatal(err)
+	}
+	lockB := filepath.Join(t.TempDir(), "authkit.customer_auth.lock")
+	written, err := run(options{principals: "users", out: dir, lock: lockB, schema: customerSchema, version: "v0.1.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"000006_authkit_customer_auth_core.up.sql", "000006_authkit_customer_auth_core.down.sql",
+		"000007_authkit_customer_auth_absolute_expiry.up.sql", "000007_authkit_customer_auth_absolute_expiry.down.sql",
+		"000008_authkit_customer_auth_passkeys.up.sql", "000008_authkit_customer_auth_passkeys.down.sql",
+		"000009_authkit_customer_auth_second_factors.up.sql", "000009_authkit_customer_auth_second_factors.down.sql",
+	}
+	if !slices.Equal(names(written), want) {
+		t.Fatalf("wrote %v, want %v", names(written), want)
+	}
+	if n := dirCount(t, dir); n != 17 {
+		t.Errorf("the directory holds %d files, want 17", n)
+	}
+}

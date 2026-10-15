@@ -17,7 +17,7 @@ func TestPruneDeletesCeremoniesAnHourPastExpiry(t *testing.T) {
 	rnd := authkittest.Rand(3)
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		for _, aud := range []string{"old", "spent-old", "edge", "live"} {
-			if _, _, err := ceremony.Create(w.Ctx, q, rnd, ceremony.KindLogin, aud, nil, nil, webauthn.SessionData{Challenge: "c"}, now, 2*time.Minute); err != nil {
+			if _, _, err := ceremony.Create(w.Ctx, w.Q(q), rnd, ceremony.KindLogin, aud, nil, nil, webauthn.SessionData{Challenge: "c"}, now, 2*time.Minute); err != nil {
 				return err
 			}
 		}

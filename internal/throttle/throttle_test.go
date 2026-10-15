@@ -10,7 +10,7 @@ import (
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
-	"github.com/sylly-mika/authkit/throttle"
+	"github.com/sylly-mika/authkit/internal/throttle"
 )
 
 func TestAFailureAfterTheWindowStartsOverAndPruneClears(t *testing.T) {

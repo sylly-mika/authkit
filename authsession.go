@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/token"
 	"github.com/sylly-mika/authkit/session"
 )
@@ -22,6 +22,7 @@ import (
 // it, for the caller to commit. The Result carries Principal (ID only),
 // Session and Admission.
 func (s *Service) AuthenticateSession(ctx context.Context, q db.Querier, aud Audience, raw string, m Meta) (Result, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Result{}, err
 	}
@@ -76,7 +77,7 @@ func (s *Service) admitSession(ctx context.Context, q db.Querier, sess Session, 
 		return Result{Refusal: ErrSessionEnded}, nil
 	}
 	p := Principal{ID: sess.PrincipalID}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: Audience(sess.Audience), ScopeID: sess.ScopeID, SecondFactor: FactorKind(sess.SecondFactor)})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: Audience(sess.Audience), ScopeID: sess.ScopeID, SecondFactor: FactorKind(sess.SecondFactor), Source: SourceAuthenticateSession})
 	if err != nil {
 		return Result{}, err
 	}

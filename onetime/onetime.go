@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/nsql"
 	"github.com/sylly-mika/authkit/internal/token"
 )
 
@@ -51,16 +52,28 @@ type Minted struct {
 
 // Store is the auth_tokens SQL; an app reaches it through Service.OneTime.
 type Store struct {
-	now  func() time.Time
-	rand io.Reader
+	now   func() time.Time
+	rand  io.Reader
+	names *nsql.Names
 }
 
 // New builds a Store on the given clock and random source.
 func New(now func() time.Time, rand io.Reader) *Store { return &Store{now: now, rand: rand} }
 
+// NewIn builds a Store whose statements name the tables in schema; "" is New.
+func NewIn(schema string, now func() time.Time, rand io.Reader) (*Store, error) {
+	if schema != "" {
+		if err := nsql.Check(schema); err != nil {
+			return nil, err
+		}
+	}
+	return &Store{now: now, rand: rand, names: nsql.NewNames(schema)}, nil
+}
+
 // Lock takes the transaction-scoped advisory lock Create takes, for a caller
 // that reads before it creates (RequestReset's cap).
 func (s *Store) Lock(ctx context.Context, q db.Querier, purpose string, owner uuid.UUID) error {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return err
 	}
@@ -73,6 +86,7 @@ func (s *Store) Lock(ctx context.Context, q db.Querier, purpose string, owner uu
 // Concurrent Creates for one owner and purpose queue on the advisory lock, so
 // both succeed. The caller enqueues its email in the same transaction.
 func (s *Store) Create(ctx context.Context, q db.Querier, purpose string, owner uuid.UUID, ttl time.Duration) (uuid.UUID, error) {
+	q = s.names.Q(q)
 	if err := s.Lock(ctx, q, purpose, owner); err != nil {
 		return uuid.Nil, err
 	}
@@ -95,6 +109,7 @@ func (s *Store) Create(ctx context.Context, q db.Querier, purpose string, owner 
 
 // CreatedSince counts the owner's rows of purpose created after since, live or not.
 func (s *Store) CreatedSince(ctx context.Context, q db.Querier, purpose string, owner uuid.UUID, since time.Time) (int, error) {
+	q = s.names.Q(q)
 	var n int
 	err := q.QueryRow(ctx, `SELECT count(*) FROM auth_tokens WHERE purpose = $1 AND owner_id = $2 AND created_at > $3`,
 		purpose, owner, since).Scan(&n)
@@ -105,6 +120,7 @@ func (s *Store) CreatedSince(ctx context.Context, q db.Querier, purpose string, 
 // unrevoked row, restarts its expiry by the row's ttl and returns the raw
 // token. A re-mint replaces the row's earlier hash.
 func (s *Store) Mint(ctx context.Context, q db.Querier, id uuid.UUID) (Minted, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Minted{}, err
 	}
@@ -138,6 +154,7 @@ func (s *Store) Mint(ctx context.Context, q db.Querier, id uuid.UUID) (Minted, e
 // Peek finds any row carrying the token's hash, spent, revoked and expired
 // ones included; ErrUnknown when none does.
 func (s *Store) Peek(ctx context.Context, q db.Querier, raw string) (Token, error) {
+	q = s.names.Q(q)
 	return s.peek(ctx, q, raw, s.now())
 }
 
@@ -174,6 +191,7 @@ func state(used, revoked *time.Time, expires, now time.Time) State {
 // spend writes nothing; a peek at the same instant then decides unknown (no
 // row, or a row of another purpose) or gone.
 func (s *Store) Spend(ctx context.Context, q db.Querier, raw, purpose string) (Token, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Token{}, err
 	}
@@ -204,6 +222,7 @@ func (s *Store) Spend(ctx context.Context, q db.Querier, raw, purpose string) (T
 // Revoke closes the owner's live row for purpose and keeps its hash, so its
 // link answers revoked (an app revoking or deleting what the link was for).
 func (s *Store) Revoke(ctx context.Context, q db.Querier, purpose string, owner uuid.UUID) error {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return err
 	}
@@ -215,6 +234,7 @@ func (s *Store) Revoke(ctx context.Context, q db.Querier, purpose string, owner 
 
 // Prune deletes rows used, revoked or expired before before.
 func (s *Store) Prune(ctx context.Context, q db.Querier, before time.Time) (int64, error) {
+	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return 0, err
 	}

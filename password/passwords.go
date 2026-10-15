@@ -1,4 +1,4 @@
-package authkit
+package password
 
 import (
 	"context"
@@ -7,9 +7,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
-	"github.com/sylly-mika/authkit/session"
+	"github.com/sylly-mika/authkit/internal/events"
 )
 
 // ChangePassword replaces the caller's password on the
@@ -20,97 +20,83 @@ import (
 // ErrCurrentPasswordWrong; a revoke, ErrSessionEnded. RevokeOnPasswordChange
 // says whether the caller's own session survives (RevokeOthers) or is
 // replaced by a new one (RevokeAll).
-func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, current, next string, m Meta) (Result, error) {
+func (s *Module) ChangePassword(ctx context.Context, q db.Querier, c *authkit.Claims, current, next string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	m = m.clean()
+	m = m.Clean()
 	checked, has, err := credentialOf(ctx, q, c.Subject)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	ok, err := s.verify(ctx, checked, has, current)
 	if errors.Is(err, ErrBusy) {
-		return Result{Refusal: ErrBusy}, nil
+		return authkit.Result{Refusal: ErrBusy}, nil
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrCurrentPasswordWrong}, nil
+		return authkit.Result{Refusal: authkit.ErrCurrentPasswordWrong}, nil
 	}
 	if err := s.cfg.Password.Check(next); err != nil {
-		return Result{Refusal: err}, nil
+		return authkit.Result{Refusal: err}, nil
 	}
 	hash, err := s.hasher.Hash(ctx, next)
 	if errors.Is(err, ErrBusy) {
-		return Result{Refusal: ErrBusy}, nil
+		return authkit.Result{Refusal: ErrBusy}, nil
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	now := s.now()
 	locked, has, err := lockCredential(ctx, q, c.Subject)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !has || locked != checked {
-		return Result{Refusal: ErrCurrentPasswordWrong}, nil
+		return authkit.Result{Refusal: authkit.ErrCurrentPasswordWrong}, nil
 	}
-	sess, err := session.LockOpen(ctx, q, c.SessionID, c.Subject, now)
+	sess, err := s.core.LockSession(ctx, q, c, now)
 	if errors.Is(err, db.ErrNoRows) {
-		return Result{Refusal: ErrSessionEnded}, nil
+		return authkit.Result{Refusal: authkit.ErrSessionEnded}, nil
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	p, err := s.principals.ByID(ctx, q, c.Subject, Audience(sess.Audience))
+	p, err := s.principals.ByID(ctx, q, c.Subject, authkit.Audience(sess.Audience))
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	if s.cfg.RevokeOnPasswordChange == RevokeAll {
-		return s.changeRevokingAll(ctx, q, grant{p: p, aud: Audience(sess.Audience), m: m, now: now}, sess, hash)
+	if s.cfg.RevokeOnPasswordChange == authkit.RevokeAll {
+		return s.core.Reopen(ctx, q, sess.ID, p, authkit.SourceChangePassword, m, now, func(ctx context.Context, q db.Querier) error {
+			if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
+				return err
+			}
+			if err := s.core.RevokeAll(ctx, q, p.ID, authkit.ReasonPasswordChanged, now); err != nil {
+				return err
+			}
+			return s.record(ctx, q, now, authkit.SourceChangePassword, s.changeEvent(p, sess, m))
+		})
 	}
 	if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	if err := session.RevokeOthers(ctx, q, p.ID, sess.ID, ReasonPasswordChanged, now); err != nil {
-		return Result{}, err
+	if err := s.core.RevokeOthers(ctx, q, p.ID, sess.ID, authkit.ReasonPasswordChanged, now); err != nil {
+		return authkit.Result{}, err
 	}
-	if err := session.SetAuthenticated(ctx, q, sess.ID, now); err != nil {
-		return Result{}, err
+	if err := s.core.MarkAuthenticated(ctx, q, sess.ID, now); err != nil {
+		return authkit.Result{}, err
 	}
 	sess.AuthenticatedAt = now
-	return Result{Principal: p, Session: &sess}, s.record(ctx, q, now, SourceChangePassword, s.changeEvent(p, sess, m))
+	return authkit.Result{Principal: p, Session: &sess}, s.record(ctx, q, now, authkit.SourceChangePassword, s.changeEvent(p, sess, m))
 }
 
-// WHY: Admit runs before any write, so a refusal leaves the credential and the sessions as they were.
-func (s *Service) changeRevokingAll(ctx context.Context, q db.Querier, g grant, sess Session, hash string) (Result, error) {
-	g.factor = FactorKind(sess.SecondFactor)
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: g.p, Audience: g.aud, ScopeID: sess.ScopeID, SecondFactor: g.factor})
-	if err != nil {
-		return Result{}, err
-	}
-	if refusal != nil {
-		return Result{Refusal: refusal.Err}, nil
-	}
-	g.adm = adm
-	if err := setCredential(ctx, q, g.p.ID, hash, g.now); err != nil {
-		return Result{}, err
-	}
-	if err := session.RevokeAll(ctx, q, g.p.ID, ReasonPasswordChanged, g.now); err != nil {
-		return Result{}, err
-	}
-	if err := s.record(ctx, q, g.now, SourceChangePassword, s.changeEvent(g.p, sess, g.m)); err != nil {
-		return Result{}, err
-	}
-	return s.openSignedIn(ctx, q, SourceChangePassword, g)
-}
-
-func (s *Service) changeEvent(p Principal, sess Session, m Meta) events.Event {
-	result := ResultPasswordChanged
-	if s.cfg.Events.ChangeLogsReset {
-		result = ResultPasswordReset
+func (s *Module) changeEvent(p authkit.Principal, sess authkit.Session, m authkit.Meta) events.Event {
+	result := authkit.ResultPasswordChanged
+	if s.core.Config().Events.ChangeLogsReset {
+		result = authkit.ResultPasswordReset
 	}
 	return events.Event{PrincipalID: &p.ID, SessionID: &sess.ID, ScopeID: sess.ScopeID, Audience: sess.Audience, Login: p.Login,
 		Result: result, IP: m.IP, UserAgent: m.UserAgent}
@@ -120,34 +106,35 @@ func (s *Service) changeEvent(p Principal, sess Session, m Meta) events.Event {
 // app's own flow (for example, accepting an invite: the app creates the user,
 // then calls this in the same transaction) and logs password_set. It revokes nothing, so
 // replacing a password goes through ChangePassword or CompleteReset.
-func (s *Service) SetPassword(ctx context.Context, q db.Querier, p Principal, aud Audience, pw string, m Meta) (Result, error) {
+func (s *Module) SetPassword(ctx context.Context, q db.Querier, p authkit.Principal, aud authkit.Audience, pw string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	m = m.clean()
+	m = m.Clean()
 	if err := s.cfg.Password.Check(pw); err != nil {
-		return Result{Refusal: err}, nil
+		return authkit.Result{Refusal: err}, nil
 	}
 	hash, err := s.hasher.Hash(ctx, pw)
 	if errors.Is(err, ErrBusy) {
-		return Result{Refusal: ErrBusy}, nil
+		return authkit.Result{Refusal: ErrBusy}, nil
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	now := s.now()
 	_, had, err := credentialOf(ctx, q, p.ID)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	result := ResultPasswordSet
+	result := authkit.ResultPasswordSet
 	if had {
-		result = ResultPasswordReset
+		result = authkit.ResultPasswordReset
 	}
-	return Result{Principal: p}, s.record(ctx, q, now, SourceSetPassword, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+	return authkit.Result{Principal: p}, s.record(ctx, q, now, authkit.SourceSetPassword, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
 		Result: result, IP: m.IP, UserAgent: m.UserAgent})
 }
 
@@ -155,30 +142,31 @@ func (s *Service) SetPassword(ctx context.Context, q db.Querier, p Principal, au
 // flow (for example, accepting an invite with an existing account). A mismatch
 // logs bad_password and is refused with ErrInvalidCredentials; the caller
 // commits the event. It does not touch the throttle.
-func (s *Service) VerifyPassword(ctx context.Context, q db.Querier, p Principal, aud Audience, pw string, m Meta) (Result, error) {
+func (s *Module) VerifyPassword(ctx context.Context, q db.Querier, p authkit.Principal, aud authkit.Audience, pw string, m authkit.Meta) (authkit.Result, error) {
+	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	m = m.clean()
+	m = m.Clean()
 	hash, has, err := credentialOf(ctx, q, p.ID)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	ok, err := s.verify(ctx, hash, has, pw)
 	if errors.Is(err, ErrBusy) {
-		return Result{Refusal: ErrBusy}, nil
+		return authkit.Result{Refusal: ErrBusy}, nil
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if ok {
-		return Result{Principal: p}, nil
+		return authkit.Result{Principal: p}, nil
 	}
-	if err := s.record(ctx, q, s.now(), SourceVerifyPassword, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
-		Result: ResultBadPassword, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
-		return Result{}, err
+	if err := s.record(ctx, q, s.now(), authkit.SourceVerifyPassword, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+		Result: authkit.ResultBadPassword, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+		return authkit.Result{}, err
 	}
-	return Result{Refusal: ErrInvalidCredentials}, nil
+	return authkit.Result{Refusal: authkit.ErrInvalidCredentials}, nil
 }
 
 // AcquireHashSlot takes one of the Service's argon2id slots before the app
@@ -188,15 +176,15 @@ func (s *Service) VerifyPassword(ctx context.Context, q db.Querier, p Principal,
 // is idempotent and always non-nil; call it when the request ends. A full
 // ceiling after HashWait is Result.Refusal ErrBusy (count nothing, answer
 // 503); error is only ctx's.
-func (s *Service) AcquireHashSlot(ctx context.Context) (context.Context, func(), Result, error) {
+func (s *Module) AcquireHashSlot(ctx context.Context) (context.Context, func(), authkit.Result, error) {
 	held, release, err := s.hasher.Hold(ctx)
 	if errors.Is(err, ErrBusy) {
-		return ctx, release, Result{Refusal: ErrBusy}, nil
+		return ctx, release, authkit.Result{Refusal: ErrBusy}, nil
 	}
 	if err != nil {
-		return ctx, release, Result{}, err
+		return ctx, release, authkit.Result{}, err
 	}
-	return held, release, Result{}, nil
+	return held, release, authkit.Result{}, nil
 }
 
 func credentialOf(ctx context.Context, q db.Querier, id uuid.UUID) (hash string, ok bool, err error) {
@@ -237,7 +225,8 @@ func setCredential(ctx context.Context, q db.Querier, id uuid.UUID, hash string,
 
 // HasCredential reports whether the principal has a password. A bare
 // connection is fine.
-func (s *Service) HasCredential(ctx context.Context, q db.Querier, principal uuid.UUID) (bool, error) {
+func (s *Module) HasCredential(ctx context.Context, q db.Querier, principal uuid.UUID) (bool, error) {
+	q = s.core.Q(q)
 	_, has, err := credentialOf(ctx, q, principal)
 	return has, err
 }

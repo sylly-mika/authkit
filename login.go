@@ -8,95 +8,17 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
-	"github.com/google/uuid"
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
+	"github.com/sylly-mika/authkit/internal/events"
+	"github.com/sylly-mika/authkit/internal/nsql"
+	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/internal/token"
 	"github.com/sylly-mika/authkit/session"
-	"github.com/sylly-mika/authkit/throttle"
 	"github.com/sylly-mika/authkit/transport/bearer"
 )
-
-// Login signs a principal in with its password. By
-// default every attempt is counted before its verification: the hash slot
-// first (from ctx, or taken here), so a Busy refusal counts nothing; then the
-// login's throttle row, locked until the caller commits, is counted, and an
-// attempt past the limit is refused ErrLocked without a verification. Then
-// the lookup, exactly one argon2id verification, Admit, the session, the
-// counter cleared and signed_in. Throttle.CountAfterVerify is v0.1's order:
-// check the lock, verify, count a failure. Its refusals return normally after
-// writing their throttle count and event. A principal holding a confirmed
-// second factor gets Result.SecondStep instead of a session; VerifySecondStep
-// completes the sign-in.
-func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, pw string, m Meta) (Result, error) {
-	if err := db.RequireTx(q); err != nil {
-		return Result{}, err
-	}
-	m = m.clean()
-	a := &attempt{aud: aud, key: Normalize(login), now: s.now(), m: m,
-		ev: events.Event{Audience: string(aud), Login: typedLogin(login), IP: m.IP, UserAgent: m.UserAgent}}
-	// WHY: a login longer than any account's is unknown, so no account escapes the throttle through it.
-	a.counted = utf8.RuneCountInString(a.key) <= maxLoginRunes
-	if !s.cfg.Throttle.CountAfterVerify {
-		held, release, err := s.hasher.Hold(ctx)
-		if errors.Is(err, ErrBusy) {
-			return Result{Refusal: ErrBusy}, nil
-		}
-		if err != nil {
-			return Result{}, err
-		}
-		defer release()
-		ctx = held
-	}
-	until, locked, err := s.throttled(ctx, q, a)
-	if err != nil {
-		return Result{}, err
-	}
-	if locked {
-		return s.refuseLocked(ctx, q, a, until)
-	}
-
-	var p Principal
-	err = ErrUnknownLogin
-	if a.counted {
-		p, err = s.principals.Lookup(ctx, q, a.key, aud)
-	}
-	known := err == nil
-	if err != nil && !errors.Is(err, ErrUnknownLogin) {
-		return Result{}, err
-	}
-	var hash string
-	var hasCredential bool
-	if known {
-		a.ev.PrincipalID = &p.ID
-		if hash, hasCredential, err = credentialOf(ctx, q, p.ID); err != nil {
-			return Result{}, err
-		}
-	}
-	ok, err := s.verify(ctx, hash, hasCredential, pw)
-	if errors.Is(err, ErrBusy) {
-		return Result{Refusal: ErrBusy}, nil
-	}
-	if err != nil {
-		return Result{}, err
-	}
-	if !ok {
-		switch {
-		case !known:
-			a.ev.Result = ResultUnknownLogin
-		case !hasCredential:
-			a.ev.Result = ResultNoPassword
-		default:
-			a.ev.Result = ResultBadPassword
-		}
-		return s.refuseFailed(ctx, q, a)
-	}
-	return s.signIn(ctx, q, a, p, hash, pw)
-}
 
 type attempt struct {
 	aud     Audience
@@ -125,88 +47,6 @@ func (s *Service) throttled(ctx context.Context, q db.Querier, a *attempt) (time
 		return throttle.Locked(ctx, q, s.throttleKey(a.key), string(a.aud), a.now)
 	}
 	return throttle.Count(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle)
-}
-
-func (s *Service) refuseLocked(ctx context.Context, q db.Querier, a *attempt, until time.Time) (Result, error) {
-	if !s.cfg.Throttle.CountAfterVerify {
-		p, err := s.principals.Lookup(ctx, q, a.key, a.aud)
-		switch {
-		case err == nil:
-			a.ev.PrincipalID = &p.ID
-		case !errors.Is(err, ErrUnknownLogin):
-			return Result{}, err
-		}
-	}
-	a.ev.Result = ResultLocked
-	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
-		return Result{}, err
-	}
-	return Result{Refusal: ErrLocked{RetryAfter: until.Sub(a.now)}}, nil
-}
-
-func (s *Service) refuseFailed(ctx context.Context, q db.Querier, a *attempt) (Result, error) {
-	if a.counted && s.cfg.Throttle.CountAfterVerify {
-		if err := throttle.Fail(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle); err != nil {
-			return Result{}, err
-		}
-	}
-	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
-		return Result{}, err
-	}
-	return Result{Refusal: ErrInvalidCredentials}, nil
-}
-
-// WHY: an Admit refusal leaves the throttle counter as it is; only a sign-in clears it.
-func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Principal, hash, pw string) (Result, error) {
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: a.aud})
-	if err != nil {
-		return Result{}, err
-	}
-	if refusal != nil {
-		a.ev.Result = refusal.Result
-		if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
-			return Result{}, err
-		}
-		return Result{Refusal: refusal.Err}, nil
-	}
-	methods, err := s.secondFactorMethods(ctx, q, p.ID)
-	if err != nil {
-		return Result{}, err
-	}
-	if len(methods) > 0 && len(s.cfg.SecondFactors.Key) == 0 {
-		return Result{Refusal: ErrSecondFactorsOff}, nil
-	}
-	if s.hasher.NeedsRehash(hash) {
-		if err := s.rehash(ctx, q, p.ID, hash, pw); err != nil {
-			return Result{}, err
-		}
-	}
-	if len(methods) > 0 {
-		return s.issueSecondStep(ctx, q, SourceLogin, p, a.aud, "login", s.throttleKey(a.key), methods, adm.ScopeID, a.m, a.now)
-	}
-	res, err := s.openSession(ctx, q, p, a.aud, adm, a.m, a.now, "")
-	if err != nil {
-		return Result{}, err
-	}
-	if err := throttle.Clear(ctx, q, s.throttleKey(a.key), string(a.aud)); err != nil {
-		return Result{}, err
-	}
-	a.ev.Result, a.ev.SessionID, a.ev.ScopeID = ResultSignedIn, &res.Session.ID, adm.ScopeID
-	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
-		return Result{}, err
-	}
-	return res, nil
-}
-
-// WHY: every login spends one verification, against the dummy when there is no hash, so unknown logins take as long as known ones.
-func (s *Service) verify(ctx context.Context, hash string, has bool, pw string) (bool, error) {
-	if s.onVerify != nil {
-		s.onVerify()
-	}
-	if !has {
-		return false, s.hasher.VerifyDummy(ctx, pw)
-	}
-	return s.hasher.Verify(ctx, hash, pw)
 }
 
 func (s *Service) admit(ctx context.Context, q db.Querier, p Proposal) (Admission, *Refusal, error) {
@@ -240,7 +80,7 @@ func (s *Service) record(ctx context.Context, q db.Querier, now time.Time, sourc
 	if s.cfg.OnEvent == nil {
 		return nil
 	}
-	if err := s.cfg.OnEvent(ctx, q, e); err != nil {
+	if err := s.cfg.OnEvent(ctx, nsql.Plain(q), e); err != nil {
 		return fmt.Errorf("authkit: OnEvent: %w", err)
 	}
 	return nil
@@ -278,18 +118,6 @@ func (s *Service) openSessionAt(ctx context.Context, q db.Querier, p Principal, 
 	return res, nil
 }
 
-// WHY: the rehash is skipped unless the stored hash is still the one Login read, so a change committed since the read wins.
-func (s *Service) rehash(ctx context.Context, q db.Querier, id uuid.UUID, old, pw string) error {
-	hash, err := s.hasher.Hash(ctx, pw)
-	if errors.Is(err, ErrBusy) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return rehashCredential(ctx, q, id, old, hash)
-}
-
 // Normalize is the form a login is looked up and throttled under: without
 // invalid UTF-8 or NUL, trimmed, Unicode NFC, lower case. NFC runs
 // again after lower-casing, so the result is NFC and Normalize is idempotent.
@@ -305,6 +133,9 @@ func (m Meta) clean() Meta {
 	m.IP, m.UserAgent = clean(m.IP), clean(m.UserAgent)
 	return m
 }
+
+// Clean returns m with invalid UTF-8 and NUL bytes removed from IP and UserAgent.
+func (m Meta) Clean() Meta { return m.clean() }
 
 // HashToken is the stored form of a raw refresh or one-time token.
 func HashToken(raw string) []byte { return token.Hash(raw) }

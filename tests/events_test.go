@@ -24,7 +24,7 @@ func (c *captured) onEvent(_ context.Context, _ db.Querier, e authkit.Event) err
 
 func TestEveryEventNamesItsSource(t *testing.T) {
 	var c captured
-	w := newWorld(t, kittest.DefaultRules, func(cfg *authkit.Config) { cfg.OnEvent = c.onEvent })
+	w := newWorld(t, kittest.DefaultRules, func(cfg *kittest.Rules) { cfg.OnEvent = c.onEvent })
 	id := w.User("ada@example.invalid", "the old password")
 	invited := authkit.Principal{ID: w.User("invited@example.invalid", ""), Login: "invited@example.invalid"}
 	refused := w.User("refused@example.invalid", "the right password")
@@ -46,10 +46,10 @@ func TestEveryEventNamesItsSource(t *testing.T) {
 	w.changePassword(conn, w.Claims(first), "the old password", "the new password")
 	w.logout(conn, w.Claims(first))
 	w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.SetPassword(w.Ctx, q, invited, "staff", "a first password", authkit.Meta{})
+		return w.Svc.Password.SetPassword(w.Ctx, q, invited, "staff", "a first password", authkit.Meta{})
 	})
 	w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.VerifyPassword(w.Ctx, q, invited, "staff", "a wrong password", authkit.Meta{})
+		return w.Svc.Password.VerifyPassword(w.Ctx, q, invited, "staff", "a wrong password", authkit.Meta{})
 	})
 	w.completeReset(w.mintLink(*w.requestReset("ada@example.invalid").TokenID), "the reset password")
 	third := w.SignIn("ada@example.invalid", "the reset password")
@@ -70,7 +70,7 @@ func TestEveryEventNamesItsSource(t *testing.T) {
 	if w.Count(`SELECT count(*) FROM auth_events`) != len(want) {
 		t.Fatalf("auth_events holds %d rows, want one per OnEvent call", w.Count(`SELECT count(*) FROM auth_events`))
 	}
-	rows, err := w.D.Owner.Query(`SELECT source || '/' || result FROM auth_events`)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT source || '/' || result FROM auth_events`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,10 +120,11 @@ func TestListEventsReadsTheStoredSource(t *testing.T) {
 
 func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 	var seen []bool
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) {
+	var w *world
+	w = newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) {
 		c.OnEvent = func(ctx context.Context, q db.Querier, e authkit.Event) error {
 			var n int
-			if err := q.QueryRow(ctx, `SELECT count(*) FROM auth_events WHERE id = $1`, e.ID).Scan(&n); err != nil {
+			if err := q.QueryRow(ctx, w.D.SQL(`SELECT count(*) FROM auth_events WHERE id = $1`), e.ID).Scan(&n); err != nil {
 				return err
 			}
 			seen = append(seen, n == 1 && q.InTx())
@@ -140,7 +141,7 @@ func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 	}
 	rollback := errors.New("the handler failed")
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-		if _, err := w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{}); err != nil {
+		if _, err := w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", "the right password", authkit.Meta{}); err != nil {
 			return err
 		}
 		return rollback
@@ -153,13 +154,13 @@ func TestOnEventRunsInTheCallersTransaction(t *testing.T) {
 
 func TestAnOnEventErrorFailsTheMethod(t *testing.T) {
 	down := errors.New("app: the mirror is down")
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) {
+	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) {
 		c.OnEvent = func(context.Context, db.Querier, authkit.Event) error { return down }
 	})
 	w.User("ada@example.invalid", "the right password")
 	for _, pw := range []string{"the right password", "a wrong password"} {
 		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-			_, err := w.Svc.Login(w.Ctx, q, "staff", "ada@example.invalid", pw, authkit.Meta{})
+			_, err := w.Svc.Password.Login(w.Ctx, q, "staff", "ada@example.invalid", pw, authkit.Meta{})
 			return err
 		})
 		if !errors.Is(err, down) {

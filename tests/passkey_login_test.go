@@ -26,14 +26,14 @@ var (
 func (w *world) begin(aud authkit.Audience) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginPasskeyLogin(w.Ctx, q, aud, passkeyMeta)
+		return w.Svc.Passkeys.BeginPasskeyLogin(w.Ctx, q, aud, passkeyMeta)
 	})
 }
 
 func (w *world) finish(aud authkit.Audience, ceremonyID string, resp []byte) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.FinishPasskeyLogin(w.Ctx, q, aud, ceremonyID, resp, passkeyMeta)
+		return w.Svc.Passkeys.FinishPasskeyLogin(w.Ctx, q, aud, ceremonyID, resp, passkeyMeta)
 	})
 }
 
@@ -52,7 +52,7 @@ func (w *world) passkeySignIn(aud authkit.Audience, a *authkittest.Authenticator
 
 func (w *world) loginEvents(id uuid.UUID) []string {
 	w.T.Helper()
-	rows, err := w.D.Owner.Query(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = 'passkey_login' ORDER BY at, id`, id)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT result FROM auth_events WHERE principal_id = $1 AND source = 'passkey_login' ORDER BY at, id`), id)
 	if err != nil {
 		w.T.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func (w *world) passkeyState(id uuid.UUID) string {
 
 func (w *world) throttleRows() []string {
 	w.T.Helper()
-	rows, err := w.D.Owner.Query(`SELECT concat_ws('|', login, audience, failures, window_start, locked_until) FROM auth_throttle ORDER BY login, audience`)
+	rows, err := w.D.Owner.Query(w.D.SQL(`SELECT concat_ws('|', login, audience, failures, window_start, locked_until) FROM auth_throttle ORDER BY login, audience`))
 	if err != nil {
 		w.T.Fatal(err)
 	}
@@ -191,10 +191,10 @@ func TestPasskeyLoginIsOffWithoutAnRPID(t *testing.T) {
 	w := newWorld(t)
 	calls := map[string]func(q db.Querier) (authkit.Result, error){
 		"BeginPasskeyLogin": func(q db.Querier) (authkit.Result, error) {
-			return w.Svc.BeginPasskeyLogin(w.Ctx, q, "staff", passkeyMeta)
+			return w.Svc.Passkeys.BeginPasskeyLogin(w.Ctx, q, "staff", passkeyMeta)
 		},
 		"FinishPasskeyLogin": func(q db.Querier) (authkit.Result, error) {
-			return w.Svc.FinishPasskeyLogin(w.Ctx, q, "staff", "x", []byte("{}"), passkeyMeta)
+			return w.Svc.Passkeys.FinishPasskeyLogin(w.Ctx, q, "staff", "x", []byte("{}"), passkeyMeta)
 		},
 	}
 	for name, call := range calls {
@@ -248,7 +248,7 @@ func TestPasskeyLoginSignsIn(t *testing.T) {
 		t.Errorf("the stored sign count is below 4")
 	}
 	t.Run("session mode", func(t *testing.T) {
-		w := newWorld(t, kittest.Passkeys, func(c *authkit.Config) { c.Transport = authkit.TransportSession })
+		w := newWorld(t, kittest.Passkeys, func(c *kittest.Rules) { c.Transport = authkit.TransportSession })
 		id := w.User("ada@example.invalid", "")
 		a := authkittest.NewAuthenticator("localhost", kittest.StaffOrigin)
 		w.SeedPasskey(id, a)
@@ -320,7 +320,7 @@ func TestPasskeyLoginLocksThePasskeyRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer holder.Rollback()
-	if _, err := holder.ExecContext(w.Ctx, "UPDATE auth_passkeys SET data = jsonb_set(data, '{authenticator,signCount}', '8') WHERE principal_id = $1", id); err != nil {
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL("UPDATE auth_passkeys SET data = jsonb_set(data, '{authenticator,signCount}', '8') WHERE principal_id = $1"), id); err != nil {
 		t.Fatal(err)
 	}
 	var got authkit.Result
@@ -328,7 +328,7 @@ func TestPasskeyLoginLocksThePasskeyRow(t *testing.T) {
 	go func() {
 		errc <- w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 			var err error
-			got, err = w.Svc.FinishPasskeyLogin(w.Ctx, q, "staff", res.Ceremony.ID, resp, passkeyMeta)
+			got, err = w.Svc.Passkeys.FinishPasskeyLogin(w.Ctx, q, "staff", res.Ceremony.ID, resp, passkeyMeta)
 			return err
 		})
 	}()

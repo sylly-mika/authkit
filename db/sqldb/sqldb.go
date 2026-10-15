@@ -42,6 +42,13 @@ func Conn(conn *sql.Conn) db.Querier {
 // Unwrap hands an app's Principals implementation the *sql.Tx or *sql.Conn
 // behind q, so its own repositories run on the same transaction.
 func Unwrap(q db.Querier) (Std, bool) {
+	for {
+		u, ok := q.(interface{ Unwrap() db.Querier })
+		if !ok {
+			break
+		}
+		q = u.Unwrap()
+	}
 	s, ok := q.(querier)
 	return s.std, ok
 }

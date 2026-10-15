@@ -1,9 +1,8 @@
-package authkit
+package passkey
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"time"
 	"unicode"
@@ -13,174 +12,161 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 
+	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/events"
 	"github.com/sylly-mika/authkit/internal/ceremony"
 	"github.com/sylly-mika/authkit/internal/token"
-	"github.com/sylly-mika/authkit/session"
 )
 
 // BeginPasskeyRegistration starts adding a passkey for a signed-in principal with a password and a recent sign-in, and returns the options for the browser.
-func (s *Service) BeginPasskeyRegistration(ctx context.Context, q db.Querier, c *Claims, m Meta) (Result, error) {
+func (mod *Module) BeginPasskeyRegistration(ctx context.Context, q db.Querier, c *authkit.Claims, m authkit.Meta) (authkit.Result, error) {
+	q = mod.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	if s.cfg.Passkeys.RPID == "" {
-		return Result{}, ErrPasskeysOff
+	if mod.rules.RPID == "" {
+		return authkit.Result{}, authkit.ErrPasskeysOff
 	}
-	now := s.now()
+	now := mod.core.Now()
 	_, has, err := credentialOf(ctx, q, c.Subject)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !has {
-		return Result{Refusal: ErrNoPassword}, nil
+		return authkit.Result{Refusal: authkit.ErrNoPassword}, nil
 	}
-	sess, ok, err := s.freshSession(ctx, q, c, now)
+	sess, ok, err := mod.core.Fresh(ctx, q, c, mod.rules.Reauth, now)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrReauthRequired}, nil
+		return authkit.Result{Refusal: authkit.ErrReauthRequired}, nil
 	}
-	aud := Audience(sess.Audience)
-	rp, ok, err := s.relyingParty(aud)
+	aud := authkit.Audience(sess.Audience)
+	rp, ok, err := mod.relyingParty(aud)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrPasskeyInvalid}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyInvalid}, nil
 	}
 	n, err := countPasskeys(ctx, q, c.Subject)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	if n >= s.cfg.Passkeys.Max {
-		return Result{Refusal: ErrPasskeyLimit}, nil
+	if n >= mod.rules.Max {
+		return authkit.Result{Refusal: authkit.ErrPasskeyLimit}, nil
 	}
-	p, err := s.principals.ByID(ctx, q, c.Subject, aud)
+	p, err := mod.core.Principals().ByID(ctx, q, c.Subject, aud)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	exclude, err := passkeyExclusions(ctx, q, c.Subject)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	creation, data, err := rp.BeginRegistration(passkeyUser{p: p}, webauthn.WithExclusions(exclude))
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	id, exp, err := ceremony.Create(ctx, q, s.cfg.Rand, ceremony.KindRegister, string(aud), &c.Subject, &sess.ID, *data, now, s.cfg.Passkeys.CeremonyTTL)
+	id, exp, err := ceremony.Create(ctx, q, mod.core.Rand(), ceremony.KindRegister, string(aud), &c.Subject, &sess.ID, *data, now, mod.rules.CeremonyTTL)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	opts, err := json.Marshal(creation)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	return Result{Principal: p, Session: &sess, Ceremony: &Ceremony{ID: id, Options: opts, ExpiresAt: exp}}, nil
+	return authkit.Result{Principal: p, Session: &sess, Ceremony: &authkit.Ceremony{ID: id, Options: opts, ExpiresAt: exp}}, nil
 }
 
 // FinishPasskeyRegistration stores the passkey the browser created for a begun ceremony and records a passkey_added event.
-func (s *Service) FinishPasskeyRegistration(ctx context.Context, q db.Querier, c *Claims, ceremonyID string, response []byte, label string, m Meta) (Result, error) {
+func (mod *Module) FinishPasskeyRegistration(ctx context.Context, q db.Querier, c *authkit.Claims, ceremonyID string, response []byte, label string, m authkit.Meta) (authkit.Result, error) {
+	q = mod.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	if s.cfg.Passkeys.RPID == "" {
-		return Result{}, ErrPasskeysOff
+	if mod.rules.RPID == "" {
+		return authkit.Result{}, authkit.ErrPasskeysOff
 	}
-	m = m.clean()
-	label, ok := passkeyLabel(label, s.now())
+	m = m.Clean()
+	label, ok := passkeyLabel(label, mod.core.Now())
 	if !ok {
-		return Result{Refusal: ErrPasskeyLabel}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyLabel}, nil
 	}
-	now := s.now()
+	now := mod.core.Now()
 	_, has, err := lockCredential(ctx, q, c.Subject)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !has {
-		return Result{Refusal: ErrNoPassword}, nil
+		return authkit.Result{Refusal: authkit.ErrNoPassword}, nil
 	}
-	sess, ok, err := s.freshSession(ctx, q, c, now)
+	sess, ok, err := mod.core.Fresh(ctx, q, c, mod.rules.Reauth, now)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrReauthRequired}, nil
+		return authkit.Result{Refusal: authkit.ErrReauthRequired}, nil
 	}
-	aud := Audience(sess.Audience)
-	rp, ok, err := s.relyingParty(aud)
+	aud := authkit.Audience(sess.Audience)
+	rp, ok, err := mod.relyingParty(aud)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrPasskeyInvalid}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyInvalid}, nil
 	}
 	n, err := countPasskeys(ctx, q, c.Subject)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	if n >= s.cfg.Passkeys.Max {
-		return Result{Refusal: ErrPasskeyLimit}, nil
+	if n >= mod.rules.Max {
+		return authkit.Result{Refusal: authkit.ErrPasskeyLimit}, nil
 	}
 	data, ok, err := ceremony.Spend(ctx, q, ceremony.KindRegister, string(aud), ceremonyID, &c.Subject, &sess.ID, now)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrPasskeyInvalid}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyInvalid}, nil
 	}
 	parsed, err := protocol.ParseCredentialCreationResponseBytes(response)
 	if err != nil {
-		return Result{Refusal: ErrPasskeyInvalid}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyInvalid}, nil
 	}
-	p, err := s.principals.ByID(ctx, q, c.Subject, aud)
+	p, err := mod.core.Principals().ByID(ctx, q, c.Subject, aud)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	cred, err := rp.CreateCredential(passkeyUser{p: p}, data, parsed)
 	if err != nil {
-		return Result{Refusal: ErrPasskeyInvalid}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyInvalid}, nil
 	}
 	known, err := credentialKnown(ctx, q, cred.ID)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if known {
-		return Result{Refusal: ErrPasskeyExists}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyExists}, nil
 	}
-	id, err := token.ID(s.cfg.Rand)
+	id, err := token.ID(mod.core.Rand())
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	pk := Passkey{ID: id, Label: label, CreatedAt: now, BackedUp: cred.Flags.BackupState}
+	pk := authkit.Passkey{ID: id, Label: label, CreatedAt: now, BackedUp: cred.Flags.BackupState}
 	inserted, err := insertPasskey(ctx, q, pk, c.Subject, cred)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !inserted {
-		return Result{Refusal: ErrPasskeyExists}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyExists}, nil
 	}
-	if err := s.record(ctx, q, now, SourcePasskeyRegister, events.Event{PrincipalID: &p.ID, SessionID: &sess.ID,
-		ScopeID: sess.ScopeID, Audience: sess.Audience, Login: p.Login, Result: ResultPasskeyAdded, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
-		return Result{}, err
+	if err := mod.core.Record(ctx, q, authkit.SourcePasskeyRegister, authkit.Event{At: now, PrincipalID: &p.ID, SessionID: &sess.ID,
+		ScopeID: sess.ScopeID, Audience: sess.Audience, Login: p.Login, Result: authkit.ResultPasskeyAdded, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+		return authkit.Result{}, err
 	}
-	return Result{Principal: p, Session: &sess, Passkey: &pk}, nil
-}
-
-func (s *Service) freshSession(ctx context.Context, q db.Querier, c *Claims, now time.Time) (session.Session, bool, error) {
-	sess, err := session.LockOpen(ctx, q, c.SessionID, c.Subject, now)
-	if errors.Is(err, db.ErrNoRows) {
-		return session.Session{}, false, nil
-	}
-	if err != nil {
-		return session.Session{}, false, err
-	}
-	if now.Sub(sess.AuthenticatedAt) > s.cfg.Passkeys.Reauth {
-		return session.Session{}, false, nil
-	}
-	return sess, true, nil
+	return authkit.Result{Principal: p, Session: &sess, Passkey: &pk}, nil
 }
 
 func countPasskeys(ctx context.Context, q db.Querier, principal uuid.UUID) (int, error) {
@@ -216,7 +202,7 @@ func credentialKnown(ctx context.Context, q db.Querier, id []byte) (bool, error)
 	return known, err
 }
 
-func insertPasskey(ctx context.Context, q db.Querier, pk Passkey, principal uuid.UUID, cred *webauthn.Credential) (bool, error) {
+func insertPasskey(ctx context.Context, q db.Querier, pk authkit.Passkey, principal uuid.UUID, cred *webauthn.Credential) (bool, error) {
 	body, err := json.Marshal(*cred)
 	if err != nil {
 		return false, err

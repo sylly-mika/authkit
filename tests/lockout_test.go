@@ -13,7 +13,7 @@ import (
 )
 
 func TestALapsedLockoutStartsAFreshWindow(t *testing.T) {
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) { c.Throttle.Lockout = 5 * time.Minute })
+	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) { c.Throttle.Lockout = 5 * time.Minute })
 	w.User("ada@example.invalid", "the right password")
 	for range 6 {
 		w.Login("staff", "ada@example.invalid", "a wrong password")
@@ -39,11 +39,11 @@ func TestAnAdmitRefusalStaysCounted(t *testing.T) {
 
 func TestTheThrottleKeysTheLoginsHashByDefault(t *testing.T) {
 	for name, tc := range map[string]struct {
-		tweak func(*authkit.Config)
+		tweak func(*kittest.Rules)
 		key   string
 	}{
 		"the default":   {kittest.DefaultRules, kittest.HashedKey("ada@example.invalid")},
-		"PlainLoginKey": {func(c *authkit.Config) { kittest.DefaultRules(c); c.Throttle.PlainLoginKey = true }, "ada@example.invalid"},
+		"PlainLoginKey": {func(c *kittest.Rules) { kittest.DefaultRules(c); c.Throttle.PlainLoginKey = true }, "ada@example.invalid"},
 	} {
 		w := newWorld(t, tc.tweak)
 		w.User("ada@example.invalid", "the right password")

@@ -25,6 +25,7 @@ type fixture struct {
 	d   *authkittest.DB
 	p   *authkittest.Principals
 	svc *authkit.Service
+	pw  *password.Module
 }
 
 var cheap = password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen: 32}
@@ -33,11 +34,14 @@ func setup(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{d: authkittest.NewDB(t), p: authkittest.NewPrincipals()}
 	svc, err := authkit.New(authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!"),
-		Hashing: cheap, Clock: authkittest.NewClock(), Rand: authkittest.Rand(3)}, f.p)
+		Clock: authkittest.NewClock(), Rand: authkittest.Rand(3)}, f.p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.svc = svc
+	if f.pw, err = password.New(svc, password.Config{Hashing: cheap}); err != nil {
+		t.Fatal(err)
+	}
 	return f
 }
 
@@ -52,7 +56,7 @@ func (f *fixture) signIn(t *testing.T) (uuid.UUID, authkit.Result) {
 	var res authkit.Result
 	if err := f.d.InAuthTx(context.Background(), func(q db.Querier) error {
 		var err error
-		res, err = f.svc.Login(context.Background(), q, "staff", "ada@example.invalid", "the right password", authkit.Meta{})
+		res, err = f.pw.Login(context.Background(), q, "staff", "ada@example.invalid", "the right password", authkit.Meta{})
 		return err
 	}); err != nil || res.Refusal != nil {
 		t.Fatalf("sign in: %v %v", err, res.Refusal)

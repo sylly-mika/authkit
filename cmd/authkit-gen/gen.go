@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sylly-mika/authkit/internal/nsql"
 	"github.com/sylly-mika/authkit/migrations"
 )
 
@@ -26,6 +27,7 @@ const (
 
 type options struct {
 	principals string
+	schema     string
 	out        string
 	lock       string
 	format     string
@@ -37,6 +39,7 @@ type options struct {
 type lockFile struct {
 	Library    string      `json:"library"`
 	Principals string      `json:"principals"`
+	Schema     string      `json:"schema"`
 	Format     string      `json:"format"`
 	Migrations []lockEntry `json:"migrations"`
 }
@@ -86,6 +89,17 @@ func run(o options) ([]string, error) {
 	if err := checkPrincipals(o.principals); err != nil {
 		return nil, err
 	}
+	if o.schema != "" {
+		if err := nsql.Check(o.schema); err != nil {
+			return nil, fmt.Errorf("authkit-gen: -schema %q is not a usable schema name: %w", o.schema, err)
+		}
+	}
+	if o.lock == "" {
+		o.lock = "authkit.lock"
+		if o.schema != "" {
+			o.lock = "authkit." + o.schema + ".lock"
+		}
+	}
 	if o.format == "" {
 		o.format = formatMigrate
 	}
@@ -102,6 +116,9 @@ func run(o options) ([]string, error) {
 	}
 	if lock.Principals != "" && lock.Principals != o.principals {
 		return nil, fmt.Errorf("authkit-gen: %s was generated for principals table %q, not %q", o.lock, lock.Principals, o.principals)
+	}
+	if lock.Principals != "" && lock.Schema != o.schema {
+		return nil, fmt.Errorf("authkit-gen: %s was generated for schema %q, not %q", o.lock, lock.Schema, o.schema)
 	}
 	if lock.Format == "" {
 		lock.Format = formatMigrate
@@ -124,14 +141,21 @@ func run(o options) ([]string, error) {
 		m             migrations.Migration
 		up, down, sum string
 	}
+	prefix := ""
+	if o.schema != "" {
+		prefix = o.schema + "_"
+	}
 	var todo []rendered
-	for _, m := range library {
+	for i, m := range library {
 		r := rendered{m: m}
-		if r.up, err = migrations.Render(m.Up, o.principals); err != nil {
+		if r.up, err = migrations.RenderIn(m.Up, o.principals, o.schema); err != nil {
 			return nil, err
 		}
-		if r.down, err = migrations.Render(m.Down, o.principals); err != nil {
+		if r.down, err = migrations.RenderIn(m.Down, o.principals, o.schema); err != nil {
 			return nil, err
+		}
+		if i == 0 && o.schema != "" {
+			r.up = "CREATE SCHEMA IF NOT EXISTS " + o.schema + ";\n" + r.up
 		}
 		r.sum = fmt.Sprintf("%x", sha256.Sum256([]byte(r.up+"\x00"+r.down)))
 		if e, ok := locked[m.ID]; ok {
@@ -140,14 +164,14 @@ func run(o options) ([]string, error) {
 			}
 			continue
 		}
-		if dup, _ := filepath.Glob(filepath.Join(o.out, "*_authkit_"+m.Name+".*")); len(dup) > 0 {
+		if dup, _ := filepath.Glob(filepath.Join(o.out, "*_authkit_"+prefix+m.Name+".*")); len(dup) > 0 {
 			return nil, fmt.Errorf("authkit-gen: %s already holds %s, which %s does not list: restore the lock instead of generating a second copy", o.out, filepath.Base(dup[0]), o.lock)
 		}
 		todo = append(todo, r)
 	}
 	var written []string
 	for _, r := range todo {
-		base := fmt.Sprintf("%0*d_authkit_%s", width, next, r.m.Name)
+		base := fmt.Sprintf("%0*d_authkit_%s%s", width, next, prefix, r.m.Name)
 		parts := []struct{ suffix, sql string }{{".up.sql", r.up}, {".down.sql", r.down}}
 		if o.format == formatGoose {
 			parts = []struct{ suffix, sql string }{{".sql", migrations.Goose(r.up, r.down)}}
@@ -162,7 +186,7 @@ func run(o options) ([]string, error) {
 		lock.Migrations = append(lock.Migrations, lockEntry{ID: r.m.ID, Name: r.m.Name, File: base, SHA256: r.sum})
 		next++
 	}
-	lock.Library, lock.Principals, lock.Format = o.version, o.principals, o.format
+	lock.Library, lock.Principals, lock.Schema, lock.Format = o.version, o.principals, o.schema, o.format
 	return written, writeLock(o.lock, lock)
 }
 

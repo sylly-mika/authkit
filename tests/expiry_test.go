@@ -45,7 +45,7 @@ func TestANegativeAbsoluteTTLStoresNoCap(t *testing.T) {
 }
 
 func TestRefreshClampsToTheCap(t *testing.T) {
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) {
+	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) {
 		c.Session = authkit.SessionRules{IdleTTL: time.Hour, AbsoluteTTL: 2 * time.Hour}
 	})
 	w.User("ada@example.invalid", "the right password")
@@ -69,7 +69,7 @@ func TestRefreshClampsToTheCap(t *testing.T) {
 }
 
 func TestAnAudiencesIdleTimeoutIsClampedToo(t *testing.T) {
-	w := newWorld(t, kittest.DefaultRules, func(c *authkit.Config) {
+	w := newWorld(t, kittest.DefaultRules, func(c *kittest.Rules) {
 		c.Session.AbsoluteTTL = 3 * time.Hour
 		c.RefreshTTLFor = map[authkit.Audience]time.Duration{"client": 2 * time.Hour}
 	})
@@ -93,12 +93,12 @@ func (w *world) prune() {
 func TestPruneKeepsEventsForTheRetention(t *testing.T) {
 	day := 24 * time.Hour
 	for name, tc := range map[string]struct {
-		tweak func(*authkit.Config)
+		tweak func(*kittest.Rules)
 		kept  map[time.Duration]bool
 	}{
 		"the default":  {kittest.DefaultRules, map[time.Duration]bool{91 * day: false, 89 * day: true, 29 * day: true}},
-		"negative":     {func(*authkit.Config) {}, map[time.Duration]bool{91 * day: true, 89 * day: true, 29 * day: true}},
-		"30 days, set": {func(c *authkit.Config) { kittest.DefaultRules(c); c.EventRetention = 30 * day }, map[time.Duration]bool{91 * day: false, 89 * day: false, 29 * day: true}},
+		"negative":     {func(*kittest.Rules) {}, map[time.Duration]bool{91 * day: true, 89 * day: true, 29 * day: true}},
+		"30 days, set": {func(c *kittest.Rules) { kittest.DefaultRules(c); c.EventRetention = 30 * day }, map[time.Duration]bool{91 * day: false, 89 * day: false, 29 * day: true}},
 	} {
 		w := newWorld(t, tc.tweak)
 		id := w.User("ada@example.invalid", "the right password")
@@ -118,7 +118,7 @@ func TestPruneKeepsEventsForTheRetention(t *testing.T) {
 func TestCheckSchemaRefusesVersionOne(t *testing.T) {
 	w := newWorld(t)
 	w.D.Exec(t, `UPDATE auth_schema SET version = 1`)
-	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return authkit.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error { return w.Svc.CheckSchema(w.Ctx, q) }); !errors.Is(err, authkit.ErrSchemaBehind) {
 		t.Fatalf("a v0.1 schema = %v, want ErrSchemaBehind: v0.2 needs 0002's absolute_expires_at", err)
 	}
 }

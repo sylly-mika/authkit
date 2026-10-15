@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.0
+
+Breaking: authkit is a core plus modules. The core (`authkit`) keeps sessions, the login throttle, `Admit`, the second-factor gate, the sign-in log and every type, error and constant. Password sign-in, reset and changes move to `password.Module` (`password.New(core, password.Config)`), passkeys to `passkey.Module` (`passkey.New(core, passkey.Rules)`) and second factors to `secondfactor.Module` (`secondfactor.New(core, secondfactor.Rules)`); method signatures are unchanged. `Config.Password`, `Hashing`, `HashConcurrency`, `HashWait`, `RevokeOnPasswordChange`, `ResetTTL`, `ResetFloor` and `Reset` move to `password.Config`. `Config.Passkeys` and `Config.SecondFactors` are gone; `PasskeyRules` and `SecondFactorRules` become `passkey.Rules` and `secondfactor.Rules` with the same fields. `echov5.HashSlot` takes the `*password.Module`. An app links only the modules it imports: the core and `password` link neither `go-webauthn` nor `pquerna/otp`. The README's "Upgrading" section lists every move.
+
+Without `secondfactor.New`, or with an empty `secondfactor.Rules.Key`, a sign-in by a principal with a confirmed factor fails closed with `ErrSecondFactorsOff`, as an empty `Config.SecondFactors.Key` did.
+
+`Proposal.Source` names the path that asks `Admit` (`SourceLogin`, `SourcePasskeyLogin`, `SourceCompleteReset` and the rest, and the new `SourceAuthenticate` for `Authenticate`). It is the only behaviour change.
+
+Modules: `Service.Attach(name)` returns a `*Core`, the handle a module uses for the throttle (`Begin`, `BeginVerified`, `Attempt`, `LoginThrottle`), `SignIn`, `Reopen`, sessions, `Record` and `SetVerifier` (`SecondStepVerifier`); a taken name is `ErrAttached`. `FactorPassword` names a password first factor, and `Meta.Clean` cleans request metadata. The `Core` API is unstable until v1.0.0.
+
+Namespace: `Config.Schema` puts an install's tables in a PostgreSQL schema, so one database can hold several installs; `""` keeps the unqualified names. `authkit-gen -schema <name>` writes `NNNNN_authkit_<schema>_<name>` files, the first of which creates the schema, and records `"schema"` in the lock (`authkit.<schema>.lock` by default); a lock without the field reads as no schema. `authkittest.Schema(name)` builds a test database in a schema. `Service.CheckSchema` checks the tables in the install's schema (the package `CheckSchema` keeps reading the search path), and `onetime.NewIn(schema, now, rand)` builds a one-time store whose tables are in a schema; `Service.OneTime()` already uses the install's schema. No new migration: 0001 to 0004 are unchanged.
+
 ## v0.4.2
 
 Tests: the black-box tests live in `tests/` and share their setup through `internal/kittest`; the hook tests stay in `hooks_test.go`. No API change.
