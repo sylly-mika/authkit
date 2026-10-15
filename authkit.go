@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -167,6 +168,8 @@ type Service struct {
 	links      *onetime.Store
 	rps        map[Audience]*webauthn.WebAuthn
 	onVerify   func()
+	mu         sync.Mutex
+	attached   map[string]bool
 }
 
 // New builds the Service. It reads no database: the app calls CheckSchema at
@@ -189,7 +192,7 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{cfg: cfg, principals: principals, hasher: hasher, rps: rps}
+	s := &Service{cfg: cfg, principals: principals, hasher: hasher, rps: rps, attached: map[string]bool{}}
 	s.links = onetime.New(s.now, cfg.Rand)
 	if cfg.Transport == TransportBearer {
 		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, s.now); err != nil {
@@ -197,6 +200,20 @@ func New(cfg Config, principals Principals) (*Service, error) {
 		}
 	}
 	return s, nil
+}
+
+// Attach registers a module by name and returns its Core. Call it at startup, once per name; a taken name is ErrAttached.
+func (s *Service) Attach(name string) (*Core, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if name == "" {
+		return nil, errors.New("authkit: Attach needs a module name")
+	}
+	if s.attached[name] {
+		return nil, ErrAttached
+	}
+	s.attached[name] = true
+	return &Core{s: s, name: name}, nil
 }
 
 // WHY: PostgreSQL stores timestamptz at microseconds, so a value written and read back must compare the same in Go.

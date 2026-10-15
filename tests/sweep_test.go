@@ -46,7 +46,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 
 var (
 	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "ListPasskeys", "HasCredential", "SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
-	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword", "AcquireHashSlot"}
+	sweptPure  = []string{"Codec", "OneTime", "ResetFloor", "CheckPassword", "AcquireHashSlot", "Attach"}
 )
 
 func TestWriteMethodsRefuseABareConnection(t *testing.T) {

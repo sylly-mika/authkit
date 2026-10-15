@@ -27,6 +27,9 @@ var (
 	ErrWrongAudience = bearer.ErrWrongAudience
 	ErrTokenUnknown  = onetime.ErrUnknown
 	ErrBusy          = pwerr.ErrBusy
+
+	// ErrAttached refuses a second module under a name already attached.
+	ErrAttached = errors.New("authkit: module already attached")
 )
 
 // ErrLocked refuses a login whose throttle is locked.
