@@ -2,14 +2,16 @@
 
 authkit is a Go library for password authentication on PostgreSQL. It covers
 password sign-in, sessions with token-reuse detection, password reset,
-one-time links, a sign-in log, a per-login throttle, passkeys and second
-factors (TOTP, emailed codes, recovery codes). Passwords are hashed with
-argon2id. authkit owns its `auth_*` tables; your app owns its users
-("principals") table and its own data.
+registration with an emailed activation link, sign-in with Google and Apple
+(OpenID Connect), one-time links, a sign-in log, a per-login throttle,
+passkeys and second factors (TOTP, emailed codes, recovery codes). Passwords
+are hashed with argon2id. authkit owns its `auth_*` tables; your app owns its
+users ("principals") table and its own data.
 
 The core package `authkit` owns sessions, the login throttle, `Admit`, the
-second-factor gate and the sign-in log. Password sign-in, passkeys and second
-factors are modules (`password`, `passkey`, `secondfactor`); an app links only
+second-factor gate and the sign-in log. Password sign-in, passkeys, second
+factors, registration and OIDC sign-in are modules (`password`, `passkey`,
+`secondfactor`, `register`, `oidc`); an app links only
 the modules it imports.
 
 What it does not do:
@@ -26,7 +28,7 @@ The API may change between minor versions until 1.0.
 ## Install
 
 ```sh
-go get github.com/sylly-mika/authkit@v0.5.0
+go get github.com/sylly-mika/authkit@v0.6.0
 ```
 
 Requirements:
@@ -46,12 +48,15 @@ Packages you will use:
 | `password` | `password.New`, `*password.Module`: password sign-in, reset and changes; the argon2id hasher |
 | `passkey` | `passkey.New`, `*passkey.Module`: passkey sign-in and management (links `go-webauthn`) |
 | `secondfactor` | `secondfactor.New`, `*secondfactor.Module`: TOTP, emailed codes, recovery codes (links `pquerna/otp`) |
+| `oidc` | `oidc.New`, `*oidc.Module`: sign-in, sign-up and linking with Google, Apple or another OpenID Connect provider (links `go-oidc`, `go-jose`, `oauth2`) |
+| `register` | `register.New`, `*register.Module`: sign-up with an emailed activation link; the password is set at activation |
 | `db` | `db.Querier`, the SQL interface every method runs on |
 | `db/pgxdb`, `db/sqldb` | wrap a pgx or `database/sql` transaction as a `db.Querier` |
 | `echov5` | echo v5 middleware |
 | `transport/cookie` | the session cookie (Session mode) |
 | `cmd/authkit-gen` | copies authkit's migrations into your migration directory |
 | `authkittest` | Postgres test harness, fake principals, software passkey authenticator |
+| `authkittest/oidcfake` | a local Google or Apple over `httptest` TLS, for tests of your OIDC routes (links `go-oidc`) |
 
 ## Minimal example
 
@@ -206,7 +211,8 @@ package documentation suggests.
 `*authkit.Service` and the module's own rules, and attaches once per
 `Service`: a second `New` of the same module returns `authkit.ErrAttached`.
 An app links only the modules it imports: without `passkey` the binary has no
-`go-webauthn`, without `secondfactor` no `pquerna/otp`. Bundle them in one
+`go-webauthn`, without `secondfactor` no `pquerna/otp`, without `oidc` no
+`go-oidc`, `go-jose` or `oauth2`. Bundle them in one
 struct; the examples below call it `kit`:
 
 ```go
@@ -240,7 +246,9 @@ on `kit.Password`, `kit.Passkeys` and `kit.Factors`. A module given empty
 rules is attached but off: `passkey` without `RPID` answers
 `ErrPasskeysOff`; `secondfactor` without `Key` answers `ErrSecondFactorsOff`,
 and so does a sign-in by a principal with a confirmed factor. Leaving
-`secondfactor` out has the same effect.
+`secondfactor` out has the same effect. `oidc` and `register` attach the same
+way; add `OIDC *oidc.Module` and `Register *register.Module` to `Kit` (see
+"Add Google and Apple sign-in" and "Add registration").
 
 ### Add the database tables
 
@@ -270,7 +278,8 @@ before anything is written.
 The migrations create these tables: `auth_schema`, `auth_credentials`,
 `auth_sessions`, `auth_tokens`, `auth_events`, `auth_throttle`,
 `auth_passkeys`, `auth_passkey_ceremonies`, `auth_second_factors`,
-`auth_recovery_codes`, `auth_second_step_challenges`, `auth_email_codes`.
+`auth_recovery_codes`, `auth_second_step_challenges`, `auth_email_codes`,
+`auth_ceremonies`, `auth_identities`, `auth_registrations`, `auth_mail_counts`.
 
 Your app must:
 
@@ -282,7 +291,7 @@ Your app must:
 - Write its own RLS policies if it uses RLS. The migrations contain none.
   `authkittest/policies.sql` shows the policies authkit's own tests use; for
   example, `auth_passkeys` and `auth_passkey_ceremonies` get the same policies
-  as `auth_credentials`.
+  as `auth_credentials`, and so do the four tables v0.6.0 adds.
 
 ### Run two installs in one database
 
@@ -350,7 +359,7 @@ three methods:
 `Admit` is called when a session is created, refreshed or used.
 `Proposal` carries the `Principal`, the `Audience`, a `ScopeID` (nil when the
 session is being created) and `SecondFactor` (how the session was signed in:
-`""`, `totp`, `email`, `recovery` or `passkey`). To allow, return an
+`""`, `totp`, `email`, `recovery`, `passkey` or `oidc`). To allow, return an
 `Admission` (optional `ScopeID`, extra token `Claims`, and a `Context` value
 for your handlers). To refuse, return `authkit.Refuse(result, err)`: `result`
 is the sign-in event to log and `err` is what the caller gets in
@@ -498,9 +507,10 @@ method fails.
 
 Call `kit.Prune(ctx, q)` on a schedule. It deletes throttle counters whose
 window has passed and that are not locked, sessions and one-time links dead
-for 30 days, passkey ceremonies and
-second-step challenges an hour past expiry, and events older than
-`EventRetention` (none when it is negative).
+for 30 days, passkey ceremonies and second-step challenges an hour past
+expiry, OIDC ceremonies and sign-up tickets an hour after they expire or are
+used, registrations past their expiry, mail counts 48 hours after their window
+began, and events older than `EventRetention` (none when it is negative).
 
 ### Add passkeys
 
@@ -582,6 +592,138 @@ mail worker calls `kit.Factors.MintEmailCode(ctx, q, id)` and mails the 6-digit
 `EmailCodeMail.Code`. `ErrCodeEnded` means the code was replaced, expired or
 used up.
 
+### Add Google and Apple sign-in
+
+`oidc.New(core, oidc.Rules{Providers: …})` signs principals in through
+OpenID Connect providers. Endpoints are fixed in the code: nothing is
+discovered at startup, and the providers' signing keys are fetched on first
+use.
+
+```go
+google := oidc.Google(googleID, googleSecret, "https://api.example.com/auth/oidc/google/callback")
+apple, err := oidc.Apple(teamID, keyID, servicesID, applePEM, "https://api.example.com/auth/oidc/apple/callback")
+if err != nil {
+	return nil, err
+}
+k.OIDC, err = oidc.New(core, oidc.Rules{Providers: []oidc.Provider{google, apple}})
+```
+
+- Google: a web OAuth client in Google Cloud, with the callback URL as an
+  authorized redirect URI.
+- Apple: a Services ID (the client id) with the callback URL as its return
+  URL, your Team ID, and a Sign in with Apple key: `applePEM` is the `.p8`
+  file and `keyID` its Key ID. `Apple` refuses anything but a P-256 PKCS #8
+  key. It signs a new ES256 client secret, valid 5 minutes, for each token
+  request.
+- `Google` and `Apple` set `SkipSecondFactor`: their sign-in opens a session
+  without the second step, as a passkey does. A `Provider` you build with
+  `SkipSecondFactor` false goes through the second-factor gate.
+
+Each provider needs two routes:
+
+1. Start: `r, err := kit.OIDC.Begin(ctx, q, provider, aud, m)`
+   (`oidc.ErrUnknownProvider` for a name not configured; answer 404).
+   Commit, set the binding cookie to `r.Binding`, and answer 303 to `r.URL`.
+2. Callback, `GET` for Google, `POST` for Apple (Apple answers with
+   `response_mode=form_post`): call `cb, err := oidc.ParseCallback(req)`
+   before anything else reads the body (`oidc.ErrBadCallback`), then
+   `res, signUp, err := kit.OIDC.Finish(ctx, q, cb, binding, m)` with the
+   binding cookie's value. Clear the cookie on every outcome. A non-nil `err`
+   means roll back. Commit on anything else, a refusal included: the ceremony
+   is spent and cannot be replayed.
+
+The binding cookie ties the callback to the browser that started it. Make it
+`HttpOnly` and `Secure`, with `Path` the callback path (so its name takes the
+`__Secure-` prefix: `__Host-` needs `Path=/`), `Max-Age` the
+`Rules.CeremonyTTL` (10 minutes by default) and `SameSite` from
+`r.SameSite`: `Lax` for Google, `None` for Apple, whose callback is a
+cross-site POST. Keep the Apple callback out of `echov5.RequireOrigin` and any
+CSRF middleware; the state, the binding cookie and the ID token's nonce
+protect it.
+
+| `Finish` gives | What to do |
+|---|---|
+| a session (or `SecondStep`, for a provider without `SkipSecondFactor`) | as after `Login` |
+| `Result.Principal` with no session and no refusal | a `Link` finished; back to the account page |
+| `Refusal: oidc.ErrIdentityUnknown` and a non-nil `signUp` | redirect to your sign-up page with `signUp.Ticket` in the URL fragment |
+| `Refusal: oidc.ErrSignInToLink` | a principal holds this verified email: ask the user to sign in (or reset the password), then link. authkit never links by email |
+| `Refusal: oidc.ErrCancelled`, `oidc.ErrEmailUnverified` | cancelled at the provider; the provider sent no verified email |
+| `Refusal: oidc.ErrIdentityTaken` | a link whose identity another principal holds |
+| `Refusal: authkit.ErrInvalidCredentials` | any failed check of the callback or ID token, logged as `bad_identity` |
+| your `Admit` refusal | as after `Login` |
+
+Sign-up: the sign-up page calls `kit.OIDC.Ticket(ctx, q, ticket)` to prefill
+the email and names; it does not spend the ticket, which lives
+`CeremonyTTL`. The submit handler, in one transaction, creates your principal
+from the form and calls `kit.OIDC.SignUp(ctx, q, ticket, principalID, aud, m)`.
+That spends the ticket, stores the identity and signs the principal in. Any
+error from it, `oidc.ErrTicketUnknown` and `oidc.ErrIdentityTaken` included,
+means roll back, so no principal is left with no way to sign in. On an
+`Admit` refusal, roll back the principal too. Apple sends the user's name only
+on the first authorization; `SignUp.GivenName` and `FamilyName` carry it, and
+the email always comes from the signed ID token. `SignUp.PrivateEmail` is
+true for an Apple relay address ("Hide My Email"); say so on the form. A
+relay sign-up is a new principal: a user with a password account signs in
+first and links.
+
+Linked accounts:
+
+- `kit.OIDC.Link(ctx, q, claims, provider, m)` needs a sign-in within
+  `Rules.Reauth` (`authkit.ErrReauthRequired`). It returns a `Redirect`
+  handled as `Begin`'s; the provider's callback route finishes it.
+- `kit.OIDC.Unlink(ctx, q, claims, provider, m)` removes the identity and
+  ends the caller's other sessions. It returns `authkit.ErrReauthRequired`,
+  `oidc.ErrNotLinked`, or `oidc.ErrLastCredential` when no password, passkey
+  or other identity would be left.
+- `kit.OIDC.Identities(ctx, q, principal)` lists `Identity{Provider, Email,
+  CreatedAt, LastUsedAt}`, oldest first; `kit.OIDC.Providers()` lists the
+  configured names.
+- `CompleteReset` removes every identity of the principal, as it removes
+  passkeys.
+
+### Add registration
+
+`register.New(core, k.Password, register.Rules{Create: createPrincipal})`
+adds sign-up with an emailed link. A pending registration is an authkit row,
+not a principal. It holds the address (`authkit.Normalize`d), your form's
+fields as an opaque JSON `payload`, and no password: the password is typed on
+the activation page, so whoever reads the mail chooses it.
+
+1. Register handler, one transaction: validate the form (address, names,
+   consent), then `st, err := kit.Register.Start(ctx, q, aud, email, payload)`.
+   Exactly one field of `Started` is set:
+   - `TokenID`: enqueue the activation mail with it. A second `Start` for a
+     pending address is the resend: a new link replaces the old one, and the
+     latest payload is kept.
+   - `Holder`: a principal holds the address; enqueue your "you already have
+     an account" mail, if you send one.
+   - `RetryAfter`: the address had `MailCap` mails within `MailWindow`; send
+     nothing.
+
+   Commit in every case (the mail count must stay counted) and answer the
+   same way, then call `authkit.PadSince(start, kit.Register.Floor())`.
+2. Mail worker, own transaction: `mail, err := kit.Register.Mint(ctx, q, id)`.
+   `register.ErrNothingToSend` means the registration or link is gone: drop
+   the job. `mail.Raw` goes into the link and nowhere else; `To`, `Payload`
+   and `ExpiresAt` fill the email. `kit.Register.CountMail(ctx, q, aud, email)`
+   counts your other mails to the address (the account-exists notice) against
+   the same cap, and returns the wait when over it.
+3. Activation page, one transaction:
+   `res, err := kit.Register.Activate(ctx, q, raw, password, m)`. It checks the
+   password against `password.Config.Password`, spends the link, calls
+   `Rules.Create` with the `Pending` (`ID`, `Audience`, `Email`, `Payload`,
+   `CreatedAt`) so you insert your principal, stores the password and signs the
+   principal in. Refusals come with a nil `err`; commit them: `PolicyError`
+   and `ErrBusy` leave the link unspent, `authkit.ErrTokenUnknown` is an
+   unknown, used, replaced or expired link, `register.ErrAddressHeld` means a
+   principal took the address meanwhile (the registration is deleted), or your
+   `Admit` refusal. When `Create` hits your unique index, return an error
+   wrapping `register.ErrAddressHeld`: `Activate` returns it as `err`, and you
+   roll back and answer as for the refusal.
+
+An OIDC sign-up for a pending address creates the principal; the pending
+registration then ends with `register.ErrAddressHeld`.
+
 ### Write a module
 
 A module is a package whose `New(core *authkit.Service, rules)` checks its
@@ -592,6 +734,8 @@ rules, calls `core.Attach("<name>")` once and keeps the returned
   `Attempt`: it normalises the login and checks the throttle.
   `Attempt.Refuse` records a refusal and counts it once; `SignIn` runs
   `Admit` and the second-factor gate, then opens the session.
+  `Attempt.SkipSecondFactor` lets a `FactorOIDC` sign-in skip the second step,
+  as a passkey sign-in does.
 - `Fresh`, `LockSession`, `RevokeAll`, `RevokeOthers` and `Reopen` act on
   sessions; `Record` writes to the sign-in log in your transaction.
 - Run every statement on `core.Q(q)`, so the module's SQL reaches the
@@ -606,6 +750,11 @@ fn)`, `(*DB).NewPrincipal(t, login)`, `NewPrincipals()` (a `Principals` you
 can set to refuse or allow), `NewClock()` (starts 2040-01-01 12:00 UTC),
 `Rand(seed)`, and `NewAuthenticator(rpID, origin)`, a software passkey
 authenticator whose `Create` and `Get` answer the options JSON.
+`authkittest/oidcfake.New(t, oidcfake.Google)` (or `oidcfake.Apple`) is a local
+provider over `httptest` TLS: put `Server.Provider(redirectURL)` in
+`oidc.Rules.Providers` and `Server.Client` in `oidc.Rules.HTTPClient`, and
+`Server.Authorize(t, redirect, oidcfake.User{…})` plays the browser and returns
+the callback.
 `Config.Clock` and `Config.Rand` take the clock and random source.
 
 ## Configuration reference
@@ -678,6 +827,41 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `Reauth` | 5 min | how recent a sign-in must be to manage factors |
 | `RecoveryCodes` | 10 | recovery codes issued |
 
+`oidc.Rules` (`oidc.New`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Providers` | none (required) | `[]oidc.Provider`, built by `oidc.Google`, `oidc.Apple` or by hand |
+| `CeremonyTTL` | 10 min | how long a `Begin` or `Link` can be finished, and a sign-up ticket lives |
+| `Skew` | 5 min | how far ahead of the clock an ID token's `iat` may be |
+| `Reauth` | 5 min | how recent a sign-in must be to link or unlink |
+| `HTTPClient` | a client with a 10 s timeout | carries token requests and key fetches |
+
+`oidc.Provider` (for a provider other than Google and Apple):
+
+| Field | Meaning |
+|---|---|
+| `Name` | the provider's name in your routes and stored identities |
+| `Issuers` | accepted `iss` values |
+| `AuthURL`, `TokenURL`, `JWKSURL` | the provider's endpoints |
+| `ClientID`, `ClientSecret` | your client at the provider; `Secret`, when set, makes the secret for each token request instead |
+| `RedirectURL` | your callback URL as registered |
+| `Scopes` | requested scopes |
+| `SkipSecondFactor` | its sign-in skips the second step |
+| `AuthStyle` | `oauth2.AuthStyleInParams` or `AuthStyleInHeader` |
+| `FormPost` | ask for `response_mode=form_post` (a POST callback) |
+| `SameSite` | the binding cookie's `SameSite` |
+
+`register.Rules` (`register.New`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Create` | none (required) | `func(ctx, q, register.Pending) (authkit.Principal, error)`: inserts your principal at activation |
+| `TTL` | 48 h | registration and link lifetime |
+| `MailCap` | 3 | activation mails per address per `MailWindow` |
+| `MailWindow` | 1 h | the window the cap counts over; at most 24 h |
+| `Floor` | 500 ms | minimum time of your register handler (`PadSince`) |
+
 `authkit.New` refuses:
 
 - Bearer mode without `Issuer`, with a `Secret` under 32 bytes, or with a
@@ -696,6 +880,15 @@ is neither empty nor 32 bytes, an `Issuer` with a colon, and limits out of
 range. Each module's `New` returns `authkit.ErrAttached` when that module is
 already attached to the `Service`.
 
+`oidc.New` refuses no provider, a `Name` not matching
+`^[a-z][a-z0-9_-]{0,31}$` or used twice, an empty `ClientID` or `Issuers`, an
+`AuthURL`, `TokenURL` or `JWKSURL` that is not `https://`, a `RedirectURL`
+that is not `https://` (except on `http://localhost` and
+`http://127.0.0.1`), a provider with neither `ClientSecret` nor `Secret`, a
+zero `AuthStyle` or `SameSite`, and negative durations. `register.New`
+refuses a nil `Create` or password module, negative values and a
+`MailWindow` over 24 h.
+
 Switching `PlainLoginKey` off on a running app orphans the existing throttle
 counters; nothing migrates them.
 
@@ -708,7 +901,7 @@ are the ones echov5's documentation suggests; elsewhere they are your choice.
 
 | Error | From | Meaning |
 |---|---|---|
-| `ErrInvalidCredentials` | `Login`, `VerifyPassword` | wrong password or unknown login |
+| `ErrInvalidCredentials` | `Login`, `VerifyPassword`, `oidc` `Finish` | wrong password or unknown login; for `Finish`, any failed check of the callback or ID token |
 | `ErrLocked{RetryAfter}` | `Login`, `VerifySecondStep`, `SendSecondStepEmail`, `DisableSecondFactor` | throttle locked; retry after `RetryAfter` |
 | `ErrBusy` | hashing methods; `echov5.HashSlot` (503) | no argon2id slot within `HashWait` |
 | `ErrSessionEnded` | `Authenticate`, `RevokeSession`; `echov5.RequireSession`, `echov5.Guard` (401) | session missing, revoked or expired |
@@ -728,6 +921,13 @@ are the ones echov5's documentation suggests; elsewhere they are your choice.
 | `ErrBadCode`, `ErrChallengeEnded`, `ErrCodeEnded`, `ErrSetupExpired` | second-factor methods | wrong code; challenge, code or setup no longer valid |
 | `ErrFactorExists`, `ErrFactorNotFound` | second-factor methods | factor already on; factor not on |
 | `ErrResendTooSoon{RetryAfter}` | emailed-code methods | a new code asked for too soon |
+| `oidc.ErrCancelled`, `oidc.ErrEmailUnverified`, `oidc.ErrSignInToLink`, `oidc.ErrIdentityUnknown`, `oidc.ErrIdentityTaken` | `oidc` `Finish` | cancelled at the provider; no verified email; a principal holds the email (sign in, then link); no principal holds the identity (with a `SignUp`); a link to an identity another principal holds |
+| `oidc.ErrTicketUnknown`, `oidc.ErrIdentityTaken` (errors) | `oidc` `Ticket`, `SignUp` | the ticket is unknown, spent or expired; the identity was linked meanwhile. Roll back |
+| `oidc.ErrUnknownProvider`, `ErrReauthRequired` (errors) | `oidc` `Begin`, `Link`, `Unlink` | no such provider; sign-in too old |
+| `oidc.ErrNotLinked`, `oidc.ErrLastCredential` (errors) | `oidc` `Unlink` | not linked; it is the principal's last way to sign in |
+| `oidc.ErrBadCallback` (an error) | `oidc.ParseCallback` | the callback cannot be read |
+| `PolicyError`, `ErrBusy`, `ErrTokenUnknown`, `register.ErrAddressHeld` | `register` `Activate` | bad password (link unspent); no hashing slot (link unspent); link unknown, used, replaced or expired; a principal holds the address |
+| `register.ErrNothingToSend` (an error) | `register` `Mint` | the registration or link is gone: drop the mail job |
 | your `Refuse(result, err)` error | any method that calls `Admit` | your app refused the session |
 | `db.ErrTxRequired` (an `error`, not a refusal) | methods that write or lock | called outside a transaction |
 | `ErrSchemaBehind` (an `error`) | `CheckSchema` | run the migrations |
@@ -739,6 +939,18 @@ Each release may add migrations. After every upgrade, rerun `authkit-gen`
 with the same flags and lock file, and apply the new migrations before
 deploying; otherwise `CheckSchema` refuses to start with `ErrSchemaBehind`.
 See `CHANGELOG.md` for the full list of changes.
+
+**v0.6.0.** New modules: `oidc` (Google and Apple sign-in) and `register`.
+No existing signature changes. Migrations 0005 (`auth_ceremonies`,
+`auth_identities`, the `oidc` second factor, the `identity_removed` revoke
+reason) and 0006 (`auth_registrations`, `auth_mail_counts`) are required:
+`CheckSchema` refuses a database below version 6, even for an app that uses
+neither module. Run `go get github.com/sylly-mika/authkit@v0.6.0` and
+`go mod tidy`, rerun `authkit-gen` with the same flags and lock, and apply
+the migrations. If you use RLS, give the four new tables policies, as
+`authkittest/policies.sql` does. `Proposal.SecondFactor` and the sign-in log
+can now say `oidc`, and `CompleteReset` also removes the principal's OIDC
+identities.
 
 **v0.5.0.** authkit is now a core plus modules. There is no new migration,
 and behaviour is unchanged except that `Proposal.Source` names the path that
@@ -809,7 +1021,8 @@ You need Docker and a local `gofmt`. Vet, tests and fuzzing run in the
 | `make test-ns` | the tests again with every table in the `kit_ns` schema (`AUTHKIT_TEST_SCHEMA=kit_ns`) |
 | `make verify` | gofmt, `go vet`, `go test -race` (plain and in `kit_ns`), the round trip and the fuzz targets |
 
-Tests live in `tests/`, in `password/`, `passkey/` and `secondfactor/`, and in
+Tests live in `tests/`, in `password/`, `passkey/`, `secondfactor/`, `oidc/`,
+`register/` and `authkittest/oidcfake/`, and in
 the root `*_test.go` files. `TestModuleDeps` runs `go list` and skips when
 `go` is not on `PATH`.
 
