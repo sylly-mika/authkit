@@ -345,3 +345,48 @@ func TestAppleEndpoints(t *testing.T) {
 		t.Error("the discovery document does not offer form_post")
 	}
 }
+
+func TestFlexBool(t *testing.T) {
+	t.Run("accepted", func(t *testing.T) {
+		for _, c := range []struct {
+			raw  string
+			want bool
+		}{
+			{`true`, true},
+			{`false`, false},
+			{`"true"`, true},
+			{`"false"`, false},
+		} {
+			var v struct {
+				V flexBool `json:"email_verified"`
+			}
+			if err := json.Unmarshal([]byte(`{"email_verified":`+c.raw+`}`), &v); err != nil {
+				t.Fatalf("decoding %s: %v", c.raw, err)
+			}
+			if bool(v.V) != c.want {
+				t.Errorf("decoding %s = %v, want %v", c.raw, bool(v.V), c.want)
+			}
+		}
+		var absent struct {
+			V flexBool `json:"email_verified"`
+		}
+		if err := json.Unmarshal([]byte(`{}`), &absent); err != nil {
+			t.Fatalf("decoding an absent claim: %v", err)
+		}
+		if absent.V {
+			t.Error("an absent claim decoded as true")
+		}
+	})
+
+	t.Run("refused", func(t *testing.T) {
+		for _, raw := range []string{`"yes"`, `"TRUE"`, `""`, `"1"`, `1`, `0`, `null`, `{}`} {
+			var v struct {
+				V flexBool `json:"email_verified"`
+			}
+			err := json.Unmarshal([]byte(`{"email_verified":`+raw+`}`), &v)
+			if err == nil || !strings.Contains(err.Error(), "oidc: a boolean claim is neither true nor false") {
+				t.Errorf("decoding %s: err = %v, want the boolean claim error", raw, err)
+			}
+		}
+	})
+}
