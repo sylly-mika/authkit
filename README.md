@@ -7,6 +7,11 @@ factors (TOTP, emailed codes, recovery codes). Passwords are hashed with
 argon2id. authkit owns its `auth_*` tables; your app owns its users
 ("principals") table and its own data.
 
+The core package `authkit` owns sessions, the login throttle, `Admit`, the
+second-factor gate and the sign-in log. Password sign-in, passkeys and second
+factors are modules (`password`, `passkey`, `secondfactor`); an app links only
+the modules it imports.
+
 What it does not do:
 
 - It never opens a transaction and never sets a row-level security (RLS)
@@ -21,7 +26,7 @@ The API may change between minor versions until 1.0.
 ## Install
 
 ```sh
-go get github.com/sylly-mika/authkit@v0.4.2
+go get github.com/sylly-mika/authkit@v0.5.0
 ```
 
 Requirements:
@@ -37,7 +42,10 @@ Packages you will use:
 
 | Package | Use |
 |---|---|
-| `authkit` | `Config`, `New`, `Service` and its methods |
+| `authkit` | the core: `Config`, `New`, `Service` (sessions, `Admit`, the second-factor gate, the sign-in log); `Core` for module authors |
+| `password` | `password.New`, `*password.Module`: password sign-in, reset and changes; the argon2id hasher |
+| `passkey` | `passkey.New`, `*passkey.Module`: passkey sign-in and management (links `go-webauthn`) |
+| `secondfactor` | `secondfactor.New`, `*secondfactor.Module`: TOTP, emailed codes, recovery codes (links `pquerna/otp`) |
 | `db` | `db.Querier`, the SQL interface every method runs on |
 | `db/pgxdb`, `db/sqldb` | wrap a pgx or `database/sql` transaction as a `db.Querier` |
 | `echov5` | echo v5 middleware |
@@ -71,6 +79,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/pgxdb"
 	"github.com/sylly-mika/authkit/echov5"
+	"github.com/sylly-mika/authkit/password"
 	"github.com/sylly-mika/authkit/transport/cookie"
 )
 
@@ -116,6 +125,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	passwords, err := password.New(kit, password.Config{})
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Refuse to start on a database older than the library.
 	if err := inTx(ctx, func(q db.Querier) error { return authkit.CheckSchema(ctx, q) }); err != nil {
 		log.Fatal(err)
@@ -127,19 +140,19 @@ func main() {
 		echov5.SessionCookie(kit, aud, opts, inTx),
 		echov5.RequireOrigin([]string{"https://app.example.com"}),
 	)
-	g.POST("/login", login(kit, inTx, opts), echov5.RateLimit(rate.Limit(1), 5), echov5.HashSlot(kit))
+	g.POST("/login", login(passwords, inTx, opts), echov5.RateLimit(rate.Limit(1), 5), echov5.HashSlot(passwords))
 	g.GET("/me", me, echov5.RequireSession(opts, false))
 	log.Fatal(http.ListenAndServe(":8080", e))
 }
 
-func login(kit *authkit.Service, inTx func(context.Context, func(db.Querier) error) error, opts cookie.Options) echo.HandlerFunc {
+func login(passwords *password.Module, inTx func(context.Context, func(db.Querier) error) error, opts cookie.Options) echo.HandlerFunc {
 	return func(c *echo.Context) error {
 		ctx := c.Request().Context() // carries the hash slot HashSlot took
 		m := authkit.Meta{IP: c.RealIP(), UserAgent: c.Request().UserAgent()}
 		var res authkit.Result
 		err := inTx(ctx, func(q db.Querier) error {
 			var err error
-			res, err = kit.Login(ctx, q, aud, c.FormValue("login"), c.FormValue("password"), m)
+			res, err = passwords.Login(ctx, q, aud, c.FormValue("login"), c.FormValue("password"), m)
 			return err // a refusal is not an error: the transaction commits the throttle count
 		})
 		var locked authkit.ErrLocked
@@ -187,6 +200,48 @@ package documentation suggests.
 
 ## Common tasks
 
+### Wire modules
+
+`authkit.New` builds the core. Each module's `New` takes that
+`*authkit.Service` and the module's own rules, and attaches once per
+`Service`: a second `New` of the same module returns `authkit.ErrAttached`.
+An app links only the modules it imports: without `passkey` the binary has no
+`go-webauthn`, without `secondfactor` no `pquerna/otp`. Bundle them in one
+struct; the examples below call it `kit`:
+
+```go
+type Kit struct {
+	*authkit.Service
+	Password *password.Module
+	Passkeys *passkey.Module
+	Factors  *secondfactor.Module
+}
+
+func NewKit(cfg authkit.Config, principals authkit.Principals) (*Kit, error) {
+	core, err := authkit.New(cfg, principals)
+	if err != nil {
+		return nil, err
+	}
+	k := &Kit{Service: core}
+	if k.Password, err = password.New(core, password.Config{}); err != nil {
+		return nil, err
+	}
+	if k.Passkeys, err = passkey.New(core, passkey.Rules{}); err != nil {
+		return nil, err
+	}
+	k.Factors, err = secondfactor.New(core, secondfactor.Rules{})
+	return k, err
+}
+```
+
+Core methods (`Authenticate`, `Refresh`, `OpenSession`, `VerifySecondStep`,
+`SendSecondStepEmail`, `Prune` and the rest) stay on `kit`; module methods are
+on `kit.Password`, `kit.Passkeys` and `kit.Factors`. A module given empty
+rules is attached but off: `passkey` without `RPID` answers
+`ErrPasskeysOff`; `secondfactor` without `Key` answers `ErrSecondFactorsOff`,
+and so does a sign-in by a principal with a confirmed factor. Leaving
+`secondfactor` out has the same effect.
+
 ### Add the database tables
 
 The migrations are embedded in the module. `authkit-gen` copies them into
@@ -201,8 +256,9 @@ go run github.com/sylly-mika/authkit/cmd/authkit-gen -principals users -out migr
 | Flag | Default | Meaning |
 |---|---|---|
 | `-principals` | required | your principals table |
+| `-schema` | none | put the tables in this PostgreSQL schema (see "Run two installs in one database") |
 | `-out` | `migrations` | your migration directory |
-| `-lock` | `authkit.lock` | records what was written, so a later run adds only new migrations |
+| `-lock` | `authkit.lock` (`authkit.<schema>.lock` with `-schema`) | records what was written, so a later run adds only new migrations |
 | `-format` | `golang-migrate` | `golang-migrate` writes `NNNNNN_authkit_<name>.up.sql` and `.down.sql`; `goose` writes one `NNNNN_authkit_<name>.sql` with `-- +goose Up` and `-- +goose Down` |
 
 With `goose`, numbering follows the highest `N_*.sql` or `N_*.go` file in
@@ -228,9 +284,46 @@ Your app must:
   example, `auth_passkeys` and `auth_passkey_ceremonies` get the same policies
   as `auth_credentials`.
 
+### Run two installs in one database
+
+`Config.Schema` puts an install's tables in their own PostgreSQL schema, so one
+database can hold two installs, for example staff on `administrators` and
+shoppers on `customers`. Each install is its own `authkit.New` with its own
+`Schema` and its own modules; they share no rows. An empty `Schema` (the
+default) uses the unqualified `auth_*` names. A `Schema` must match
+`^[a-z_][a-z0-9_]{0,62}$` and must not be `public`, `information_schema` or
+start with `pg_`; `New` refuses any other.
+
+Generate the install's migrations with the same name:
+
+```sh
+go run github.com/sylly-mika/authkit/cmd/authkit-gen -principals customers -schema customer_auth -out migrations
+```
+
+With `-schema`, files are named `NNNNN_authkit_<schema>_<name>`, the first one
+creates the schema (`CREATE SCHEMA IF NOT EXISTS`; no down migration drops it),
+every `auth_*` table is created in it, and the lock defaults to
+`authkit.<schema>.lock`. A lock written with one `-schema` refuses another.
+
+Grant your app's role the schema and its tables, as authkit's tests do:
+
+```sql
+GRANT USAGE ON SCHEMA customer_auth TO app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA customer_auth TO app;
+```
+
+Write your RLS policies on `customer_auth.auth_*` as you would on `auth_*`.
+At startup, call `kit.CheckSchema(ctx, q)` on each install; it reads that
+install's `<schema>.auth_schema` (the package func `authkit.CheckSchema`
+reads only the search path). `kit.OneTime()` keeps its links in the
+install's schema; a store you build yourself takes the schema through
+`onetime.NewIn(schema, now, rand)`. In tests,
+`authkittest.NewDB(t, authkittest.Schema("customer_auth"))` builds a database
+whose tables live in that schema.
+
 ### Pass a transaction
 
-Every `Service` method takes a `db.Querier` as its second argument. Methods
+Every `Service` and module method takes a `db.Querier` as its second argument. Methods
 that write or lock refuse to run outside a transaction with
 `db.ErrTxRequired`. Wrap your transaction:
 
@@ -314,7 +407,7 @@ and the `Admission` with `echov5.Admission(c)`.
 
 ### Handle sign-in
 
-`Login(ctx, q, aud, login, pw, m)` counts the attempt on the login's throttle
+`kit.Password.Login(ctx, q, aud, login, pw, m)` counts the attempt on the login's throttle
 row, then verifies the password. After `Throttle.Failures` failures within
 `Throttle.Window`, the next attempt is refused with `authkit.ErrLocked`
 without a password check until `Throttle.Lockout` passes. A success clears the
@@ -327,13 +420,13 @@ nothing. To hold a slot before opening the transaction (what
 `echov5.HashSlot` does):
 
 ```go
-ctx2, release, res, err := kit.AcquireHashSlot(ctx)
+ctx2, release, res, err := kit.Password.AcquireHashSlot(ctx)
 defer release() // never nil
 if err != nil { return err }               // only ctx's error
 if res.Refusal != nil { /* ErrBusy: answer 503 */ }
 // Open the transaction, then pass ctx2 to Login, VerifyPassword,
 // ChangePassword, CompleteReset or SetPassword: it carries the slot.
-res, err = kit.Login(ctx2, q, aud, login, password, m)
+res, err = kit.Password.Login(ctx2, q, aud, login, password, m)
 ```
 
 When the principal has a confirmed second factor, `Login` opens no session
@@ -347,16 +440,16 @@ revoked or expired), for a workspace switch.
 
 ### Add password reset
 
-1. `RequestReset(ctx, q, aud, login)` creates a reset link and returns its id
+1. `kit.Password.RequestReset(ctx, q, aud, login)` creates a reset link and returns its id
    in `Result.TokenID`. Enqueue the email with that id in the same
    transaction. An unknown login, or one without a password (unless
    `Reset.MayCreateCredential`), writes nothing and has no `TokenID`. Answer
    the same way in both cases, and after the transaction commits call
-   `authkit.PadSince(start, kit.ResetFloor())` so both take the same time.
+   `authkit.PadSince(start, kit.Password.ResetFloor())` so both take the same time.
 2. Your mail worker, in its own transaction, calls
    `kit.OneTime().Mint(ctx, q, id)`. The returned `Minted.Raw` goes into the
    email and nowhere else.
-3. The link handler calls `CompleteReset(ctx, q, aud, raw, newPassword, m)`.
+3. The link handler calls `kit.Password.CompleteReset(ctx, q, aud, raw, newPassword, m)`.
    It checks the password policy, spends the link, sets the password and
    revokes every session of the principal. It also deletes the principal's
    passkeys (`Result.PasskeysRemoved`). With a second factor on, it returns
@@ -366,16 +459,16 @@ revoked or expired), for a workspace switch.
 
 ### Change or set a password
 
-- `ChangePassword(ctx, q, claims, current, next, m)` replaces the caller's
+- `kit.Password.ChangePassword(ctx, q, claims, current, next, m)` replaces the caller's
   password. `RevokeOnPasswordChange` decides the caller's own session:
   `RevokeOthers` (default) keeps it, `RevokeAll` replaces it with a new one in
   `Result.Tokens` or `Result.SessionToken`. Passkeys are kept.
-- `SetPassword(ctx, q, p, aud, pw, m)` gives a principal without a password
+- `kit.Password.SetPassword(ctx, q, p, aud, pw, m)` gives a principal without a password
   its first one. It revokes nothing.
-- `VerifyPassword(ctx, q, p, aud, pw, m)` checks a password inside your own
+- `kit.Password.VerifyPassword(ctx, q, p, aud, pw, m)` checks a password inside your own
   flow. A mismatch is `ErrInvalidCredentials`; it does not touch the throttle.
-- `HasCredential(ctx, q, principal)` reports whether a principal has a
-  password. `kit.CheckPassword(pw)` applies the policy alone.
+- `kit.Password.HasCredential(ctx, q, principal)` reports whether a principal has a
+  password. `kit.Password.CheckPassword(pw)` applies the policy alone.
 
 ### Manage sessions
 
@@ -411,65 +504,65 @@ second-step challenges an hour past expiry, and events older than
 
 ### Add passkeys
 
-Passkeys are off until `Config.Passkeys.RPID` is set; until then every
+Passkeys are off until `passkey.Rules.RPID` is set; until then every
 passkey method refuses with `authkit.ErrPasskeysOff`. `RPID` is your domain
-with no scheme, port or path. `Passkeys.Origins` lists the allowed origins
+with no scheme, port or path. `Rules.Origins` lists the allowed origins
 per audience: `https`, or `http` only when `RPID` is `localhost`, each host
 equal to `RPID` or ending in `.` + `RPID`. A ceremony begun on one audience
 cannot be finished on another.
 
 ```go
-cfg.Passkeys = authkit.PasskeyRules{
+kit.Passkeys, err = passkey.New(kit.Service, passkey.Rules{
 	RPID:    "example.com",
 	Origins: map[authkit.Audience][]string{"web": {"https://app.example.com"}},
-}
+})
 ```
 
 Sign-in:
 
-1. `BeginPasskeyLogin(ctx, q, aud, m)` stores a ceremony and returns it in
+1. `kit.Passkeys.BeginPasskeyLogin(ctx, q, aud, m)` stores a ceremony and returns it in
    `Result.Ceremony` (`ID`, `Options` for the browser, `ExpiresAt`). It takes
    no login.
-2. `FinishPasskeyLogin(ctx, q, aud, ceremonyID, response, m)` takes the
+2. `kit.Passkeys.FinishPasskeyLogin(ctx, q, aud, ceremonyID, response, m)` takes the
    browser's JSON response, calls `Admit` and opens a session as `Login`
    does. Every refusal is `authkit.ErrPasskeyRejected`, except a refusal from
    your `Admit`. The password throttle is not used.
 
 Registration needs a principal with a password (`ErrNoPassword`), a sign-in
-within `Passkeys.Reauth` (`ErrReauthRequired`) and fewer than `Passkeys.Max`
-passkeys (`ErrPasskeyLimit`): `BeginPasskeyRegistration(ctx, q, claims, m)`,
-then `FinishPasskeyRegistration(ctx, q, claims, ceremonyID, response, label,
+within `Rules.Reauth` (`ErrReauthRequired`) and fewer than `Rules.Max`
+passkeys (`ErrPasskeyLimit`): `kit.Passkeys.BeginPasskeyRegistration(ctx, q, claims, m)`,
+then `kit.Passkeys.FinishPasskeyRegistration(ctx, q, claims, ceremonyID, response, label,
 m)`.
 
-Management: `ListPasskeys(ctx, q, principal)`; `RenamePasskey(ctx, q, claims,
+Management: `kit.Passkeys.ListPasskeys(ctx, q, principal)`; `kit.Passkeys.RenamePasskey(ctx, q, claims,
 id, label)` (label 1 to 64 characters, `ErrPasskeyLabel`; no recent sign-in
-needed); `DeletePasskey(ctx, q, claims, id, m)` (needs a sign-in within
+needed); `kit.Passkeys.DeletePasskey(ctx, q, claims, id, m)` (needs a sign-in within
 `Reauth`, revokes the principal's other sessions). Another principal's
 passkey is `ErrPasskeyNotFound`, like an unknown one.
 
 ### Add second factors
 
-Second factors are off until `Config.SecondFactors.Key` is set to 32 bytes.
+Second factors are off until `secondfactor.New` runs with a 32-byte `Rules.Key`.
 The key seals the TOTP secrets. Until it is set, every second-factor method
-refuses with `authkit.ErrSecondFactorsOff`, and so does `Login` for a
+refuses with `authkit.ErrSecondFactorsOff`, and so does `kit.Password.Login` for a
 principal that has a confirmed factor.
 
-Setting a factor up needs a sign-in within `SecondFactors.Reauth`
+Setting a factor up needs a sign-in within `Rules.Reauth`
 (`ErrReauthRequired`):
 
-- TOTP: `BeginTOTPSetup(ctx, q, claims, m)` returns `Result.TOTPSetup` (`URI`,
-  `Secret`, `QRPNG` a 256x256 PNG, `ExpiresAt`); `ConfirmTOTP(ctx, q, claims,
+- TOTP: `kit.Factors.BeginTOTPSetup(ctx, q, claims, m)` returns `Result.TOTPSetup` (`URI`,
+  `Secret`, `QRPNG` a 256x256 PNG, `ExpiresAt`); `kit.Factors.ConfirmTOTP(ctx, q, claims,
   code, m)` turns it on.
-- Email: `BeginEmailCodeSetup(ctx, q, claims, m)` returns `Result.EmailCode`
-  for your mail worker; `ConfirmEmailCode(ctx, q, claims, code, m)` turns it
+- Email: `kit.Factors.BeginEmailCodeSetup(ctx, q, claims, m)` returns `Result.EmailCode`
+  for your mail worker; `kit.Factors.ConfirmEmailCode(ctx, q, claims, code, m)` turns it
   on.
 - The first confirmed factor returns 10 recovery codes in
   `Result.RecoveryCodes`. Show them once.
-- `SecondFactorStatus(ctx, q, claims)` returns a `FactorStatus` (`TOTP`,
-  `Email`, `RecoveryCodesLeft`). `RegenerateRecoveryCodes(ctx, q, claims, m)`
-  replaces the codes. `DisableSecondFactor(ctx, q, claims, kind, proof, m)`
+- `kit.Factors.SecondFactorStatus(ctx, q, claims)` returns a `FactorStatus` (`TOTP`,
+  `Email`, `RecoveryCodesLeft`). `kit.Factors.RegenerateRecoveryCodes(ctx, q, claims, m)`
+  replaces the codes. `kit.Factors.DisableSecondFactor(ctx, q, claims, kind, proof, m)`
   turns one factor off, with a `FactorProof{Method, Code}` from any factor or
-  a recovery code; `RequestEmailProof(ctx, q, claims, m)` mails a code to use
+  a recovery code; `kit.Factors.RequestEmailProof(ctx, q, claims, m)` mails a code to use
   as that proof. Turning off the last factor deletes the recovery codes. No
   session ends.
 
@@ -485,9 +578,26 @@ Sign-in with a second factor:
    login is refused with `ErrLocked` before any code is checked.
 
 Emailed codes: enqueue `Result.EmailCode.ID` in the same transaction. The
-mail worker calls `kit.MintEmailCode(ctx, q, id)` and mails the 6-digit
+mail worker calls `kit.Factors.MintEmailCode(ctx, q, id)` and mails the 6-digit
 `EmailCodeMail.Code`. `ErrCodeEnded` means the code was replaced, expired or
 used up.
+
+### Write a module
+
+A module is a package whose `New(core *authkit.Service, rules)` checks its
+rules, calls `core.Attach("<name>")` once and keeps the returned
+`*authkit.Core`. The `Core` is the module's only way to the core's rules:
+
+- `Begin` (or `BeginVerified`, for a sign-in with no login) starts an
+  `Attempt`: it normalises the login and checks the throttle.
+  `Attempt.Refuse` records a refusal and counts it once; `SignIn` runs
+  `Admit` and the second-factor gate, then opens the session.
+- `Fresh`, `LockSession`, `RevokeAll`, `RevokeOthers` and `Reopen` act on
+  sessions; `Record` writes to the sign-in log in your transaction.
+- Run every statement on `core.Q(q)`, so the module's SQL reaches the
+  install's schema.
+
+The `Core` API is unstable until 1.0: any minor version may change it.
 
 ### Test your integration
 
@@ -500,9 +610,11 @@ authenticator whose `Create` and `Get` answer the options JSON.
 
 ## Configuration reference
 
-`authkit.New(cfg, principals)` takes a `Config`. A zero field takes its
-default. A negative `Session.AbsoluteTTL`, `Session.RotateEvery` or
-`EventRetention` turns that limit off.
+`authkit.New(cfg, principals)` takes a `Config`; each module's `New` takes its
+own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
+`Session.RotateEvery` or `EventRetention` turns that limit off.
+
+`authkit.Config`:
 
 | Field | Default | Meaning |
 |---|---|---|
@@ -515,53 +627,74 @@ default. A negative `Session.AbsoluteTTL`, `Session.RotateEvery` or
 | `RefreshTTLFor` | none | `map[Audience]time.Duration`: `IdleTTL` per audience |
 | `RefreshTTL` | unset | deprecated name of `Session.IdleTTL`; wins when set |
 | `ReuseGrace` | 30 s | how long a swapped-out token is accepted before it counts as reuse |
-| `ResetTTL` | 1 h | reset link lifetime |
-| `ResetFloor` | 500 ms | minimum time for a reset request (`PadSince`) |
-| `Reset.MayCreateCredential` | false | true: a reset can set a first password for a principal without one |
-| `Password` | 10 to 256 runes | `password.Policy{MinRunes, MaxRunes}` |
-| `Hashing` | argon2id 19 MiB, t=2, p=1 | `password.Params` |
-| `HashConcurrency` | 4 | argon2id slots |
-| `HashWait` | 2 s | wait for a slot before `ErrBusy` |
 | `Throttle.Failures` | 5 | failures within `Window` before a lockout |
 | `Throttle.Window` | 15 min | counting window |
 | `Throttle.Lockout` | 15 min | lockout length |
 | `Throttle.CountAfterVerify` | false | false: count before verifying; true: v0.1's order |
 | `Throttle.PlainLoginKey` | false | false: key `auth_throttle` on hex(sha256(normalised login)); true: the plain login |
-| `RevokeOnPasswordChange` | `RevokeOthers` | `RevokeAll` also replaces the caller's session |
 | `Events.ChangeLogsReset` | false | true: `ChangePassword` logs `password_reset` instead of `password_changed` |
 | `EventRetention` | 90 days | `Prune` deletes older events; negative: keep forever |
 | `OnEvent` | nil | `func(ctx, q db.Querier, e Event) error`, run after each event |
 | `Clock` | system clock | source of every timestamp |
 | `Rand` | `crypto/rand.Reader` | random source |
-| `Passkeys.RPID` | empty (off) | relying party domain; set to turn passkeys on |
-| `Passkeys.RPName` | `authkit` | relying party name |
-| `Passkeys.Origins` | none | `map[Audience][]string` of allowed origins |
-| `Passkeys.CeremonyTTL` | 2 min | ceremony lifetime, at most 10 min |
-| `Passkeys.Reauth` | 5 min | how recent a sign-in must be to add or delete a passkey |
-| `Passkeys.Max` | 10 | passkeys per principal |
-| `SecondFactors.Key` | empty (off) | 32 bytes; set to turn second factors on |
-| `SecondFactors.Issuer` | `authkit` | issuer shown in authenticator apps |
-| `SecondFactors.ChallengeTTL` | 10 min | second-step challenge lifetime |
-| `SecondFactors.EmailCodeTTL` | 10 min | emailed code lifetime |
-| `SecondFactors.SetupTTL` | 15 min | factor setup lifetime |
-| `SecondFactors.ResendEvery` | 60 s | minimum gap between emailed codes |
-| `SecondFactors.MaxSends` | 5 | emailed codes per setup or challenge |
-| `SecondFactors.MaxTries` | 5 | wrong tries per code |
-| `SecondFactors.Reauth` | 5 min | how recent a sign-in must be to manage factors |
-| `SecondFactors.RecoveryCodes` | 10 | recovery codes issued |
+| `Schema` | empty | PostgreSQL schema of the install's tables; empty: the unqualified `auth_*` names |
 
-`New` refuses:
+`password.Config` (`password.New`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Password` | 10 to 256 runes | `password.Policy{MinRunes, MaxRunes}` |
+| `Hashing` | argon2id 19 MiB, t=2, p=1 | `password.Params` |
+| `HashConcurrency` | 4 | argon2id slots |
+| `HashWait` | 2 s | wait for a slot before `ErrBusy` |
+| `RevokeOnPasswordChange` | `RevokeOthers` | `RevokeAll` also replaces the caller's session |
+| `ResetTTL` | 1 h | reset link lifetime |
+| `ResetFloor` | 500 ms | minimum time for a reset request (`PadSince`) |
+| `Reset.MayCreateCredential` | false | true: a reset can set a first password for a principal without one |
+
+`passkey.Rules` (`passkey.New`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `RPID` | empty (off) | relying party domain; set to turn passkeys on |
+| `RPName` | `authkit` | relying party name |
+| `Origins` | none | `map[Audience][]string` of allowed origins |
+| `CeremonyTTL` | 2 min | ceremony lifetime, at most 10 min |
+| `Reauth` | 5 min | how recent a sign-in must be to add or delete a passkey |
+| `Max` | 10 | passkeys per principal |
+
+`secondfactor.Rules` (`secondfactor.New`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Key` | empty (off) | 32 bytes; set to turn second factors on |
+| `Issuer` | `authkit` | issuer shown in authenticator apps |
+| `ChallengeTTL` | 10 min | second-step challenge lifetime |
+| `EmailCodeTTL` | 10 min | emailed code lifetime |
+| `SetupTTL` | 15 min | factor setup lifetime |
+| `ResendEvery` | 60 s | minimum gap between emailed codes |
+| `MaxSends` | 5 | emailed codes per setup or challenge |
+| `MaxTries` | 5 | wrong tries per code |
+| `Reauth` | 5 min | how recent a sign-in must be to manage factors |
+| `RecoveryCodes` | 10 | recovery codes issued |
+
+`authkit.New` refuses:
 
 - Bearer mode without `Issuer`, with a `Secret` under 32 bytes, or with a
   negative `AccessTTL`.
 - `Session.IdleTTL` (or a `RefreshTTLFor` entry) above `AbsoluteTTL` when
   there is a cap.
 - In Session mode, `RotateEvery` at or above `IdleTTL` (or an entry).
-- A negative `RefreshTTL`, `Session.IdleTTL`, `ResetTTL`, `ResetFloor`,
-  `HashWait` or `ReuseGrace`, and a negative `HashConcurrency`.
-- A throttle or password policy that cannot work, a `SecondFactors.Key` that
-  is neither empty nor 32 bytes, and invalid passkey settings (`RPID`,
-  `Origins`, `CeremonyTTL`).
+- A negative `RefreshTTL`, `Session.IdleTTL` or `ReuseGrace`, a throttle
+  that cannot work, and a `Schema` that is not a valid schema name.
+
+`password.New` refuses a policy that cannot work, an unknown
+`RevokeOnPasswordChange`, and a negative `ResetTTL`, `ResetFloor`,
+`HashWait` or `HashConcurrency`. `passkey.New` refuses invalid `RPID`,
+`Origins`, `CeremonyTTL` and `Max`. `secondfactor.New` refuses a `Key` that
+is neither empty nor 32 bytes, an `Issuer` with a colon, and limits out of
+range. Each module's `New` returns `authkit.ErrAttached` when that module is
+already attached to the `Service`.
 
 Switching `PlainLoginKey` off on a running app orphans the existing throttle
 counters; nothing migrates them.
@@ -585,19 +718,20 @@ are the ones echov5's documentation suggests; elsewhere they are your choice.
 | `ErrCurrentPasswordWrong` | `ChangePassword` | the current password is wrong |
 | `PolicyError` | `ChangePassword`, `SetPassword`, `CompleteReset` | the password fails the policy (`MinRunes`, `MaxRunes`) |
 | `ErrTokenUnknown`, `ErrTokenGone{State}` | `CompleteReset`; `ErrTokenGone` also from `OneTime()` | link unknown; link exists but can no longer be spent |
-| `ErrPasskeysOff` | passkey methods | `Passkeys.RPID` not set |
+| `ErrPasskeysOff` | passkey methods | `passkey.Rules.RPID` not set |
 | `ErrPasskeyRejected` | `BeginPasskeyLogin`, `FinishPasskeyLogin` | passkey sign-in failed |
 | `ErrNoPassword`, `ErrReauthRequired`, `ErrPasskeyLimit` | passkey registration; `ErrReauthRequired` also from `DeletePasskey` and second-factor methods | no password, sign-in too old, too many passkeys |
 | `ErrPasskeyExists`, `ErrPasskeyInvalid` | passkey registration | already registered; no relying party for the audience or the ceremony cannot be spent |
 | `ErrPasskeyNotFound` | `RenamePasskey`, `DeletePasskey` | not the caller's passkey |
 | `ErrPasskeyLabel` | `RenamePasskey`, `FinishPasskeyRegistration` | bad label |
-| `ErrSecondFactorsOff` | second-factor methods, `Login` | `SecondFactors.Key` not set |
+| `ErrSecondFactorsOff` | second-factor methods, `Login` | no `secondfactor` module, or its `Rules.Key` is empty |
 | `ErrBadCode`, `ErrChallengeEnded`, `ErrCodeEnded`, `ErrSetupExpired` | second-factor methods | wrong code; challenge, code or setup no longer valid |
 | `ErrFactorExists`, `ErrFactorNotFound` | second-factor methods | factor already on; factor not on |
 | `ErrResendTooSoon{RetryAfter}` | emailed-code methods | a new code asked for too soon |
 | your `Refuse(result, err)` error | any method that calls `Admit` | your app refused the session |
 | `db.ErrTxRequired` (an `error`, not a refusal) | methods that write or lock | called outside a transaction |
 | `ErrSchemaBehind` (an `error`) | `CheckSchema` | run the migrations |
+| `ErrAttached` (an `error`) | `Attach`, a module's `New` | that module is already attached to this `Service` |
 
 ## Upgrading
 
@@ -605,6 +739,37 @@ Each release may add migrations. After every upgrade, rerun `authkit-gen`
 with the same flags and lock file, and apply the new migrations before
 deploying; otherwise `CheckSchema` refuses to start with `ErrSchemaBehind`.
 See `CHANGELOG.md` for the full list of changes.
+
+**v0.5.0.** authkit is now a core plus modules. There is no new migration,
+and behaviour is unchanged except that `Proposal.Source` names the path that
+asks `Admit`. Signatures are unchanged; the names moved:
+
+| v0.4 | v0.5 |
+|---|---|
+| `kit.Login`, `ChangePassword`, `SetPassword`, `VerifyPassword`, `CheckPassword`, `HasCredential`, `AcquireHashSlot`, `RequestReset`, `CompleteReset`, `ResetFloor` | `kit.Password.<same>` (`*password.Module`) |
+| `kit.BeginPasskeyLogin`, `FinishPasskeyLogin`, `ListPasskeys`, `RenamePasskey`, `DeletePasskey`, `BeginPasskeyRegistration`, `FinishPasskeyRegistration` | `kit.Passkeys.<same>` (`*passkey.Module`) |
+| `kit.BeginTOTPSetup`, `ConfirmTOTP`, `BeginEmailCodeSetup`, `ConfirmEmailCode`, `RequestEmailProof`, `MintEmailCode`, `SecondFactorStatus`, `RegenerateRecoveryCodes`, `DisableSecondFactor` | `kit.Factors.<same>` (`*secondfactor.Module`) |
+| `Config.Password`, `Hashing`, `HashConcurrency`, `HashWait`, `RevokeOnPasswordChange`, `ResetTTL`, `ResetFloor`, `Reset` | `password.Config`, same field names |
+| `Config.Passkeys` (`authkit.PasskeyRules`) | `passkey.New(core, passkey.Rules{…})`, same fields |
+| `Config.SecondFactors` (`authkit.SecondFactorRules`) | `secondfactor.New(core, secondfactor.Rules{…})`, same fields |
+| `echov5.HashSlot(kit)` | `echov5.HashSlot(kit.Password)` |
+
+The moved `Config` fields are gone, so code that still sets one does not
+compile. To upgrade:
+
+1. `go get github.com/sylly-mika/authkit@v0.5.0`, then `go mod tidy`.
+2. Add a `Kit` struct with the modules you use (see "Wire modules") and move
+   the `Config` fields as the table says.
+3. Rewrite the call sites one module at a time, for example
+   `sed -i -E 's/\b(kit|s\.kit)\.(Login|ChangePassword|SetPassword|VerifyPassword|CheckPassword|HasCredential|AcquireHashSlot|RequestReset|CompleteReset|ResetFloor)\(/\1.Password.\2(/g'`
+   over your Go files, with the receivers that
+   `grep -rn '\.Login(' --include=*.go .` shows.
+4. Split your own interfaces and fakes that list moved methods the same way;
+   the compiler names each one.
+5. Change `echov5.HashSlot(x)` to `echov5.HashSlot(x.Password)`.
+6. Rerun `authkit-gen` with the same flags: it writes no migration and adds
+   `"schema": ""` to the lock. Then run `go build ./... && go vet ./... &&
+   go test ./...`.
 
 **From v0.1.** A zero `Config` now means a 30-minute idle timeout and a
 12-hour cap, 5 failures before a lockout, counting before verifying, hashed
@@ -619,10 +784,10 @@ cfg := authkit.Config{
 	Session:        authkit.SessionRules{IdleTTL: 7 * 24 * time.Hour, AbsoluteTTL: -1}, // IdleTTL = your refresh TTL
 	Throttle:       authkit.Throttle{Failures: 10, CountAfterVerify: true, PlainLoginKey: true},
 	Events:         authkit.EventRules{ChangeLogsReset: true},
-	Reset:          authkit.ResetRules{MayCreateCredential: true},
 	EventRetention: -1,
 }
 kit, err := authkit.New(cfg, principals)
+passwords, err := password.New(kit, password.Config{Reset: authkit.ResetRules{MayCreateCredential: true}})
 ```
 
 **v0.3.0.** Migration 0003 adds `auth_passkeys`, `auth_passkey_ceremonies`
@@ -641,9 +806,12 @@ You need Docker and a local `gofmt`. Vet, tests and fuzzing run in the
 | `make stop` / `make clean` | stops it / also deletes its data |
 | `make hooks` | points git at `.githooks`, whose pre-push runs `make verify` |
 | `make roundtrip` | runs `authkit-gen`'s output through goose and golang-migrate |
-| `make verify` | gofmt, `go vet`, `go test -race`, the round trip and the fuzz targets |
+| `make test-ns` | the tests again with every table in the `kit_ns` schema (`AUTHKIT_TEST_SCHEMA=kit_ns`) |
+| `make verify` | gofmt, `go vet`, `go test -race` (plain and in `kit_ns`), the round trip and the fuzz targets |
 
-Tests live in `tests/` and in the root `*_test.go` files.
+Tests live in `tests/`, in `password/`, `passkey/` and `secondfactor/`, and in
+the root `*_test.go` files. `TestModuleDeps` runs `go list` and skips when
+`go` is not on `PATH`.
 
 ## License
 
