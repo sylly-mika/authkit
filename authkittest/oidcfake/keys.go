@@ -5,7 +5,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/base64"
@@ -100,6 +102,12 @@ func (s *Server) signInput(alg string, key crypto.Signer, input string) ([]byte,
 	case "RS256":
 		digest := sha256.Sum256([]byte(input))
 		return key.Sign(rand.Reader, digest[:], crypto.SHA256)
+	case "RS384":
+		digest := sha512.Sum384([]byte(input))
+		return key.Sign(rand.Reader, digest[:], crypto.SHA384)
+	case "PS256":
+		digest := sha256.Sum256([]byte(input))
+		return key.Sign(rand.Reader, digest[:], &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256})
 	case "ES256":
 		digest := sha256.Sum256([]byte(input))
 		der, err := key.Sign(rand.Reader, digest[:], crypto.SHA256)

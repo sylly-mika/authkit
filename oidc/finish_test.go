@@ -227,6 +227,8 @@ func TestFinishBadToken(t *testing.T) {
 		}, authkit.ErrInvalidCredentials},
 		{"HS256", func(f *oidcfake.Server, _ time.Time) { f.SignNextWith(nil, "HS256") }, authkit.ErrInvalidCredentials},
 		{"alg none", func(f *oidcfake.Server, _ time.Time) { f.SignNextWith(nil, "none") }, authkit.ErrInvalidCredentials},
+		{"RS384 with the published key", func(f *oidcfake.Server, _ time.Time) { f.SignNextWith(nil, "RS384") }, authkit.ErrInvalidCredentials},
+		{"PS256 with the published key", func(f *oidcfake.Server, _ time.Time) { f.SignNextWith(nil, "PS256") }, authkit.ErrInvalidCredentials},
 		{"unknown kid", func(f *oidcfake.Server, _ time.Time) {
 			f.Tamper(func(h, _ map[string]any) { h["kid"] = "nope" })
 		}, authkit.ErrInvalidCredentials},

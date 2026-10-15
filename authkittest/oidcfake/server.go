@@ -212,12 +212,19 @@ func (s *Server) Tamper(fn func(header, claims map[string]any)) {
 	s.tamper = fn
 }
 
-// SignNextWith signs the next ID token with key and alg: RS256 or ES256 with key, none or HS256 with a nil key.
+// SignNextWith signs the next ID token with key and alg: RS256 or ES256 with key; RS384 or PS256 with an RSA key, or nil for the server's published key; none or HS256 with a nil key.
 func (s *Server) SignNextWith(key crypto.Signer, alg string) {
 	s.t.Helper()
 	switch alg {
 	case "RS256", "ES256":
 		if key == nil {
+			s.t.Fatalf("oidcfake: SignNextWith %s: bad key", alg)
+		}
+	case "RS384", "PS256":
+		if key == nil {
+			key = s.rsaKey
+		}
+		if _, ok := key.(*rsa.PrivateKey); !ok {
 			s.t.Fatalf("oidcfake: SignNextWith %s: bad key", alg)
 		}
 	case "none", "HS256":
