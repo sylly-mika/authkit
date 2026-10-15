@@ -62,14 +62,17 @@ func (s *Module) checkFactor(ctx context.Context, q db.Querier, id uuid.UUID, me
 type verifier struct{ m *Module }
 
 func (v verifier) Verify(ctx context.Context, q db.Querier, principal uuid.UUID, method authkit.FactorKind, code string) (bool, error) {
+	q = v.m.core.Q(q)
 	return v.m.checkFactor(ctx, q, principal, method, code, v.m.core.Now())
 }
 
 func (v verifier) RecoveryCodesLeft(ctx context.Context, q db.Querier, principal uuid.UUID) (int, error) {
+	q = v.m.core.Q(q)
 	return factor.RecoveryCodesLeft(ctx, q, principal)
 }
 
 func (v verifier) SendCode(ctx context.Context, q db.Querier, principal uuid.UUID) (authkit.EmailCodeRequest, time.Duration, error) {
+	q = v.m.core.Q(q)
 	id, exp, retryAfter, err := factor.RequestEmailCode(ctx, q, v.m.core.Rand(), principal, factor.PurposeSignIn, v.m.core.Now(), v.m.emailRules())
 	return authkit.EmailCodeRequest{ID: id, ExpiresAt: exp}, retryAfter, err
 }
