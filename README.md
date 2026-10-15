@@ -752,7 +752,7 @@ asks `Admit`. Signatures are unchanged; the names moved:
 | `Config.Password`, `Hashing`, `HashConcurrency`, `HashWait`, `RevokeOnPasswordChange`, `ResetTTL`, `ResetFloor`, `Reset` | `password.Config`, same field names |
 | `Config.Passkeys` (`authkit.PasskeyRules`) | `passkey.New(core, passkey.Rules{…})`, same fields |
 | `Config.SecondFactors` (`authkit.SecondFactorRules`) | `secondfactor.New(core, secondfactor.Rules{…})`, same fields |
-| `echov5.HashSlot(kit)` | `echov5.HashSlot(kit.Password)` |
+| `echov5.HashSlot(kit)` | `echov5.HashSlot(kit.Password)` (the `HashSlots` interface is unchanged) |
 
 The moved `Config` fields are gone, so code that still sets one does not
 compile. To upgrade:
@@ -761,7 +761,7 @@ compile. To upgrade:
 2. Add a `Kit` struct with the modules you use (see "Wire modules") and move
    the `Config` fields as the table says.
 3. Rewrite the call sites one module at a time, for example
-   `sed -i -E 's/\b(kit|s\.kit)\.(Login|ChangePassword|SetPassword|VerifyPassword|CheckPassword|HasCredential|AcquireHashSlot|RequestReset|CompleteReset|ResetFloor)\(/\1.Password.\2(/g'`
+   `sed -i -E 's/\b(kit|a\.kit|s\.kit)\.(Login|ChangePassword|SetPassword|VerifyPassword|CheckPassword|HasCredential|AcquireHashSlot|RequestReset|CompleteReset|ResetFloor)\(/\1.Password.\2(/g'`
    over your Go files, with the receivers that
    `grep -rn '\.Login(' --include=*.go .` shows.
 4. Split your own interfaces and fakes that list moved methods the same way;

@@ -149,8 +149,6 @@ func TestSchemaIsolation(t *testing.T) {
 	})
 }
 
-// addInstall adds a second authkit install to the world's database, with its
-// tables in schema and the same principal table, and returns it.
 func addInstall(w *world, schema string) *kittest.Kit {
 	w.T.Helper()
 	if schema == w.Cfg.Schema {
@@ -173,8 +171,6 @@ func addInstall(w *world, schema string) *kittest.Kit {
 	return w.BuildWith(r, w.P)
 }
 
-// countIn runs a query that returns one integer against the install whose
-// tables are in schema.
 func countIn(w *world, schema, query string, args ...any) int {
 	w.T.Helper()
 	var n int
@@ -184,7 +180,6 @@ func countIn(w *world, schema, query string, args ...any) int {
 	return n
 }
 
-// openOn opens a staff session for p on the install k.
 func openOn(w *world, k *kittest.Kit, p authkit.Principal) authkit.Result {
 	w.T.Helper()
 	res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
@@ -199,7 +194,6 @@ func openOn(w *world, k *kittest.Kit, p authkit.Principal) authkit.Result {
 	return res
 }
 
-// authOn authenticates the claims c for principal id on the install k.
 func authOn(w *world, k *kittest.Kit, id uuid.UUID, c *authkit.Claims) authkit.Result {
 	w.T.Helper()
 	res, err := k.Authenticate(w.Ctx, sqldb.Conn(w.Pinned(id)), c)
