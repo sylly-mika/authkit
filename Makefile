@@ -1,4 +1,4 @@
-.PHONY: help hooks start-db stop clean wait-db fmt-check vet test roundtrip fuzz verify
+.PHONY: help hooks start-db stop clean wait-db fmt-check vet test test-ns roundtrip fuzz verify
 
 SHELL := /bin/bash
 
@@ -7,7 +7,7 @@ GO_TEST_ARGS ?= -race -count=1 ./...
 FUZZTIME ?= 20s
 GO_RUN = docker run --rm -v "$(CURDIR):/src" -w /src \
 	-v authkit_go_mod_cache:/go/pkg/mod -v authkit_go_build_cache:/root/.cache/go-build \
-	-e GOFLAGS=-buildvcs=false -e AUTHKIT_REQUIRE_DB=1 \
+	-e GOFLAGS=-buildvcs=false -e AUTHKIT_REQUIRE_DB=1 $(GO_RUN_ENV) \
 	-e AUTHKIT_PG='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' \
 	--network container:authkit_db $(GO_IMAGE)
 
@@ -42,12 +42,16 @@ vet: wait-db ## go vet every package in the Go container
 test: wait-db fmt-check ## Every test with -race, against the throwaway database (GO_TEST_ARGS narrows it; quote a -run pattern)
 	@$(GO_RUN) sh -c 'go test $(subst ','\'',$(GO_TEST_ARGS))'
 
+test-ns: GO_RUN_ENV := -e AUTHKIT_TEST_SCHEMA=kit_ns
+test-ns: wait-db fmt-check ## Every test again with authkit's tables only in schema kit_ns (AUTHKIT_TEST_SCHEMA)
+	@$(GO_RUN) sh -c 'go test $(subst ','\'',$(GO_TEST_ARGS))'
+
 roundtrip: wait-db ## authkit-gen's output through goose and golang-migrate (its own module, cmd/authkit-gen/roundtrip)
 	@$(GO_RUN) sh -c 'cd cmd/authkit-gen/roundtrip && go vet ./... && go test -race -count=1 ./...'
 
 fuzz: wait-db ## Each fuzz target for FUZZTIME
 	@$(GO_RUN) sh -c 'go test ./transport/bearer -run=^$$ -fuzz=^FuzzParse$$ -fuzztime=$(FUZZTIME) && go test ./transport/bearer -run=^$$ -fuzz=^FuzzFromHeader$$ -fuzztime=$(FUZZTIME)'
 
-verify: fmt-check vet test roundtrip fuzz ## The pre-push gate
+verify: fmt-check vet test test-ns roundtrip fuzz ## The pre-push gate
 
 .DEFAULT_GOAL := help
