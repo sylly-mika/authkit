@@ -2,7 +2,10 @@ package oidc_test
 
 import (
 	"errors"
+	"net/http"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -348,4 +351,122 @@ func TestSignUpIdentityTaken(t *testing.T) {
 	if n := e.w.Count("SELECT count(*) FROM auth_ceremonies WHERE kind = 'signup' AND spent_at IS NULL"); n != 1 {
 		t.Fatalf("open tickets = %d, want 1 (the rollback keeps the ticket open)", n)
 	}
+}
+
+func TestLinkNeedsFresh(t *testing.T) {
+	e := acctSetup(t)
+	id := e.w.User("ada@example.invalid", "a long password 1")
+	cl := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+	if _, err := e.link(cl, "nope"); !errors.Is(err, oidc.ErrUnknownProvider) {
+		t.Fatalf("link unknown provider = %v, want ErrUnknownProvider", err)
+	}
+	e.w.Clock.Advance(5*time.Minute + time.Second)
+	if _, err := e.link(cl, "google"); !errors.Is(err, authkit.ErrReauthRequired) {
+		t.Fatalf("link with a stale session = %v, want ErrReauthRequired", err)
+	}
+	if n := e.w.Count("SELECT count(*) FROM auth_ceremonies WHERE kind = 'link'"); n != 0 {
+		t.Fatalf("link ceremonies after a stale link = %d, want 0", n)
+	}
+	cl2 := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+	g, err := e.link(cl2, "google")
+	if err != nil {
+		t.Fatalf("link google = %v", err)
+	}
+	a, err := e.link(cl2, "apple")
+	if err != nil {
+		t.Fatalf("link apple = %v", err)
+	}
+	if !strings.HasPrefix(g.URL, e.google.URL) || g.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("google redirect = %+v; want the Google authorize URL with SameSite Lax", g)
+	}
+	if !strings.HasPrefix(a.URL, e.apple.URL) || a.SameSite != http.SameSiteNoneMode {
+		t.Fatalf("apple redirect = %+v; want the Apple authorize URL with SameSite None", a)
+	}
+	if n := e.w.Count("SELECT count(*) FROM auth_ceremonies WHERE kind = 'link' AND principal_id = $1", id); n != 2 {
+		t.Fatalf("link ceremonies for Ada = %d, want 2", n)
+	}
+}
+
+func TestLinkFinish(t *testing.T) {
+	e := acctSetup(t)
+	id := e.w.User("ada@example.invalid", "a long password 1")
+	cl := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+	r, err := e.link(cl, "google")
+	if err != nil {
+		t.Fatalf("link = %v", err)
+	}
+	res, su := e.finish("google", r, e.gUser("g-ada", "ada.work@example.invalid"))
+	if res.Refusal != nil || su != nil || res.Session != nil || res.Tokens != nil || res.Principal.ID != id {
+		t.Fatalf("link finish = %+v, sign-up %+v; want Ada with no refusal, no session and no tokens", res, su)
+	}
+	if n := e.sessions(id); n != 1 {
+		t.Fatalf("sessions = %d, want 1 (the link adds none)", n)
+	}
+	got := e.identities(id)
+	if len(got) != 1 || got[0].Provider != "google" || got[0].Email != "ada.work@example.invalid" || !got[0].CreatedAt.Equal(e.w.Clock.Now()) || got[0].LastUsedAt != nil {
+		t.Fatalf("identities = %+v", got)
+	}
+	if !slices.Contains(e.w.Results(id), "identity_linked") {
+		t.Fatalf("results = %v, want identity_linked", e.w.Results(id))
+	}
+	res, su = e.signIn("google", e.gUser("g-ada", "ada.work@example.invalid"))
+	if su != nil || res.Session == nil || res.Session.SecondFactor != "oidc" || res.Principal.ID != id {
+		t.Fatalf("later sign-in = %+v, sign-up %+v; want a session for %v", res, su, id)
+	}
+}
+
+func TestLinkTaken(t *testing.T) {
+	t.Run("subject", func(t *testing.T) {
+		e := acctSetup(t)
+		ada := e.w.User("ada@example.invalid", "a long password 1")
+		bob := e.w.User("bob@example.invalid", "")
+		e.addIdentity(bob, "google", "g-shared", "bob@example.invalid")
+		cl := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+		r, err := e.link(cl, "google")
+		if err != nil {
+			t.Fatalf("link = %v", err)
+		}
+		res, su := e.finish("google", r, e.gUser("g-shared", "x@example.invalid"))
+		if !errors.Is(res.Refusal, oidc.ErrIdentityTaken) || su != nil || res.Session != nil {
+			t.Fatalf("link finish = %+v, sign-up %+v; want ErrIdentityTaken and no session", res, su)
+		}
+		if n := e.sessions(ada); n != 1 {
+			t.Fatalf("Ada sessions = %d, want 1", n)
+		}
+		if n := e.identityRows(ada); n != 0 {
+			t.Fatalf("Ada identities = %d, want 0", n)
+		}
+		if n := e.w.Count("SELECT count(*) FROM auth_identities WHERE principal_id = $1 AND provider = 'google' AND subject = 'g-shared'", bob); n != 1 {
+			t.Fatalf("Bob's identity rows = %d, want 1 unchanged", n)
+		}
+		if n := e.w.Count("SELECT count(*) FROM auth_ceremonies WHERE kind = 'link' AND spent_at IS NOT NULL"); n != 1 {
+			t.Fatalf("spent link ceremonies = %d, want 1", n)
+		}
+	})
+	t.Run("provider", func(t *testing.T) {
+		e := acctSetup(t)
+		ada := e.w.User("ada@example.invalid", "a long password 1")
+		e.addIdentity(ada, "google", "g-1", "")
+		cl := e.w.Claims(e.w.SignIn("ada@example.invalid", "a long password 1"))
+		r, err := e.link(cl, "google")
+		if err != nil {
+			t.Fatalf("link = %v", err)
+		}
+		res, su := e.finish("google", r, e.gUser("g-2", "ada.2@example.invalid"))
+		if !errors.Is(res.Refusal, oidc.ErrIdentityTaken) || su != nil || res.Session != nil {
+			t.Fatalf("link finish = %+v, sign-up %+v; want ErrIdentityTaken and no session", res, su)
+		}
+		if n := e.sessions(ada); n != 1 {
+			t.Fatalf("Ada sessions = %d, want 1", n)
+		}
+		if n := e.w.Count("SELECT count(*) FROM auth_identities WHERE principal_id = $1 AND provider = 'google' AND subject = 'g-1'", ada); n != 1 {
+			t.Fatalf("Ada's Google subject g-1 rows = %d, want 1", n)
+		}
+		if n := e.w.Count("SELECT count(*) FROM auth_identities WHERE principal_id = $1 AND subject = 'g-2'", ada); n != 0 {
+			t.Fatalf("Ada's g-2 rows = %d, want 0", n)
+		}
+		if n := e.w.Count("SELECT count(*) FROM auth_ceremonies WHERE kind = 'link' AND spent_at IS NOT NULL"); n != 1 {
+			t.Fatalf("spent link ceremonies = %d, want 1", n)
+		}
+	})
 }

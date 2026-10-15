@@ -86,7 +86,21 @@ func (m *Module) SignUp(ctx context.Context, q db.Querier, ticket string, princi
 
 // Link starts linking provider to the caller's account; the app sends the browser to the Redirect.
 func (m *Module) Link(ctx context.Context, q db.Querier, cl *authkit.Claims, provider string, meta authkit.Meta) (Redirect, error) {
-	return Redirect{}, errors.ErrUnsupported
+	q = m.core.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return Redirect{}, err
+	}
+	if _, ok := m.providers[provider]; !ok {
+		return Redirect{}, ErrUnknownProvider
+	}
+	_, ok, err := m.core.Fresh(ctx, q, cl, m.rules.Reauth, m.core.Now())
+	if err != nil {
+		return Redirect{}, err
+	}
+	if !ok {
+		return Redirect{}, authkit.ErrReauthRequired
+	}
+	return m.begin(ctx, q, "link", provider, authkit.Audience(cl.Audience), &cl.Subject)
 }
 
 // Unlink removes the caller's identity at provider and ends the caller's other sessions.
