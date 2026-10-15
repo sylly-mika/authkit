@@ -107,6 +107,11 @@ const (
 	ResultFactorAdded              = "factor_added"
 	ResultFactorRemoved            = "factor_removed"
 	ResultRecoveryCodesRegenerated = "recovery_codes_regenerated"
+
+	ResultBadIdentity      = "bad_identity"
+	ResultIdentityLinked   = "identity_linked"
+	ResultIdentityUnlinked = "identity_unlinked"
+	ResultRegistered       = "registered"
 )
 
 // Event.Source values: the Service method that recorded the event.
@@ -130,6 +135,8 @@ const (
 	SourceSecondStep      = "second_step"
 	SourceSecondFactor    = "second_factor"
 	SourceRequestReset    = "request_reset" // RequestReset records no event; reserved
+	SourceOIDC            = "oidc"
+	SourceRegister        = "register"
 )
 
 // Revoke reasons, as auth_sessions_revoke_reason lists them.
@@ -143,7 +150,12 @@ const (
 	ReasonAdmin = "admin"
 	// ReasonPasskeyRemoved is DeletePasskey's: it ends the principal's other sessions.
 	ReasonPasskeyRemoved = "passkey_removed"
+	// ReasonIdentityRemoved is Unlink's: it ends the principal's other sessions.
+	ReasonIdentityRemoved = "identity_removed"
 )
 
 // PurposeReset is the one-time-link purpose of RequestReset and CompleteReset.
 const PurposeReset = "reset"
+
+// PurposeRegister is the one-time-link purpose of registration links.
+const PurposeRegister = "register"

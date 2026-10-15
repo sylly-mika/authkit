@@ -26,7 +26,7 @@ type Event struct {
 	UserAgent   string
 	// Source is the Service method that recorded the event (authkit.Source*). Rows written before it was stored read "".
 	Source string
-	// SecondFactor is the second factor the event concerns: "totp", "email", "recovery", "passkey" or "".
+	// SecondFactor is the second factor the event concerns: "totp", "email", "recovery", "passkey", "oidc" or "".
 	SecondFactor string
 }
 

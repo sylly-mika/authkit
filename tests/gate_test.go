@@ -548,3 +548,83 @@ func TestThrottleCountsOnce(t *testing.T) {
 		}
 	})
 }
+
+func (w *world) gateCore() *authkit.Core {
+	w.T.Helper()
+	c, err := w.Svc.Attach("gatetest")
+	if err != nil {
+		w.T.Fatal(err)
+	}
+	return c
+}
+
+func (w *world) oidcSignIn(c *authkit.Core, id uuid.UUID, f authkit.FactorKind, skip bool) authkit.Result {
+	w.T.Helper()
+	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		p, err := c.Principals().ByID(w.Ctx, q, id, "staff")
+		if err != nil {
+			return authkit.Result{}, err
+		}
+		a := c.BeginVerified(authkit.SourceOIDC, "staff", authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"})
+		if skip {
+			a.SkipSecondFactor()
+		}
+		return c.SignIn(w.Ctx, q, a, p, f)
+	})
+}
+
+func TestGateSkipSecondFactor(t *testing.T) {
+	w := newWorld(t, factors)
+	ada := w.User(gateLogin, pw)
+	w.seedTOTP(ada)
+	res := w.oidcSignIn(w.gateCore(), ada, authkit.FactorOIDC, true)
+	if res.Refusal != nil || res.Session == nil || res.Tokens == nil || res.SecondStep != nil {
+		t.Fatalf("refusal %v, session %v, tokens %v, second step %v", res.Refusal, res.Session != nil, res.Tokens != nil, res.SecondStep != nil)
+	}
+	if n := w.Count("SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND second_factor = 'oidc' AND revoked_at IS NULL", ada); n != 1 {
+		t.Errorf("oidc sessions = %d, want 1", n)
+	}
+	if n := w.challenges(ada); n != 0 {
+		t.Errorf("challenges = %d, want 0", n)
+	}
+	if n := w.Count("SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in' AND source = 'oidc' AND second_factor = 'oidc'", ada); n != 1 {
+		t.Errorf("signed_in events = %d, want 1", n)
+	}
+}
+
+func TestGateOIDCWithoutSkip(t *testing.T) {
+	check := func(t *testing.T, f authkit.FactorKind, skip bool) {
+		w := newWorld(t, factors)
+		ada := w.User(gateLogin, pw)
+		w.seedTOTP(ada)
+		res := w.oidcSignIn(w.gateCore(), ada, f, skip)
+		if res.Refusal != nil || res.SecondStep == nil || !slices.Contains(res.SecondStep.Methods, authkit.FactorTOTP) {
+			t.Fatalf("refusal %v, second step %v", res.Refusal, res.SecondStep != nil)
+		}
+		gateNoSession(t, res)
+		if n := w.sessions(ada); n != 0 {
+			t.Errorf("sessions = %d, want 0", n)
+		}
+		if n := w.challenges(ada); n != 1 {
+			t.Errorf("challenges = %d, want 1", n)
+		}
+		if n := w.Count("SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in'", ada); n != 0 {
+			t.Errorf("signed_in events = %d, want 0", n)
+		}
+	}
+	t.Run("no skip", func(t *testing.T) { check(t, authkit.FactorOIDC, false) })
+	t.Run("skip on a password factor", func(t *testing.T) { check(t, authkit.FactorPassword, true) })
+}
+
+func TestGateOIDCSecondStepKeyedByLogin(t *testing.T) {
+	w := newWorld(t, factors)
+	ada := w.User(gateLogin, pw)
+	w.seedTOTP(ada)
+	res := w.oidcSignIn(w.gateCore(), ada, authkit.FactorOIDC, false)
+	if res.Refusal != nil || res.SecondStep == nil {
+		t.Fatalf("refusal %v, second step %v", res.Refusal, res.SecondStep != nil)
+	}
+	if n := w.Count("SELECT count(*) FROM auth_second_step_challenges WHERE principal_id = $1 AND throttle_key = $2", ada, gateLogin); n != 1 {
+		t.Errorf("challenges keyed by the login = %d, want 1", n)
+	}
+}
