@@ -69,7 +69,15 @@ func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, c
 		return Result{}, err
 	}
 	if s.cfg.RevokeOnPasswordChange == RevokeAll {
-		return s.changeRevokingAll(ctx, q, grant{p: p, aud: Audience(sess.Audience), m: m, now: now}, sess, hash)
+		return s.core().Reopen(ctx, q, sess.ID, p, SourceChangePassword, m, func(ctx context.Context, q db.Querier) error {
+			if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
+				return err
+			}
+			if err := session.RevokeAll(ctx, q, p.ID, ReasonPasswordChanged, now); err != nil {
+				return err
+			}
+			return s.record(ctx, q, now, SourceChangePassword, s.changeEvent(p, sess, m))
+		})
 	}
 	if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
 		return Result{}, err
@@ -82,29 +90,6 @@ func (s *Service) ChangePassword(ctx context.Context, q db.Querier, c *Claims, c
 	}
 	sess.AuthenticatedAt = now
 	return Result{Principal: p, Session: &sess}, s.record(ctx, q, now, SourceChangePassword, s.changeEvent(p, sess, m))
-}
-
-// WHY: Admit runs before any write, so a refusal leaves the credential and the sessions as they were.
-func (s *Service) changeRevokingAll(ctx context.Context, q db.Querier, g grant, sess Session, hash string) (Result, error) {
-	g.factor = FactorKind(sess.SecondFactor)
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: g.p, Audience: g.aud, ScopeID: sess.ScopeID, SecondFactor: g.factor, Source: SourceChangePassword})
-	if err != nil {
-		return Result{}, err
-	}
-	if refusal != nil {
-		return Result{Refusal: refusal.Err}, nil
-	}
-	g.adm = adm
-	if err := setCredential(ctx, q, g.p.ID, hash, g.now); err != nil {
-		return Result{}, err
-	}
-	if err := session.RevokeAll(ctx, q, g.p.ID, ReasonPasswordChanged, g.now); err != nil {
-		return Result{}, err
-	}
-	if err := s.record(ctx, q, g.now, SourceChangePassword, s.changeEvent(g.p, sess, g.m)); err != nil {
-		return Result{}, err
-	}
-	return s.openSignedIn(ctx, q, SourceChangePassword, g)
 }
 
 func (s *Service) changeEvent(p Principal, sess Session, m Meta) events.Event {

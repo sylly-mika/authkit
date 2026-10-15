@@ -103,7 +103,9 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if err != nil {
 		return Result{}, err
 	}
-	now := s.now()
+	a := s.core().BeginVerified(SourceCompleteReset, aud, m)
+	a.SetPrincipal(&p)
+	now := a.now
 	_, had, err := credentialOf(ctx, q, p.ID)
 	if err != nil {
 		return Result{}, err
@@ -111,68 +113,41 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	if !had && !s.cfg.Reset.MayCreateCredential {
 		return Result{Refusal: ErrTokenUnknown}, nil
 	}
-	methods, off, err := s.gateMethods(ctx, q, p.ID, FactorPassword)
-	if err != nil {
-		return Result{}, err
-	}
-	if off {
-		return Result{Refusal: ErrSecondFactorsOff}, nil
-	}
-	g := grant{p: p, aud: aud, m: m, now: now}
-	if s.cfg.Transport == TransportSession || len(methods) > 0 {
-		var refusal *Refusal
-		if g.adm, refusal, err = s.admit(ctx, q, Proposal{Principal: p, Audience: aud, Source: SourceCompleteReset}); err != nil {
-			return Result{}, err
+	var removed int
+	a.Commit(func(ctx context.Context, q db.Querier) error {
+		if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
+			return err
 		}
-		if refusal != nil {
-			if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
-				Result: refusal.Result, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
-				return Result{}, err
-			}
-			return Result{Refusal: refusal.Err}, nil
+		if err := session.RevokeAll(ctx, q, p.ID, ReasonPasswordReset, now); err != nil {
+			return err
 		}
-	}
-	if err := setCredential(ctx, q, p.ID, hash, now); err != nil {
-		return Result{}, err
-	}
-	if err := session.RevokeAll(ctx, q, p.ID, ReasonPasswordReset, now); err != nil {
-		return Result{}, err
-	}
-	removed, err := deleteAllPasskeys(ctx, q, p.ID)
-	if err != nil {
-		return Result{}, err
-	}
-	if err := throttle.Clear(ctx, q, s.throttleKey(Normalize(p.Login)), string(aud)); err != nil {
-		return Result{}, err
-	}
-	result := ResultPasswordSet
-	if had {
-		result = ResultPasswordReset
-	}
-	if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
-		Result: result, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
-		return Result{}, err
-	}
-	if removed > 0 {
-		if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
-			Result: ResultPasskeysReset, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
-			return Result{}, err
-		}
-	}
-	if len(methods) > 0 {
-		res, err := s.issueSecondStep(ctx, q, SourceCompleteReset, p, aud, "reset", s.throttleKey(Normalize(p.Login)), methods, g.adm.ScopeID, m, now)
+		n, err := deleteAllPasskeys(ctx, q, p.ID)
 		if err != nil {
-			return Result{}, err
+			return err
 		}
-		res.PasskeysRemoved = removed
-		return res, nil
-	}
-	if s.cfg.Transport != TransportSession {
-		return Result{Principal: p, PasskeysRemoved: removed}, nil
-	}
-	res, err := s.openSignedIn(ctx, q, SourceCompleteReset, g)
-	if err != nil {
-		return Result{}, err
+		removed = n
+		if err := throttle.Clear(ctx, q, s.throttleKey(Normalize(p.Login)), string(aud)); err != nil {
+			return err
+		}
+		result := ResultPasswordSet
+		if had {
+			result = ResultPasswordReset
+		}
+		if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+			Result: result, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+			return err
+		}
+		if removed > 0 {
+			if err := s.record(ctx, q, now, SourceCompleteReset, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login,
+				Result: ResultPasskeysReset, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	res, err := s.core().SignIn(ctx, q, a, p, FactorPassword)
+	if err != nil || res.Refusal != nil {
+		return res, err
 	}
 	res.PasskeysRemoved = removed
 	return res, nil

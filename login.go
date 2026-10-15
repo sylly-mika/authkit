@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"golang.org/x/text/unicode/norm"
@@ -37,10 +36,6 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 		return Result{}, err
 	}
 	m = m.clean()
-	a := &attempt{aud: aud, key: Normalize(login), now: s.now(), m: m,
-		ev: events.Event{Audience: string(aud), Login: typedLogin(login), IP: m.IP, UserAgent: m.UserAgent}}
-	// WHY: a login longer than any account's is unknown, so no account escapes the throttle through it.
-	a.counted = utf8.RuneCountInString(a.key) <= maxLoginRunes
 	if !s.cfg.Throttle.CountAfterVerify {
 		held, release, err := s.hasher.Hold(ctx)
 		if errors.Is(err, ErrBusy) {
@@ -52,18 +47,16 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 		defer release()
 		ctx = held
 	}
-	until, locked, err := s.throttled(ctx, q, a)
-	if err != nil {
-		return Result{}, err
-	}
-	if locked {
-		return s.refuseLocked(ctx, q, a, until)
+	c := s.core()
+	a, res, err := c.Begin(ctx, q, SourceLogin, aud, login, m)
+	if err != nil || a == nil {
+		return res, err
 	}
 
 	var p Principal
 	err = ErrUnknownLogin
-	if a.counted {
-		p, err = s.principals.Lookup(ctx, q, a.key, aud)
+	if a.Counted() {
+		p, err = s.principals.Lookup(ctx, q, a.Login(), aud)
 	}
 	known := err == nil
 	if err != nil && !errors.Is(err, ErrUnknownLogin) {
@@ -72,7 +65,7 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 	var hash string
 	var hasCredential bool
 	if known {
-		a.ev.PrincipalID = &p.ID
+		a.SetPrincipal(&p)
 		if hash, hasCredential, err = credentialOf(ctx, q, p.ID); err != nil {
 			return Result{}, err
 		}
@@ -85,17 +78,21 @@ func (s *Service) Login(ctx context.Context, q db.Querier, aud Audience, login, 
 		return Result{}, err
 	}
 	if !ok {
+		var result string
 		switch {
 		case !known:
-			a.ev.Result = ResultUnknownLogin
+			result = ResultUnknownLogin
 		case !hasCredential:
-			a.ev.Result = ResultNoPassword
+			result = ResultNoPassword
 		default:
-			a.ev.Result = ResultBadPassword
+			result = ResultBadPassword
 		}
-		return s.refuseFailed(ctx, q, a)
+		return a.Refuse(ctx, q, result, ErrInvalidCredentials)
 	}
-	return s.signIn(ctx, q, a, p, hash, pw)
+	if s.hasher.NeedsRehash(hash) {
+		a.Commit(func(ctx context.Context, q db.Querier) error { return s.rehash(ctx, q, p.ID, hash, pw) })
+	}
+	return c.SignIn(ctx, q, a, p, FactorPassword)
 }
 
 type attempt struct {
@@ -125,77 +122,6 @@ func (s *Service) throttled(ctx context.Context, q db.Querier, a *attempt) (time
 		return throttle.Locked(ctx, q, s.throttleKey(a.key), string(a.aud), a.now)
 	}
 	return throttle.Count(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle)
-}
-
-func (s *Service) refuseLocked(ctx context.Context, q db.Querier, a *attempt, until time.Time) (Result, error) {
-	if !s.cfg.Throttle.CountAfterVerify {
-		p, err := s.principals.Lookup(ctx, q, a.key, a.aud)
-		switch {
-		case err == nil:
-			a.ev.PrincipalID = &p.ID
-		case !errors.Is(err, ErrUnknownLogin):
-			return Result{}, err
-		}
-	}
-	a.ev.Result = ResultLocked
-	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
-		return Result{}, err
-	}
-	return Result{Refusal: ErrLocked{RetryAfter: until.Sub(a.now)}}, nil
-}
-
-func (s *Service) refuseFailed(ctx context.Context, q db.Querier, a *attempt) (Result, error) {
-	if a.counted && s.cfg.Throttle.CountAfterVerify {
-		if err := throttle.Fail(ctx, q, s.throttleKey(a.key), string(a.aud), a.now, s.cfg.Throttle); err != nil {
-			return Result{}, err
-		}
-	}
-	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
-		return Result{}, err
-	}
-	return Result{Refusal: ErrInvalidCredentials}, nil
-}
-
-// WHY: an Admit refusal leaves the throttle counter as it is; only a sign-in clears it.
-func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Principal, hash, pw string) (Result, error) {
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: a.aud, Source: SourceLogin})
-	if err != nil {
-		return Result{}, err
-	}
-	if refusal != nil {
-		a.ev.Result = refusal.Result
-		if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
-			return Result{}, err
-		}
-		return Result{Refusal: refusal.Err}, nil
-	}
-	methods, off, err := s.gateMethods(ctx, q, p.ID, FactorPassword)
-	if err != nil {
-		return Result{}, err
-	}
-	if off {
-		return Result{Refusal: ErrSecondFactorsOff}, nil
-	}
-	if s.hasher.NeedsRehash(hash) {
-		if err := s.rehash(ctx, q, p.ID, hash, pw); err != nil {
-			return Result{}, err
-		}
-	}
-	if len(methods) > 0 {
-		return s.issueSecondStep(ctx, q, SourceLogin, p, a.aud, "login", s.throttleKey(a.key), methods, adm.ScopeID, a.m, a.now)
-	}
-	res, err := s.openSession(ctx, q, p, a.aud, adm, a.m, a.now, "")
-	if err != nil {
-		return Result{}, err
-	}
-	if err := throttle.Clear(ctx, q, s.throttleKey(a.key), string(a.aud)); err != nil {
-		return Result{}, err
-	}
-	a.ev.Result, a.ev.SessionID, a.ev.ScopeID = ResultSignedIn, &res.Session.ID, adm.ScopeID
-	if err := s.record(ctx, q, a.now, SourceLogin, a.ev); err != nil {
-		return Result{}, err
-	}
-	return res, nil
 }
 
 // WHY: every login spends one verification, against the dummy when there is no hash, so unknown logins take as long as known ones.

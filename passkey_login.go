@@ -87,31 +87,17 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audi
 	if err != nil {
 		return Result{}, err
 	}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: FactorPasskey, Source: SourcePasskeyLogin})
-	if err != nil {
-		return Result{}, err
-	}
-	if refusal != nil {
-		if err := s.record(ctx, q, now, SourcePasskeyLogin, events.Event{PrincipalID: &p.ID, Audience: string(aud), Login: p.Login, Result: refusal.Result, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
-			return Result{}, err
+	a := s.core().BeginVerified(SourcePasskeyLogin, aud, m)
+	a.SetPrincipal(&p)
+	a.Commit(func(ctx context.Context, q db.Querier) error {
+		data, err := json.Marshal(*cred)
+		if err != nil {
+			return err
 		}
-		return Result{Refusal: refusal.Err}, nil
-	}
-	res, err := s.openSession(ctx, q, p, aud, adm, m, now, FactorPasskey)
-	if err != nil {
-		return Result{}, err
-	}
-	data, err := json.Marshal(*cred)
-	if err != nil {
-		return Result{}, err
-	}
-	if _, err := q.Exec(ctx, "UPDATE auth_passkeys SET data = $2, last_used_at = $3 WHERE id = $1", hit.id, string(data), now); err != nil {
-		return Result{}, err
-	}
-	if err := s.record(ctx, q, now, SourcePasskeyLogin, events.Event{PrincipalID: &p.ID, SessionID: &res.Session.ID, ScopeID: adm.ScopeID, Audience: string(aud), Login: p.Login, Result: ResultSignedIn, IP: m.IP, UserAgent: m.UserAgent, SecondFactor: string(FactorPasskey)}); err != nil {
-		return Result{}, err
-	}
-	return res, nil
+		_, err = q.Exec(ctx, "UPDATE auth_passkeys SET data = $2, last_used_at = $3 WHERE id = $1", hit.id, string(data), now)
+		return err
+	})
+	return s.core().SignIn(ctx, q, a, p, FactorPasskey)
 }
 
 func passkeyHandler(ctx context.Context, q db.Querier, hit **passkeyRow, infraErr *error) func(rawID, userHandle []byte) (webauthn.User, error) {
