@@ -11,8 +11,11 @@ import (
 	"github.com/lib/pq"
 
 	"github.com/sylly-mika/authkit/authkittest"
+	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/migrations"
 )
+
+const kitSchema = "kit_ns"
 
 var authTables = []string{"auth_schema", "auth_credentials", "auth_sessions", "auth_tokens", "auth_events", "auth_throttle", "auth_passkeys", "auth_passkey_ceremonies", "auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes"}
 
@@ -725,5 +728,88 @@ func TestTheDownMigration0004RestoresVersion3(t *testing.T) {
 	var factor string
 	if err := d.Row(t, `SELECT second_factor FROM auth_sessions WHERE id = $1`, s).Scan(&factor); err != nil || factor != "" {
 		t.Errorf("the session's second_factor after the up = %q (%v), want empty", factor, err)
+	}
+}
+
+func TestSchemaBuildsTheAuthTablesInItOnly(t *testing.T) {
+	d := authkittest.NewDB(t, authkittest.Schema(kitSchema))
+	for _, table := range authTables {
+		var inSchema, notPublic bool
+		if err := d.Owner.QueryRow(`SELECT to_regclass('kit_ns.' || $1) IS NOT NULL, to_regclass('public.' || $1) IS NULL`, table).Scan(&inSchema, &notPublic); err != nil {
+			t.Fatalf("%s: %v", table, err)
+		}
+		if !inSchema || !notPublic {
+			t.Errorf("%s: in kit_ns %v, not in public %v; want both", table, inSchema, notPublic)
+		}
+		var forced, pk bool
+		if err := d.Owner.QueryRow(`
+			SELECT c.relrowsecurity AND c.relforcerowsecurity,
+			       EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)
+			  FROM pg_class c WHERE c.oid = $1::regclass`, kitSchema+"."+table).Scan(&forced, &pk); err != nil {
+			t.Fatalf("%s: %v", table, err)
+		}
+		if !forced || !pk {
+			t.Errorf("%s: forced RLS %v, primary key %v; want both", table, forced, pk)
+		}
+	}
+	if n := count(t, d, `SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename LIKE 'auth\_%'`); n != 0 {
+		t.Errorf("%d auth tables in public, want 0", n)
+	}
+	if n := count(t, d, `SELECT version FROM kit_ns.auth_schema`); n != migrations.Version {
+		t.Errorf("schema version %d, want %d", n, migrations.Version)
+	}
+	var users bool
+	if err := d.Owner.QueryRow(`SELECT to_regclass('public.users') IS NOT NULL`).Scan(&users); err != nil || !users {
+		t.Errorf("public.users present %v (%v), want the app's principals table in public", users, err)
+	}
+}
+
+func TestSchemaPoliciesBindTheAppRole(t *testing.T) {
+	d := authkittest.NewDB(t, authkittest.Schema(kitSchema))
+	ctx := context.Background()
+	scope := uuid.New()
+	a, b := d.NewPrincipal(t, "a@example.invalid"), d.NewPrincipal(t, "b@example.invalid")
+	insert := `INSERT INTO kit_ns.auth_sessions (id, principal_id, audience, scope_id, token_hash, authenticated_at, created_at, expires_at)
+	           VALUES ($1, $2, 'staff', $3, $4, now(), now(), now() + interval '1 day')`
+	sa, sb := uuid.New(), uuid.New()
+	d.Exec(t, insert, sa, a, scope, []byte("token-a"))
+	d.Exec(t, insert, sb, b, scope, []byte("token-b"))
+	conn := d.Pinned(t, a, scope, "staff")
+	for id, want := range map[uuid.UUID]int{sa: 1, sb: 0} {
+		var n int
+		if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM kit_ns.auth_sessions WHERE id = $1`, id).Scan(&n); err != nil || n != want {
+			t.Errorf("A counts %d of session %s (%v), want %d", n, id, err, want)
+		}
+	}
+	var n int
+	wantCode(t, "A reads auth_sessions outside kit_ns", conn.QueryRowContext(ctx, `SELECT count(*) FROM auth_sessions`).Scan(&n), "42P01")
+	var v int
+	if err := d.InAuthTx(ctx, func(q db.Querier) error {
+		return q.QueryRow(ctx, `SELECT version FROM kit_ns.auth_schema`).Scan(&v)
+	}); err != nil || v != migrations.Version {
+		t.Errorf("App reads the schema version %d (%v), want %d", v, err, migrations.Version)
+	}
+}
+
+func TestSchemaAndPlainDatabasesUseTheirOwnTemplates(t *testing.T) {
+	p1 := authkittest.NewDB(t)
+	ns := authkittest.NewDB(t, authkittest.Schema(kitSchema))
+	p2 := authkittest.NewDB(t)
+	for _, c := range []struct {
+		what    string
+		d       *authkittest.DB
+		plain   bool
+		schemas int
+	}{{"first plain", p1, true, 0}, {"schema", ns, false, 1}, {"second plain", p2, true, 0}} {
+		var public bool
+		if err := c.d.Owner.QueryRow(`SELECT to_regclass('public.auth_sessions') IS NOT NULL`).Scan(&public); err != nil {
+			t.Fatal(err)
+		}
+		if schemas := count(t, c.d, `SELECT count(*) FROM pg_namespace WHERE nspname = 'kit_ns'`); public != c.plain || schemas != c.schemas {
+			t.Errorf("%s: public.auth_sessions %v, kit_ns schemas %d; want %v, %d", c.what, public, schemas, c.plain, c.schemas)
+		}
+	}
+	if n := count(t, ns, `SELECT count(*) FROM pg_database WHERE datname LIKE 'authkit\_tpl\_%\_kit\_ns'`); n < 1 {
+		t.Errorf("%d schema templates, want at least 1", n)
 	}
 }

@@ -27,6 +27,7 @@ import (
 
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
+	"github.com/sylly-mika/authkit/internal/nsql"
 	"github.com/sylly-mika/authkit/migrations"
 )
 
@@ -42,10 +43,14 @@ var (
 	//go:embed policies.sql
 	policiesSQL string
 
-	templateOnce sync.Once
-	templateName string
-	templateErr  error
+	templates sync.Map
 )
+
+type tpl struct {
+	once sync.Once
+	name string
+	err  error
+}
 
 // AdminDSN is the superuser DSN of the throwaway cluster: $AUTHKIT_PG, else
 // postgres://postgres:postgres@127.0.0.1:5446/postgres?sslmode=disable.
@@ -64,15 +69,34 @@ type DB struct {
 	App   *sql.DB
 }
 
+// Option configures NewDB.
+type Option func(*dbOptions)
+
+type dbOptions struct{ schema string }
+
+// Schema builds the database with authkit's tables, and the policies on them, in the named PostgreSQL schema only.
+func Schema(name string) Option {
+	return func(o *dbOptions) { o.schema = name }
+}
+
 // NewDB clones a fresh database from the template and drops it when the test
 // ends. It skips when Postgres is unreachable, unless AUTHKIT_REQUIRE_DB or CI
 // is set.
-func NewDB(t testing.TB) *DB {
+func NewDB(t testing.TB, opts ...Option) *DB {
 	t.Helper()
+	var o dbOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	if o.schema != "" {
+		if err := nsql.Check(o.schema); err != nil {
+			t.Fatal(err)
+		}
+	}
 	admin := openAdmin(t)
 	defer admin.Close()
 	name := "t_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	if err := clone(context.Background(), admin, name); err != nil {
+	if err := clone(context.Background(), admin, name, o.schema); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { drop(t, name) })
@@ -110,7 +134,7 @@ func openAdmin(t testing.TB) *sql.DB {
 	return admin
 }
 
-func clone(ctx context.Context, admin *sql.DB, name string) error {
+func clone(ctx context.Context, admin *sql.DB, name, schema string) error {
 	conn, err := admin.Conn(ctx)
 	if err != nil {
 		return err
@@ -120,16 +144,18 @@ func clone(ctx context.Context, admin *sql.DB, name string) error {
 		return err
 	}
 	defer func() { _, _ = conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, lockKey) }()
-	templateOnce.Do(func() { templateName, templateErr = buildTemplate(ctx, conn) })
-	if templateErr != nil {
-		return fmt.Errorf("authkittest: building the template: %w", templateErr)
+	v, _ := templates.LoadOrStore(schema, &tpl{})
+	tp := v.(*tpl)
+	tp.once.Do(func() { tp.name, tp.err = buildTemplate(ctx, conn, schema) })
+	if tp.err != nil {
+		return fmt.Errorf("authkittest: building the template: %w", tp.err)
 	}
 	create := fmt.Sprintf(`CREATE DATABASE %s TEMPLATE %s OWNER %s`,
-		pq.QuoteIdentifier(name), pq.QuoteIdentifier(templateName), pq.QuoteIdentifier(OwnerRole))
+		pq.QuoteIdentifier(name), pq.QuoteIdentifier(tp.name), pq.QuoteIdentifier(OwnerRole))
 	_, err = conn.ExecContext(ctx, create)
 	var pe *pq.Error
 	if errors.As(err, &pe) && pe.Code == pqerror.ObjectInUse {
-		if err := terminate(ctx, conn, templateName); err != nil {
+		if err := terminate(ctx, conn, tp.name); err != nil {
 			return err
 		}
 		_, err = conn.ExecContext(ctx, create)
@@ -138,13 +164,20 @@ func clone(ctx context.Context, admin *sql.DB, name string) error {
 }
 
 // WHY: the schema builds in a _build database that takes the content-addressed name only once complete, so a killed run leaves no broken template.
-func buildTemplate(ctx context.Context, admin *sql.Conn) (string, error) {
-	schema, err := templateSchema()
+func buildTemplate(ctx context.Context, admin *sql.Conn, schema string) (string, error) {
+	script, err := templateSchema(schema)
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(schema))
+	sum := sha256.Sum256([]byte(script))
 	name := "authkit_tpl_" + hex.EncodeToString(sum[:])[:12]
+	if schema != "" {
+		name += "_" + schema
+	}
+	// WHY: the "_build" suffix must still fit PostgreSQL's 63-byte names.
+	if len(name) > 57 {
+		name = name[:57]
+	}
 	var exists bool
 	if err := admin.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)`, name).Scan(&exists); err != nil {
 		return "", err
@@ -159,7 +192,7 @@ func buildTemplate(ctx context.Context, admin *sql.Conn) (string, error) {
 	if _, err := admin.ExecContext(ctx, `CREATE DATABASE `+pq.QuoteIdentifier(build)+` OWNER `+pq.QuoteIdentifier(OwnerRole)); err != nil {
 		return "", err
 	}
-	if err := applySchema(ctx, build, schema); err != nil {
+	if err := applySchema(ctx, build, script); err != nil {
 		_, _ = admin.ExecContext(ctx, `DROP DATABASE `+pq.QuoteIdentifier(build)+` WITH (FORCE)`)
 		return "", fmt.Errorf("applying the schema: %w", err)
 	}
@@ -172,16 +205,23 @@ func buildTemplate(ctx context.Context, admin *sql.Conn) (string, error) {
 	return name, nil
 }
 
-func templateSchema() (string, error) {
+func templateSchema(schema string) (string, error) {
 	parts := []string{principalsSQL}
+	if schema != "" {
+		parts = append(parts, "CREATE SCHEMA "+schema+";")
+	}
 	for _, m := range migrations.All() {
-		up, err := migrations.Render(m.Up, "users")
+		up, err := migrations.RenderIn(m.Up, "users", schema)
 		if err != nil {
 			return "", err
 		}
 		parts = append(parts, up)
 	}
-	return strings.Join(append(parts, policiesSQL), "\n"), nil
+	parts = append(parts, nsql.Rewrite(schema, policiesSQL))
+	if schema != "" {
+		parts = append(parts, "GRANT USAGE ON SCHEMA "+schema+" TO "+AppRole+";\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA "+schema+" TO "+AppRole+";")
+	}
+	return strings.Join(parts, "\n"), nil
 }
 
 // HACK: lib/pq sends a query with arguments as a prepared statement, which rejects several statements, so the schema is sent without arguments.
