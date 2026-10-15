@@ -2,6 +2,7 @@ package authkittest_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"slices"
 	"strings"
@@ -17,7 +18,7 @@ import (
 
 const kitSchema = "kit_ns"
 
-var authTables = []string{"auth_schema", "auth_credentials", "auth_sessions", "auth_tokens", "auth_events", "auth_throttle", "auth_passkeys", "auth_passkey_ceremonies", "auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes"}
+var authTables = []string{"auth_schema", "auth_credentials", "auth_sessions", "auth_tokens", "auth_events", "auth_throttle", "auth_passkeys", "auth_passkey_ceremonies", "auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes", "auth_ceremonies", "auth_identities", "auth_registrations", "auth_mail_counts"}
 
 func TestTheAppRoleIsANonOwnerThatCannotBypassRLS(t *testing.T) {
 	d := authkittest.NewDB(t)
@@ -69,8 +70,8 @@ SELECT f.conrelid::regclass::text, f.conname
 func TestEveryForeignKeyHasALeadingIndex(t *testing.T) {
 	d := authkittest.NewDB(t)
 	var fks int
-	if err := d.Owner.QueryRow(`SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid::regclass::text LIKE 'auth\_%'`).Scan(&fks); err != nil || fks != 11 {
-		t.Fatalf("authkit declares %d foreign keys (%v), want 11:the check below would pass vacuously", fks, err)
+	if err := d.Owner.QueryRow(`SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid::regclass::text LIKE 'auth\_%'`).Scan(&fks); err != nil || fks != 13 {
+		t.Fatalf("authkit declares %d foreign keys (%v), want 13:the check below would pass vacuously", fks, err)
 	}
 	rows, err := d.Owner.Query(fkIndexCheck)
 	if err != nil {
@@ -98,6 +99,7 @@ func TestTokenHashesAreIndexedForEqualityLookups(t *testing.T) {
 		{"auth_passkey_ceremonies", "ceremony_hash", true},
 		{"auth_passkeys", "credential_id", true},
 		{"auth_second_step_challenges", "challenge_hash", true},
+		{"auth_ceremonies", "state_hash", true},
 	} {
 		var found bool
 		if err := d.Owner.QueryRow(`
@@ -155,6 +157,14 @@ const insertChallengeSQL = `INSERT INTO auth_second_step_challenges (id, challen
 
 const insertEmailCodeSQL = `INSERT INTO auth_email_codes (id, principal_id, purpose, last_sent_at, expires_at) VALUES ($1, $2, $3, now(), now() + interval '10 minutes')`
 
+const insertOIDCCeremonySQL = `INSERT INTO auth_ceremonies (id, kind, provider, audience, state_hash, binding_hash, nonce_hash, principal_id, created_at, expires_at) VALUES ($1, $2, 'google', 'staff', $3, $4, $5, $6, now(), now() + interval '10 minutes')`
+
+const insertIdentitySQL = `INSERT INTO auth_identities (id, principal_id, provider, subject, email, created_at) VALUES ($1, $2, $3, $4, 'a@example.invalid', now())`
+
+const insertRegistrationSQL = `INSERT INTO auth_registrations (id, audience, email, created_at, expires_at) VALUES ($1, 'staff', $2, now(), now() + interval '1 day')`
+
+const upsertMailCountSQL = `INSERT INTO auth_mail_counts (audience, email_key, window_started_at, sent) VALUES ('staff', $1, now(), 1) ON CONFLICT (audience, email_key) DO UPDATE SET sent = auth_mail_counts.sent + 1`
+
 var secondFactorTables = []string{"auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes"}
 
 func seedSecondFactorRows(t *testing.T, d *authkittest.DB, p uuid.UUID) {
@@ -204,6 +214,30 @@ func count(t *testing.T, d *authkittest.DB, q string, args ...any) int {
 func hash() []byte {
 	h := uuid.New()
 	return h[:]
+}
+
+func hash32() []byte {
+	h := sha256.Sum256([]byte(uuid.NewString()))
+	return h[:]
+}
+
+func pgConstraint(err error) string {
+	var pe *pq.Error
+	if errors.As(err, &pe) {
+		return pe.Constraint
+	}
+	return ""
+}
+
+func migrationByID(t *testing.T, id int) migrations.Migration {
+	t.Helper()
+	for _, m := range migrations.All() {
+		if m.ID == id {
+			return m
+		}
+	}
+	t.Fatalf("no migration %04d", id)
+	return migrations.Migration{}
 }
 
 func newSession(t *testing.T, d *authkittest.DB, principal uuid.UUID) uuid.UUID {
@@ -728,6 +762,264 @@ func TestTheDownMigration0004RestoresVersion3(t *testing.T) {
 	var factor string
 	if err := d.Row(t, `SELECT second_factor FROM auth_sessions WHERE id = $1`, s).Scan(&factor); err != nil || factor != "" {
 		t.Errorf("the session's second_factor after the up = %q (%v), want empty", factor, err)
+	}
+}
+
+func TestSessionsAndEventsAcceptOIDC(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	s1, s2 := newSession(t, d, a), newSession(t, d, a)
+	wantOK(t, "a session with oidc", exec(d, `UPDATE auth_sessions SET second_factor = $2 WHERE id = $1`, s1, "oidc"))
+	var factor string
+	if err := d.Row(t, `SELECT second_factor FROM auth_sessions WHERE id = $1`, s1).Scan(&factor); err != nil || factor != "oidc" {
+		t.Errorf("the oidc session reads %q (%v), want oidc", factor, err)
+	}
+	const insertEvent = `INSERT INTO auth_events (id, at, principal_id, audience, result, second_factor) VALUES ($1, now(), $2, 'staff', 'signed_in', $3)`
+	wantOK(t, "an event with oidc", exec(d, insertEvent, uuid.New(), a, "oidc"))
+	wantOK(t, "a session revoked for a removed identity", exec(d, `UPDATE auth_sessions SET revoked_at = now(), revoke_reason = $2 WHERE id = $1`, s2, "identity_removed"))
+	var reason string
+	if err := d.Row(t, `SELECT revoke_reason FROM auth_sessions WHERE id = $1`, s2).Scan(&reason); err != nil || reason != "identity_removed" {
+		t.Errorf("the identity_removed session reads %q (%v), want identity_removed", reason, err)
+	}
+	wantCode(t, "a session revoked for a removed provider", exec(d, `UPDATE auth_sessions SET revoked_at = now(), revoke_reason = $2 WHERE id = $1`, s1, "provider_removed"), "23514")
+	wantCode(t, "an event with google", exec(d, insertEvent, uuid.New(), a, "google"), "23514")
+}
+
+func TestOIDCCeremonyRowsKeepTheirShape(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	ins := func(kind string, state, binding, nonce, principal any) error {
+		return exec(d, insertOIDCCeremonySQL, uuid.New(), kind, state, binding, nonce, principal)
+	}
+	st := hash32()
+	wantOK(t, "a signin ceremony", ins("signin", st, hash32(), hash32(), nil))
+	wantOK(t, "a signup ceremony", ins("signup", hash32(), nil, nil, nil))
+	wantOK(t, "a link ceremony", ins("link", hash32(), hash32(), hash32(), a))
+	wantCode(t, "a kind outside the three", ins("login", hash32(), hash32(), hash32(), nil), "23514")
+	wantCode(t, "a 16-byte state", ins("signin", hash(), hash32(), hash32(), nil), "23514")
+	wantCode(t, "a 16-byte binding", ins("signin", hash32(), hash(), hash32(), nil), "23514")
+	wantCode(t, "a 16-byte nonce", ins("signin", hash32(), hash32(), hash(), nil), "23514")
+	wantCode(t, "a link without a principal", ins("link", hash32(), hash32(), hash32(), nil), "23514")
+	wantCode(t, "a signin with a principal", ins("signin", hash32(), hash32(), hash32(), a), "23514")
+	err := ins("signin", st, hash32(), hash32(), nil)
+	wantCode(t, "a second ceremony for one state", err, "23505")
+	if got := pgConstraint(err); got != "auth_ceremonies_state_hash_key" {
+		t.Errorf("the duplicate state hit %q, want auth_ceremonies_state_hash_key", got)
+	}
+	var profile string
+	if err := d.Row(t, `SELECT profile::text FROM auth_ceremonies WHERE kind = 'signup'`).Scan(&profile); err != nil || profile != "{}" {
+		t.Errorf("the signup ceremony's profile = %q (%v), want {}", profile, err)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_ceremonies`); n != 3 {
+		t.Errorf("%d ceremonies, want 3", n)
+	}
+}
+
+func TestIdentitiesAreUniquePerSubjectAndPerProvider(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a, b := d.NewPrincipal(t, "a@example.invalid"), d.NewPrincipal(t, "b@example.invalid")
+	wantOK(t, "a's google identity", exec(d, insertIdentitySQL, uuid.New(), a, "google", "sub-1"))
+	err := exec(d, insertIdentitySQL, uuid.New(), b, "google", "sub-1")
+	wantCode(t, "a google subject for a second principal", err, "23505")
+	if got := pgConstraint(err); got != "auth_identities_subject" {
+		t.Errorf("the shared subject hit %q, want auth_identities_subject", got)
+	}
+	err = exec(d, insertIdentitySQL, uuid.New(), a, "google", "sub-2")
+	wantCode(t, "a second google identity for a", err, "23505")
+	if got := pgConstraint(err); got != "auth_identities_principal" {
+		t.Errorf("the second google identity hit %q, want auth_identities_principal", got)
+	}
+	wantOK(t, "a's apple identity", exec(d, insertIdentitySQL, uuid.New(), a, "apple", "sub-1"))
+	wantOK(t, "b's google identity", exec(d, insertIdentitySQL, uuid.New(), b, "google", "sub-2"))
+	if n := count(t, d, `SELECT count(*) FROM auth_identities`); n != 3 {
+		t.Errorf("%d identities, want 3", n)
+	}
+}
+
+func TestRegistrationsAndMailCountsKeepOneRowPerKey(t *testing.T) {
+	d := authkittest.NewDB(t)
+	wantOK(t, "a registration", exec(d, insertRegistrationSQL, uuid.New(), "a@example.invalid"))
+	wantCode(t, "a second registration for the address", exec(d, insertRegistrationSQL, uuid.New(), "a@example.invalid"), "23505")
+	wantOK(t, "a registration for another address", exec(d, insertRegistrationSQL, uuid.New(), "b@example.invalid"))
+	if n := count(t, d, `SELECT count(*) FROM auth_registrations`); n != 2 {
+		t.Errorf("%d registrations, want 2", n)
+	}
+	k := hash32()
+	wantOK(t, "a mail count", exec(d, upsertMailCountSQL, k))
+	wantOK(t, "a second mail count", exec(d, upsertMailCountSQL, k))
+	wantCode(t, "a 16-byte mail key", exec(d, upsertMailCountSQL, hash()), "23514")
+	var sent int
+	if err := d.Row(t, `SELECT sent FROM auth_mail_counts WHERE email_key = $1`, k).Scan(&sent); err != nil || sent != 2 {
+		t.Errorf("the key's count = %d (%v), want 2", sent, err)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_mail_counts`); n != 1 {
+		t.Errorf("%d mail count rows, want 1", n)
+	}
+}
+
+func TestOIDCRowsGoWithTheirOwner(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a, b := d.NewPrincipal(t, "a@example.invalid"), d.NewPrincipal(t, "b@example.invalid")
+	wantOK(t, "a's identity", exec(d, insertIdentitySQL, uuid.New(), a, "google", "sub-a"))
+	wantOK(t, "b's identity", exec(d, insertIdentitySQL, uuid.New(), b, "google", "sub-b"))
+	wantOK(t, "a's link ceremony", exec(d, insertOIDCCeremonySQL, uuid.New(), "link", hash32(), hash32(), hash32(), a))
+	wantOK(t, "a signin ceremony", exec(d, insertOIDCCeremonySQL, uuid.New(), "signin", hash32(), hash32(), hash32(), nil))
+	d.Exec(t, `DELETE FROM users WHERE id = $1`, a)
+	if n := count(t, d, `SELECT count(*) FROM auth_identities WHERE principal_id = $1`, a); n != 0 {
+		t.Errorf("a keeps %d identities after the delete, want 0", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_identities WHERE principal_id = $1`, b); n != 1 {
+		t.Errorf("b has %d identities, want 1", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_ceremonies WHERE kind = 'link'`); n != 0 {
+		t.Errorf("%d link ceremonies survive the delete, want 0", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_ceremonies WHERE kind = 'signin'`); n != 1 {
+		t.Errorf("%d signin ceremonies, want 1", n)
+	}
+}
+
+func TestTheAppRoleWithoutAWorkspaceReachesTheOIDCAndRegisterTables(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	ctx := context.Background()
+	st := hash32()
+	const spend = `UPDATE auth_ceremonies SET spent_at = now() WHERE state_hash = $1 AND spent_at IS NULL`
+	var first, second int64
+	err := d.InAuthTx(ctx, func(q db.Querier) error {
+		if _, err := q.Exec(ctx, insertOIDCCeremonySQL, uuid.New(), "signin", st, hash32(), hash32(), nil); err != nil {
+			return err
+		}
+		if _, err := q.Exec(ctx, insertIdentitySQL, uuid.New(), a, "google", "sub-app"); err != nil {
+			return err
+		}
+		if _, err := q.Exec(ctx, insertRegistrationSQL, uuid.New(), "a@example.invalid"); err != nil {
+			return err
+		}
+		if _, err := q.Exec(ctx, upsertMailCountSQL, hash32()); err != nil {
+			return err
+		}
+		var err error
+		if first, err = q.Exec(ctx, spend, st); err != nil {
+			return err
+		}
+		second, err = q.Exec(ctx, spend, st)
+		return err
+	})
+	wantOK(t, "the app writes its OIDC and register rows", err)
+	if first != 1 || second != 0 {
+		t.Errorf("the spend marked %d then %d ceremonies, want 1 then 0", first, second)
+	}
+	for _, table := range []string{"auth_ceremonies", "auth_identities", "auth_registrations", "auth_mail_counts"} {
+		var seen int
+		err := d.InSystemTx(ctx, uuid.New(), func(q db.Querier) error {
+			return q.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&seen)
+		})
+		wantOK(t, "the system role counts "+table, err)
+		if seen != 0 {
+			t.Errorf("the system role sees %d rows in %s, want 0", seen, table)
+		}
+		if n := count(t, d, "SELECT count(*) FROM "+table); n != 1 {
+			t.Errorf("the owner sees %d rows in %s, want 1", n, table)
+		}
+	}
+}
+
+func TestTheDownMigrations0006And0005RestoreVersion4(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		schema string
+		opts   []authkittest.Option
+	}{
+		{"public", "", nil},
+		{"kit_ns", kitSchema, []authkittest.Option{authkittest.Schema(kitSchema)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := authkittest.NewDB(t, c.opts...)
+			a := d.NewPrincipal(t, "a@example.invalid")
+			tbl := func(n string) string {
+				if c.schema == "" {
+					return n
+				}
+				return c.schema + "." + n
+			}
+			gone := func(table string) bool {
+				var g bool
+				if err := d.Row(t, `SELECT to_regclass($1) IS NULL`, tbl(table)).Scan(&g); err != nil {
+					t.Fatal(err)
+				}
+				return g
+			}
+			render := func(id int, down bool) string {
+				sql := migrationByID(t, id).Up
+				if down {
+					sql = migrationByID(t, id).Down
+				}
+				out, err := migrations.RenderIn(sql, "users", c.schema)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return out
+			}
+			d.Exec(t, render(6, true))
+			if !gone("auth_registrations") || !gone("auth_mail_counts") {
+				t.Error("after the 0006 down, a register table survives")
+			}
+			if n := count(t, d, `SELECT version FROM auth_schema`); n != 5 {
+				t.Errorf("schema version after the 0006 down = %d, want 5", n)
+			}
+			d.Exec(t, render(5, true))
+			if !gone("auth_ceremonies") || !gone("auth_identities") {
+				t.Error("after the 0005 down, an OIDC table survives")
+			}
+			if n := count(t, d, `SELECT version FROM auth_schema`); n != 4 {
+				t.Errorf("schema version after the 0005 down = %d, want 4", n)
+			}
+			s := newSession(t, d, a)
+			wantCode(t, "oidc after the 0005 down", exec(d, d.SQL(`UPDATE auth_sessions SET second_factor = 'oidc' WHERE id = $1`), s), "23514")
+			wantOK(t, "passkey after the 0005 down", exec(d, d.SQL(`UPDATE auth_sessions SET second_factor = 'passkey' WHERE id = $1`), s))
+			d.Exec(t, render(5, false))
+			d.Exec(t, render(6, false))
+			for _, table := range []string{"auth_ceremonies", "auth_identities", "auth_registrations", "auth_mail_counts"} {
+				if gone(table) {
+					t.Errorf("after the ups, %s is absent", table)
+				}
+			}
+			if n := count(t, d, `SELECT version FROM auth_schema`); n != 6 {
+				t.Errorf("schema version after the ups = %d, want 6", n)
+			}
+			wantOK(t, "oidc after the ups", exec(d, d.SQL(`UPDATE auth_sessions SET second_factor = 'oidc' WHERE id = $1`), s))
+		})
+	}
+}
+
+func TestTheDownMigration0005RefusesOIDCRows(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	s := newSession(t, d, a)
+	d.Exec(t, `UPDATE auth_sessions SET second_factor = 'oidc' WHERE id = $1`, s)
+	down6, err := migrations.Render(migrationByID(t, 6).Down, "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Exec(t, down6)
+	down5, err := migrations.Render(migrationByID(t, 5).Down, "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCode(t, "the 0005 down with an oidc session", exec(d, down5), "23514")
+	for _, table := range []string{"auth_ceremonies", "auth_identities"} {
+		var present bool
+		if err := d.Row(t, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&present); err != nil || !present {
+			t.Errorf("%s is gone after the refused down (present %v, %v)", table, present, err)
+		}
+	}
+	if n := count(t, d, `SELECT version FROM auth_schema`); n != 5 {
+		t.Errorf("schema version after the refused down = %d, want 5", n)
+	}
+	var factor string
+	if err := d.Row(t, `SELECT second_factor FROM auth_sessions WHERE id = $1`, s).Scan(&factor); err != nil || factor != "oidc" {
+		t.Errorf("the oidc session reads %q (%v) after the refused down, want oidc", factor, err)
 	}
 }
 
