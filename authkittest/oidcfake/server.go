@@ -2,6 +2,7 @@
 package oidcfake
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -57,6 +58,9 @@ type Server struct {
 	users     map[string]User
 	codes     map[string]*grant
 	exchanges int
+	tamper    func(header, claims map[string]any)
+	signKey   crypto.Signer
+	signAlg   string
 }
 
 type grant struct {
@@ -199,6 +203,33 @@ func (s *Server) Exchanges() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.exchanges
+}
+
+// Tamper changes the header and claims of the next ID token before it is signed.
+func (s *Server) Tamper(fn func(header, claims map[string]any)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tamper = fn
+}
+
+// SignNextWith signs the next ID token with key and alg: RS256 or ES256 with key, none or HS256 with a nil key.
+func (s *Server) SignNextWith(key crypto.Signer, alg string) {
+	s.t.Helper()
+	switch alg {
+	case "RS256", "ES256":
+		if key == nil {
+			s.t.Fatalf("oidcfake: SignNextWith %s: bad key", alg)
+		}
+	case "none", "HS256":
+		if key != nil {
+			s.t.Fatalf("oidcfake: SignNextWith %s: bad key", alg)
+		}
+	default:
+		s.t.Fatalf("oidcfake: SignNextWith %s: bad key", alg)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.signKey, s.signAlg = key, alg
 }
 
 func (s *Server) routes() http.Handler {
@@ -351,7 +382,11 @@ func (s *Server) clientSecretOK(secret string) bool {
 func (s *Server) idToken(g *grant) (string, error) {
 	u := g.user
 	now := s.now()
-	header := map[string]any{"alg": "RS256", "kid": s.kid, "typ": "JWT"}
+	alg, key := "RS256", crypto.Signer(s.rsaKey)
+	if s.signAlg != "" {
+		alg, key = s.signAlg, s.signKey
+	}
+	header := map[string]any{"alg": alg, "kid": s.kid, "typ": "JWT"}
 	claims := map[string]any{
 		"iss":   s.URL,
 		"sub":   u.Subject,
@@ -383,7 +418,11 @@ func (s *Server) idToken(g *grant) (string, error) {
 	} else {
 		claims["nonce_supported"] = true
 	}
-	return s.sign(header, claims)
+	if s.tamper != nil {
+		s.tamper(header, claims)
+	}
+	s.tamper, s.signAlg, s.signKey = nil, "", nil
+	return s.sign(header, claims, alg, key)
 }
 
 func (s *Server) refuse(w http.ResponseWriter, status int, code, name string) {

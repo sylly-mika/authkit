@@ -3,12 +3,16 @@ package oidcfake
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"math/big"
 
 	jose "github.com/go-jose/go-jose/v4"
 )
@@ -74,7 +78,7 @@ func (s *Server) jwks() jose.JSONWebKeySet {
 	return jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &s.rsaKey.PublicKey, KeyID: s.kid, Algorithm: "RS256", Use: "sig"}}}
 }
 
-func (s *Server) sign(header, claims map[string]any) (string, error) {
+func (s *Server) sign(header, claims map[string]any, alg string, key crypto.Signer) (string, error) {
 	h, err := json.Marshal(header)
 	if err != nil {
 		return "", err
@@ -84,10 +88,42 @@ func (s *Server) sign(header, claims map[string]any) (string, error) {
 		return "", err
 	}
 	input := base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(c)
-	digest := sha256.Sum256([]byte(input))
-	sig, err := s.rsaKey.Sign(rand.Reader, digest[:], crypto.SHA256)
+	sig, err := s.signInput(alg, key, input)
 	if err != nil {
 		return "", err
 	}
 	return input + "." + base64.RawURLEncoding.EncodeToString(sig), nil
+}
+
+func (s *Server) signInput(alg string, key crypto.Signer, input string) ([]byte, error) {
+	switch alg {
+	case "RS256":
+		digest := sha256.Sum256([]byte(input))
+		return key.Sign(rand.Reader, digest[:], crypto.SHA256)
+	case "ES256":
+		digest := sha256.Sum256([]byte(input))
+		der, err := key.Sign(rand.Reader, digest[:], crypto.SHA256)
+		if err != nil {
+			return nil, err
+		}
+		var rs struct{ R, S *big.Int }
+		if _, err := asn1.Unmarshal(der, &rs); err != nil {
+			return nil, err
+		}
+		sig := make([]byte, 64)
+		rs.R.FillBytes(sig[:32])
+		rs.S.FillBytes(sig[32:])
+		return sig, nil
+	case "HS256":
+		pub, err := x509.MarshalPKIXPublicKey(&s.rsaKey.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		mac := hmac.New(sha256.New, pub)
+		mac.Write([]byte(input))
+		return mac.Sum(nil), nil
+	case "none":
+		return nil, nil
+	}
+	return nil, errors.New("oidcfake: unknown alg " + alg)
 }

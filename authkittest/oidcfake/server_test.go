@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -619,5 +622,118 @@ func TestFakeRefusesBasicAuth(t *testing.T) {
 				t.Errorf("the probing exchange made %d requests, want 2 (header refused, body accepted)", n)
 			}
 		})
+	}
+}
+
+func TestFakeTokenOverrides(t *testing.T) {
+	s := newServer(t, Google)
+	p := s.Provider(redirect)
+	issue := func(t *testing.T, subject string) string {
+		t.Helper()
+		r, verifier, _ := begin(t, s, p)
+		cb := s.Authorize(t, r, User{Subject: subject, Email: "ada@example.invalid", EmailVerified: true})
+		tok, err := exchange(t, s, p, p.AuthStyle, cb.Code, verifier)
+		if err != nil {
+			t.Fatalf("exchange: %v", err)
+		}
+		raw, _ := tok.Extra("id_token").(string)
+		if raw == "" {
+			t.Fatal("the exchange has no id_token")
+		}
+		return raw
+	}
+
+	s.Tamper(func(h, c map[string]any) {
+		h["kid"] = "nokid"
+		c["aud"] = "other"
+	})
+	raw := issue(t, "t-a")
+	header, claims, _ := parts(t, raw)
+	if header["kid"] != "nokid" || claims["aud"] != "other" {
+		t.Errorf("the tampered token has kid %v and aud %v", header["kid"], claims["aud"])
+	}
+	if verifyToken(s, p, raw) == nil {
+		t.Error("a tampered token verifies")
+	}
+
+	raw = issue(t, "t-b")
+	header, claims, _ = parts(t, raw)
+	if header["kid"] != "oidcfake-rsa-1" || claims["aud"] != s.ClientID {
+		t.Errorf("the token after a tamper has kid %v and aud %v, want the server's", header["kid"], claims["aud"])
+	}
+	if err := verifyToken(s, p, raw); err != nil {
+		t.Errorf("the untampered token: %v", err)
+	}
+
+	other, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	s.SignNextWith(other, "RS256")
+	raw = issue(t, "t-c")
+	header, _, _ = parts(t, raw)
+	if header["alg"] != "RS256" || header["kid"] != "oidcfake-rsa-1" {
+		t.Errorf("the RS256 override has alg %v and kid %v", header["alg"], header["kid"])
+	}
+	if verifyToken(s, p, raw) == nil {
+		t.Error("a token signed by another key verifies")
+	}
+	jws, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256})
+	if err != nil {
+		t.Fatalf("parse the RS256 override: %v", err)
+	}
+	if _, err := jws.Verify(&other.PublicKey); err != nil {
+		t.Errorf("the RS256 override is not signed by the given key: %v", err)
+	}
+
+	ec, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	s.SignNextWith(ec, "ES256")
+	raw = issue(t, "t-d")
+	header, _, _ = parts(t, raw)
+	if header["alg"] != "ES256" {
+		t.Errorf("the ES256 override has alg %v", header["alg"])
+	}
+	if verifyToken(s, p, raw) == nil {
+		t.Error("an ES256 token verifies against the provider's keys")
+	}
+	jws, err = jose.ParseSigned(raw, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		t.Fatalf("parse the ES256 override: %v", err)
+	}
+	if _, err := jws.Verify(&ec.PublicKey); err != nil {
+		t.Errorf("the ES256 override is not signed by the given key: %v", err)
+	}
+
+	s.SignNextWith(nil, "none")
+	raw = issue(t, "t-e")
+	header, _, sig := parts(t, raw)
+	if header["alg"] != "none" || len(sig) != 0 {
+		t.Errorf("the none override has alg %v and a %d-byte signature", header["alg"], len(sig))
+	}
+	if verifyToken(s, p, raw) == nil {
+		t.Error("an unsigned token verifies")
+	}
+
+	s.SignNextWith(nil, "HS256")
+	raw = issue(t, "t-f")
+	header, _, sig = parts(t, raw)
+	if header["alg"] != "HS256" {
+		t.Errorf("the HS256 override has alg %v", header["alg"])
+	}
+	pub, err := x509.MarshalPKIXPublicKey(&s.rsaKey.PublicKey)
+	if err != nil {
+		t.Fatalf("public key: %v", err)
+	}
+	segments := strings.Split(raw, ".")
+	mac := hmac.New(sha256.New, pub)
+	mac.Write([]byte(segments[0] + "." + segments[1]))
+	if !hmac.Equal(sig, mac.Sum(nil)) {
+		t.Error("the HS256 signature is not HMAC-SHA256 keyed with the server's public key")
+	}
+	if verifyToken(s, p, raw) == nil {
+		t.Error("an HS256 token verifies against the provider's keys")
 	}
 }
