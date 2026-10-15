@@ -131,38 +131,38 @@ type Rules struct {
 func (p Rules) check() error {
 	if p.RPID == "" {
 		if len(p.Origins) > 0 {
-			return errors.New("authkit: Config.Passkeys.Origins needs Config.Passkeys.RPID")
+			return errors.New("authkit: passkey.Rules.Origins needs passkey.Rules.RPID")
 		}
 		return nil
 	}
 	if err := protocol.ValidateRPID(p.RPID); err != nil {
-		return fmt.Errorf("authkit: Config.Passkeys.RPID %q is not a domain: %v", p.RPID, err)
+		return fmt.Errorf("authkit: passkey.Rules.RPID %q is not a domain: %v", p.RPID, err)
 	}
 	if p.RPID != strings.ToLower(p.RPID) {
-		return fmt.Errorf("authkit: Config.Passkeys.RPID %q must be lower case", p.RPID)
+		return fmt.Errorf("authkit: passkey.Rules.RPID %q must be lower case", p.RPID)
 	}
 	if len(p.Origins) == 0 {
-		return errors.New("authkit: Config.Passkeys.Origins is empty")
+		return errors.New("authkit: passkey.Rules.Origins is empty")
 	}
 	seen := map[string]authkit.Audience{}
 	for _, aud := range slices.Sorted(maps.Keys(p.Origins)) {
 		if len(p.Origins[aud]) == 0 {
-			return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] is empty", aud)
+			return fmt.Errorf("authkit: passkey.Rules.Origins[%q] is empty", aud)
 		}
 		for _, o := range p.Origins[aud] {
 			u, err := url.Parse(o)
 			if err != nil || u.Host == "" || o != u.Scheme+"://"+u.Host {
-				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q is not an origin (scheme://host[:port])", aud, o)
+				return fmt.Errorf("authkit: passkey.Rules.Origins[%q] %q is not an origin (scheme://host[:port])", aud, o)
 			}
 			if u.Scheme != "https" && !(u.Scheme == "http" && p.RPID == "localhost") {
-				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q must use https", aud, o)
+				return fmt.Errorf("authkit: passkey.Rules.Origins[%q] %q must use https", aud, o)
 			}
 			if host := u.Hostname(); host != p.RPID && !strings.HasSuffix(host, "."+p.RPID) {
-				return fmt.Errorf("authkit: Config.Passkeys.Origins[%q] %q is outside RPID %q", aud, o, p.RPID)
+				return fmt.Errorf("authkit: passkey.Rules.Origins[%q] %q is outside RPID %q", aud, o, p.RPID)
 			}
 			// WHY: a surface must not accept the other surface's page.
 			if prev, ok := seen[o]; ok && prev != aud {
-				return fmt.Errorf("authkit: Config.Passkeys.Origins %q is listed for both %q and %q", o, prev, aud)
+				return fmt.Errorf("authkit: passkey.Rules.Origins %q is listed for both %q and %q", o, prev, aud)
 			}
 			seen[o] = aud
 		}
@@ -172,11 +172,11 @@ func (p Rules) check() error {
 		v     time.Duration
 	}{{"CeremonyTTL", p.CeremonyTTL}, {"Reauth", p.Reauth}} {
 		if d.v <= 0 || d.v > 10*time.Minute {
-			return fmt.Errorf("authkit: Config.Passkeys.%s must be in (0, 10m], not %v", d.field, d.v)
+			return fmt.Errorf("authkit: passkey.Rules.%s must be in (0, 10m], not %v", d.field, d.v)
 		}
 	}
 	if p.Max < 1 || p.Max > 100 {
-		return fmt.Errorf("authkit: Config.Passkeys.Max must be in [1, 100], not %d", p.Max)
+		return fmt.Errorf("authkit: passkey.Rules.Max must be in [1, 100], not %d", p.Max)
 	}
 	return nil
 }

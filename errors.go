@@ -46,7 +46,7 @@ func (e ErrResendTooSoon) Error() string {
 	return fmt.Sprintf("authkit: a code was sent moments ago; retry in %s", e.RetryAfter)
 }
 
-// ErrPasskeysOff is the error of every passkey method while Config.Passkeys.RPID is empty.
+// ErrPasskeysOff is the error of every passkey method while passkey.Rules.RPID is empty.
 var ErrPasskeysOff = errors.New("authkit: passkeys are off")
 
 // Passkey refusals, returned in Result.Refusal.

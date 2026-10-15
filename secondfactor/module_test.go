@@ -21,7 +21,7 @@ func newSecondFactorTestService(t *testing.T) *authkit.Service {
 func TestNewRefusesRulesAndKeepsTheNameFree(t *testing.T) {
 	svc := newSecondFactorTestService(t)
 	bad, err := secondfactor.New(svc, secondfactor.Rules{Key: make([]byte, 31)})
-	if bad != nil || err == nil || err.Error() != "authkit: Config.SecondFactors.Key must be 32 bytes, not 31" {
+	if bad != nil || err == nil || err.Error() != "authkit: secondfactor.Rules.Key must be 32 bytes, not 31" {
 		t.Fatalf("refused New = %v, %v; want nil and the 32-byte refusal", bad, err)
 	}
 	good, err := secondfactor.New(svc, secondfactor.Rules{Key: make([]byte, 32)})

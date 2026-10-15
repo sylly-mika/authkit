@@ -222,7 +222,7 @@ func TestNewRefusesSecondFactorRulesOutOfRange(t *testing.T) {
 		f(&r)
 		return r
 	}
-	const prefix = "authkit: Config.SecondFactors."
+	const prefix = "authkit: secondfactor.Rules."
 	for name, c := range map[string]struct {
 		r    secondfactor.Rules
 		want string
@@ -289,22 +289,22 @@ func TestNewRefusesABadPasskeyRPID(t *testing.T) {
 		"an IP":    oneOrigin("127.0.0.1", "https://127.0.0.1"),
 	} {
 		err := newWithPasskeys(p)
-		if err == nil || !strings.HasPrefix(err.Error(), "authkit: Config.Passkeys.RPID ") {
-			t.Errorf("%s: New = %v, want a refusal naming Config.Passkeys.RPID", name, err)
+		if err == nil || !strings.HasPrefix(err.Error(), "authkit: passkey.Rules.RPID ") {
+			t.Errorf("%s: New = %v, want a refusal naming passkey.Rules.RPID", name, err)
 		}
 	}
 	wantPasskeyRefusal(t, "upper case", oneOrigin("Tasks.Inostudio.lv", "https://Tasks.Inostudio.lv"),
-		`authkit: Config.Passkeys.RPID "Tasks.Inostudio.lv" must be lower case`)
+		`authkit: passkey.Rules.RPID "Tasks.Inostudio.lv" must be lower case`)
 }
 
 func TestNewRefusesPasskeyOriginsWithoutAnRPIDOrAnAudience(t *testing.T) {
 	wantPasskeyRefusal(t, "origins without an RPID", passkey.Rules{Origins: map[authkit.Audience][]string{"staff": {"https://tasks.inostudio.lv"}}},
-		"authkit: Config.Passkeys.Origins needs Config.Passkeys.RPID")
+		"authkit: passkey.Rules.Origins needs passkey.Rules.RPID")
 	wantPasskeyRefusal(t, "no origins", passkey.Rules{RPID: "tasks.inostudio.lv"},
-		"authkit: Config.Passkeys.Origins is empty")
+		"authkit: passkey.Rules.Origins is empty")
 	wantPasskeyRefusal(t, "an audience without an origin", passkey.Rules{RPID: "tasks.inostudio.lv",
 		Origins: map[authkit.Audience][]string{"staff": {"https://tasks.inostudio.lv"}, "client": {}}},
-		`authkit: Config.Passkeys.Origins["client"] is empty`)
+		`authkit: passkey.Rules.Origins["client"] is empty`)
 }
 
 func TestNewRefusesAMalformedPasskeyOrigin(t *testing.T) {
@@ -314,7 +314,7 @@ func TestNewRefusesAMalformedPasskeyOrigin(t *testing.T) {
 		"//tasks.inostudio.lv", "tasks.inostudio.lv", "",
 	} {
 		wantPasskeyRefusal(t, fmt.Sprintf("origin %q", o), oneOrigin("tasks.inostudio.lv", o),
-			fmt.Sprintf("authkit: Config.Passkeys.Origins[%q] %q is not an origin (scheme://host[:port])", "staff", o))
+			fmt.Sprintf("authkit: passkey.Rules.Origins[%q] %q is not an origin (scheme://host[:port])", "staff", o))
 	}
 }
 
@@ -326,7 +326,7 @@ func TestNewRefusesAPasskeyOriginWithoutHTTPS(t *testing.T) {
 		{"localhost", "ftp://localhost"},
 	} {
 		wantPasskeyRefusal(t, c.origin, oneOrigin(c.rpid, c.origin),
-			fmt.Sprintf("authkit: Config.Passkeys.Origins[%q] %q must use https", "staff", c.origin))
+			fmt.Sprintf("authkit: passkey.Rules.Origins[%q] %q must use https", "staff", c.origin))
 	}
 }
 
@@ -335,16 +335,16 @@ func TestNewRefusesAPasskeyOriginOutsideTheRPID(t *testing.T) {
 		"https://nottasks.inostudio.lv", "https://inostudio.lv", "https://tasks.inostudio.lv.evil.test", "https://Tasks.inostudio.lv",
 	} {
 		wantPasskeyRefusal(t, o, oneOrigin("tasks.inostudio.lv", o),
-			fmt.Sprintf("authkit: Config.Passkeys.Origins[%q] %q is outside RPID %q", "staff", o, "tasks.inostudio.lv"))
+			fmt.Sprintf("authkit: passkey.Rules.Origins[%q] %q is outside RPID %q", "staff", o, "tasks.inostudio.lv"))
 	}
 	wantPasskeyRefusal(t, "localhost IP", oneOrigin("localhost", "http://127.0.0.1:3000"),
-		fmt.Sprintf("authkit: Config.Passkeys.Origins[%q] %q is outside RPID %q", "staff", "http://127.0.0.1:3000", "localhost"))
+		fmt.Sprintf("authkit: passkey.Rules.Origins[%q] %q is outside RPID %q", "staff", "http://127.0.0.1:3000", "localhost"))
 }
 
 func TestNewRefusesAnOriginOnTwoAudiences(t *testing.T) {
 	wantPasskeyRefusal(t, "one origin, two audiences", passkey.Rules{RPID: "tasks.inostudio.lv",
 		Origins: map[authkit.Audience][]string{"staff": {"https://tasks.inostudio.lv"}, "client": {"https://tasks.inostudio.lv"}}},
-		`authkit: Config.Passkeys.Origins "https://tasks.inostudio.lv" is listed for both "client" and "staff"`)
+		`authkit: passkey.Rules.Origins "https://tasks.inostudio.lv" is listed for both "client" and "staff"`)
 }
 
 func TestNewRefusesPasskeyLimitsOutOfRange(t *testing.T) {
@@ -358,17 +358,17 @@ func TestNewRefusesPasskeyLimitsOutOfRange(t *testing.T) {
 		want string
 	}{
 		"CeremonyTTL negative": {with(func(p *passkey.Rules) { p.CeremonyTTL = -time.Second }),
-			"authkit: Config.Passkeys.CeremonyTTL must be in (0, 10m], not -1s"},
+			"authkit: passkey.Rules.CeremonyTTL must be in (0, 10m], not -1s"},
 		"CeremonyTTL over 10m": {with(func(p *passkey.Rules) { p.CeremonyTTL = 10*time.Minute + time.Second }),
-			"authkit: Config.Passkeys.CeremonyTTL must be in (0, 10m], not 10m1s"},
+			"authkit: passkey.Rules.CeremonyTTL must be in (0, 10m], not 10m1s"},
 		"Reauth negative": {with(func(p *passkey.Rules) { p.Reauth = -time.Second }),
-			"authkit: Config.Passkeys.Reauth must be in (0, 10m], not -1s"},
+			"authkit: passkey.Rules.Reauth must be in (0, 10m], not -1s"},
 		"Reauth over 10m": {with(func(p *passkey.Rules) { p.Reauth = 11 * time.Minute }),
-			"authkit: Config.Passkeys.Reauth must be in (0, 10m], not 11m0s"},
+			"authkit: passkey.Rules.Reauth must be in (0, 10m], not 11m0s"},
 		"Max negative": {with(func(p *passkey.Rules) { p.Max = -1 }),
-			"authkit: Config.Passkeys.Max must be in [1, 100], not -1"},
+			"authkit: passkey.Rules.Max must be in [1, 100], not -1"},
 		"Max over 100": {with(func(p *passkey.Rules) { p.Max = 101 }),
-			"authkit: Config.Passkeys.Max must be in [1, 100], not 101"},
+			"authkit: passkey.Rules.Max must be in [1, 100], not 101"},
 	} {
 		wantPasskeyRefusal(t, name, c.p, c.want)
 	}

@@ -37,7 +37,7 @@ func TestARefusedNewLeavesThePasskeyNameFree(t *testing.T) {
 	if m != nil {
 		t.Fatalf("refused New returned a module")
 	}
-	if err == nil || err.Error() != "authkit: Config.Passkeys.Origins needs Config.Passkeys.RPID" {
+	if err == nil || err.Error() != "authkit: passkey.Rules.Origins needs passkey.Rules.RPID" {
 		t.Fatalf("refused New error = %v; want the Origins refusal", err)
 	}
 	if _, err := passkey.New(svc, passkey.Rules{}); err != nil {

@@ -85,18 +85,18 @@ func withDefaults(r Rules) Rules {
 
 func (r Rules) check() error {
 	if len(r.Key) != 0 && len(r.Key) != 32 {
-		return fmt.Errorf("authkit: Config.SecondFactors.Key must be 32 bytes, not %d", len(r.Key))
+		return fmt.Errorf("authkit: secondfactor.Rules.Key must be 32 bytes, not %d", len(r.Key))
 	}
 	// WHY: the otpauth label is Issuer:account; a colon in the issuer splits it wrongly in authenticator apps.
 	if strings.Contains(r.Issuer, ":") {
-		return fmt.Errorf("authkit: Config.SecondFactors.Issuer %q must not contain a colon", r.Issuer)
+		return fmt.Errorf("authkit: secondfactor.Rules.Issuer %q must not contain a colon", r.Issuer)
 	}
 	for _, d := range []struct {
 		field string
 		v     time.Duration
 	}{{"ChallengeTTL", r.ChallengeTTL}, {"EmailCodeTTL", r.EmailCodeTTL}, {"SetupTTL", r.SetupTTL}} {
 		if d.v <= 0 || d.v > time.Hour {
-			return fmt.Errorf("authkit: Config.SecondFactors.%s must be in (0, 1h], not %v", d.field, d.v)
+			return fmt.Errorf("authkit: secondfactor.Rules.%s must be in (0, 1h], not %v", d.field, d.v)
 		}
 	}
 	for _, d := range []struct {
@@ -104,17 +104,17 @@ func (r Rules) check() error {
 		v     time.Duration
 	}{{"ResendEvery", r.ResendEvery}, {"Reauth", r.Reauth}} {
 		if d.v <= 0 || d.v > 10*time.Minute {
-			return fmt.Errorf("authkit: Config.SecondFactors.%s must be in (0, 10m], not %v", d.field, d.v)
+			return fmt.Errorf("authkit: secondfactor.Rules.%s must be in (0, 10m], not %v", d.field, d.v)
 		}
 	}
 	if r.MaxTries < 1 || r.MaxTries > 10 {
-		return fmt.Errorf("authkit: Config.SecondFactors.MaxTries must be in [1, 10], not %d", r.MaxTries)
+		return fmt.Errorf("authkit: secondfactor.Rules.MaxTries must be in [1, 10], not %d", r.MaxTries)
 	}
 	if r.MaxSends < 1 || r.MaxSends > 20 {
-		return fmt.Errorf("authkit: Config.SecondFactors.MaxSends must be in [1, 20], not %d", r.MaxSends)
+		return fmt.Errorf("authkit: secondfactor.Rules.MaxSends must be in [1, 20], not %d", r.MaxSends)
 	}
 	if r.RecoveryCodes < 8 || r.RecoveryCodes > 16 {
-		return fmt.Errorf("authkit: Config.SecondFactors.RecoveryCodes must be in [8, 16], not %d", r.RecoveryCodes)
+		return fmt.Errorf("authkit: secondfactor.Rules.RecoveryCodes must be in [8, 16], not %d", r.RecoveryCodes)
 	}
 	return nil
 }
