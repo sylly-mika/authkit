@@ -46,7 +46,7 @@ func (s *Service) OpenSessionFrom(ctx context.Context, q db.Querier, from uuid.U
 func (s *Service) openFor(ctx context.Context, q db.Querier, p Principal, aud Audience, m Meta, authAt time.Time, factor FactorKind) (Result, error) {
 	m = m.clean()
 	now := s.now()
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: factor})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: factor, Source: SourceOpenSession})
 	if err != nil {
 		return Result{}, err
 	}

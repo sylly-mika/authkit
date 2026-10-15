@@ -33,7 +33,7 @@ func (s *Service) Refresh(ctx context.Context, q db.Querier, aud Audience, raw s
 		return Result{}, err
 	}
 	p := Principal{ID: sess.PrincipalID}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, ScopeID: sess.ScopeID, SecondFactor: FactorKind(sess.SecondFactor)})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, ScopeID: sess.ScopeID, SecondFactor: FactorKind(sess.SecondFactor), Source: SourceRefresh})
 	if err != nil {
 		return Result{}, err
 	}

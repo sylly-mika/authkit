@@ -122,12 +122,14 @@ const (
 	SourceRevokeAll           = "revoke_all"
 	SourceRefresh             = "refresh"
 	SourceAuthenticateSession = "authenticate_session"
-	SourcePasskeyLogin        = "passkey_login"
-	SourcePasskeyRegister     = "passkey_register"
-	SourceDeletePasskey       = "delete_passkey"
-	SourceSecondStep          = "second_step"
-	SourceSecondFactor        = "second_factor"
-	SourceRequestReset        = "request_reset" // RequestReset records no event; reserved
+	// SourceAuthenticate is the Proposal.Source of Authenticate; no event carries it.
+	SourceAuthenticate    = "authenticate"
+	SourcePasskeyLogin    = "passkey_login"
+	SourcePasskeyRegister = "passkey_register"
+	SourceDeletePasskey   = "delete_passkey"
+	SourceSecondStep      = "second_step"
+	SourceSecondFactor    = "second_factor"
+	SourceRequestReset    = "request_reset" // RequestReset records no event; reserved
 )
 
 // Revoke reasons, as auth_sessions_revoke_reason lists them.

@@ -49,6 +49,8 @@ type Proposal struct {
 	ScopeID   *uuid.UUID
 	// SecondFactor is the factor that completed the sign-in this admit is for: empty for a password alone.
 	SecondFactor FactorKind
+	// Source is the flow asking: one of the Source* constants.
+	Source string
 }
 
 // Admission is Admit's answer for a session it allows.

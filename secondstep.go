@@ -56,7 +56,7 @@ func (s *Service) VerifySecondStep(ctx context.Context, q db.Querier, aud Audien
 	if method != FactorTOTP && method != FactorEmail && method != FactorRecovery {
 		return s.failSecondStep(ctx, q, ch, aud, now, ev)
 	}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: method})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: method, Source: SourceSecondStep})
 	if err != nil {
 		return Result{}, err
 	}

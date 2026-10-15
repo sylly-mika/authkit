@@ -158,7 +158,7 @@ func (s *Service) refuseFailed(ctx context.Context, q db.Querier, a *attempt) (R
 
 // WHY: an Admit refusal leaves the throttle counter as it is; only a sign-in clears it.
 func (s *Service) signIn(ctx context.Context, q db.Querier, a *attempt, p Principal, hash, pw string) (Result, error) {
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: a.aud})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: a.aud, Source: SourceLogin})
 	if err != nil {
 		return Result{}, err
 	}

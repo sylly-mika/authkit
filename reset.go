@@ -121,7 +121,7 @@ func (s *Service) CompleteReset(ctx context.Context, q db.Querier, aud Audience,
 	g := grant{p: p, aud: aud, m: m, now: now}
 	if s.cfg.Transport == TransportSession || len(methods) > 0 {
 		var refusal *Refusal
-		if g.adm, refusal, err = s.admit(ctx, q, Proposal{Principal: p, Audience: aud}); err != nil {
+		if g.adm, refusal, err = s.admit(ctx, q, Proposal{Principal: p, Audience: aud, Source: SourceCompleteReset}); err != nil {
 			return Result{}, err
 		}
 		if refusal != nil {

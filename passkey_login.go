@@ -87,7 +87,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audi
 	if err != nil {
 		return Result{}, err
 	}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: FactorPasskey})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: aud, SecondFactor: FactorPasskey, Source: SourcePasskeyLogin})
 	if err != nil {
 		return Result{}, err
 	}

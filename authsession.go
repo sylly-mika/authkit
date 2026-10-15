@@ -76,7 +76,7 @@ func (s *Service) admitSession(ctx context.Context, q db.Querier, sess Session, 
 		return Result{Refusal: ErrSessionEnded}, nil
 	}
 	p := Principal{ID: sess.PrincipalID}
-	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: Audience(sess.Audience), ScopeID: sess.ScopeID, SecondFactor: FactorKind(sess.SecondFactor)})
+	adm, refusal, err := s.admit(ctx, q, Proposal{Principal: p, Audience: Audience(sess.Audience), ScopeID: sess.ScopeID, SecondFactor: FactorKind(sess.SecondFactor), Source: SourceAuthenticateSession})
 	if err != nil {
 		return Result{}, err
 	}
