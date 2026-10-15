@@ -1,4 +1,4 @@
-package authkit
+package passkey
 
 import (
 	"bytes"
@@ -10,9 +10,9 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
+	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/ceremony"
-	"github.com/sylly-mika/authkit/internal/events"
 )
 
 type passkeyRow struct {
@@ -26,68 +26,68 @@ var (
 )
 
 // BeginPasskeyLogin starts a passkey sign-in on the audience: it stores a ceremony and returns its ID and the browser's request options. It takes no login. Needs a transaction.
-func (s *Service) BeginPasskeyLogin(ctx context.Context, q db.Querier, aud Audience, m Meta) (Result, error) {
-	rp, now, ok, err := s.passkeyStart(ctx, q, aud)
+func (mod *Module) BeginPasskeyLogin(ctx context.Context, q db.Querier, aud authkit.Audience, m authkit.Meta) (authkit.Result, error) {
+	rp, now, ok, err := mod.passkeyStart(ctx, q, aud)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrPasskeyRejected}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyRejected}, nil
 	}
 	assertion, sd, err := rp.BeginDiscoverableLogin()
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	opts, err := json.Marshal(assertion)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	id, exp, err := ceremony.Create(ctx, q, s.cfg.Rand, ceremony.KindLogin, string(aud), nil, nil, *sd, now, s.cfg.Passkeys.CeremonyTTL)
+	id, exp, err := ceremony.Create(ctx, q, mod.core.Rand(), ceremony.KindLogin, string(aud), nil, nil, *sd, now, mod.rules.CeremonyTTL)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	return Result{Ceremony: &Ceremony{ID: id, Options: opts, ExpiresAt: exp}}, nil
+	return authkit.Result{Ceremony: &authkit.Ceremony{ID: id, Options: opts, ExpiresAt: exp}}, nil
 }
 
-// FinishPasskeyLogin completes a passkey sign-in with the ceremony ID and the browser's JSON response: the passkey's owner passes Admit and gets a session, as with Login. Every refusal is ErrPasskeyRejected except Admit's own. Needs a transaction.
-func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audience, ceremonyID string, response []byte, m Meta) (Result, error) {
-	m = m.clean()
-	rp, now, ok, err := s.passkeyStart(ctx, q, aud)
+// FinishPasskeyLogin completes a passkey sign-in with the ceremony ID and the browser's JSON response: the passkey's owner passes Admit and gets a session, as with Login. Every refusal is authkit.ErrPasskeyRejected except Admit's own. Needs a transaction.
+func (mod *Module) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud authkit.Audience, ceremonyID string, response []byte, m authkit.Meta) (authkit.Result, error) {
+	m = m.Clean()
+	rp, now, ok, err := mod.passkeyStart(ctx, q, aud)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrPasskeyRejected}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyRejected}, nil
 	}
 	sd, ok, err := ceremony.Spend(ctx, q, ceremony.KindLogin, string(aud), ceremonyID, nil, nil, now)
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
 	if !ok {
-		return Result{Refusal: ErrPasskeyRejected}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyRejected}, nil
 	}
 	parsed, err := protocol.ParseCredentialRequestResponseBytes(response)
 	if err != nil {
-		return Result{Refusal: ErrPasskeyRejected}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyRejected}, nil
 	}
 	var hit *passkeyRow
 	var infraErr error
 	handler := passkeyHandler(ctx, q, &hit, &infraErr)
 	_, cred, err := rp.ValidatePasskeyLogin(handler, sd, parsed)
 	if infraErr != nil {
-		return Result{}, infraErr
+		return authkit.Result{}, infraErr
 	}
 	if err != nil || cred.Authenticator.CloneWarning {
-		return s.refusePasskey(ctx, q, hit, aud, m, now)
+		return mod.refusePasskey(ctx, q, hit, aud, m, now)
 	}
-	p, err := s.principals.ByID(ctx, q, hit.principal, aud)
-	if errors.Is(err, ErrUnknownLogin) {
-		return s.refusePasskey(ctx, q, hit, aud, m, now)
+	p, err := mod.core.Principals().ByID(ctx, q, hit.principal, aud)
+	if errors.Is(err, authkit.ErrUnknownLogin) {
+		return mod.refusePasskey(ctx, q, hit, aud, m, now)
 	}
 	if err != nil {
-		return Result{}, err
+		return authkit.Result{}, err
 	}
-	a := s.core().BeginVerified(SourcePasskeyLogin, aud, m)
+	a := mod.core.BeginVerified(authkit.SourcePasskeyLogin, aud, m)
 	a.SetPrincipal(&p)
 	a.Commit(func(ctx context.Context, q db.Querier) error {
 		data, err := json.Marshal(*cred)
@@ -97,7 +97,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, q db.Querier, aud Audi
 		_, err = q.Exec(ctx, "UPDATE auth_passkeys SET data = $2, last_used_at = $3 WHERE id = $1", hit.id, string(data), now)
 		return err
 	})
-	return s.core().SignIn(ctx, q, a, p, FactorPasskey)
+	return mod.core.SignIn(ctx, q, a, p, authkit.FactorPasskey)
 }
 
 func passkeyHandler(ctx context.Context, q db.Querier, hit **passkeyRow, infraErr *error) func(rawID, userHandle []byte) (webauthn.User, error) {
@@ -114,29 +114,29 @@ func passkeyHandler(ctx context.Context, q db.Querier, hit **passkeyRow, infraEr
 		if !bytes.Equal(userHandle, row.principal[:]) {
 			return nil, errPasskeyOwner
 		}
-		return passkeyUser{p: Principal{ID: row.principal}, creds: []webauthn.Credential{row.cred}}, nil
+		return passkeyUser{p: authkit.Principal{ID: row.principal}, creds: []webauthn.Credential{row.cred}}, nil
 	}
 }
 
-func (s *Service) refusePasskey(ctx context.Context, q db.Querier, hit *passkeyRow, aud Audience, m Meta, now time.Time) (Result, error) {
+func (mod *Module) refusePasskey(ctx context.Context, q db.Querier, hit *passkeyRow, aud authkit.Audience, m authkit.Meta, now time.Time) (authkit.Result, error) {
 	if hit == nil {
-		return Result{Refusal: ErrPasskeyRejected}, nil
+		return authkit.Result{Refusal: authkit.ErrPasskeyRejected}, nil
 	}
-	if err := s.record(ctx, q, now, SourcePasskeyLogin, events.Event{PrincipalID: &hit.principal, Audience: string(aud), Result: ResultBadPasskey, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
-		return Result{}, err
+	if err := mod.core.Record(ctx, q, authkit.SourcePasskeyLogin, authkit.Event{At: now, PrincipalID: &hit.principal, Audience: string(aud), Result: authkit.ResultBadPasskey, IP: m.IP, UserAgent: m.UserAgent}); err != nil {
+		return authkit.Result{}, err
 	}
-	return Result{Refusal: ErrPasskeyRejected}, nil
+	return authkit.Result{Refusal: authkit.ErrPasskeyRejected}, nil
 }
 
-func (s *Service) passkeyStart(ctx context.Context, q db.Querier, aud Audience) (rp *webauthn.WebAuthn, now time.Time, ok bool, err error) {
+func (mod *Module) passkeyStart(ctx context.Context, q db.Querier, aud authkit.Audience) (rp *webauthn.WebAuthn, now time.Time, ok bool, err error) {
 	if err := db.RequireTx(q); err != nil {
 		return nil, time.Time{}, false, err
 	}
-	if s.cfg.Passkeys.RPID == "" {
-		return nil, time.Time{}, false, ErrPasskeysOff
+	if mod.rules.RPID == "" {
+		return nil, time.Time{}, false, authkit.ErrPasskeysOff
 	}
-	now = s.now()
-	rp, ok, err = s.relyingParty(aud)
+	now = mod.core.Now()
+	rp, ok, err = mod.relyingParty(aud)
 	if err != nil {
 		return nil, time.Time{}, false, err
 	}

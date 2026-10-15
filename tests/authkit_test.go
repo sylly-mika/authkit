@@ -9,6 +9,7 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/internal/kittest"
+	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
 )
 
@@ -165,7 +166,7 @@ func TestNewAcceptsTheConfigsTheAppsSet(t *testing.T) {
 
 var passkeyBase = authkit.Config{Issuer: "test", Secret: []byte("a-test-secret-of-at-least-32-bytes!")}
 
-var prodPasskeys = authkit.PasskeyRules{
+var prodPasskeys = passkey.Rules{
 	RPID: "tasks.inostudio.lv",
 	Origins: map[authkit.Audience][]string{
 		"staff":  {"https://tasks.inostudio.lv"},
@@ -173,7 +174,7 @@ var prodPasskeys = authkit.PasskeyRules{
 	},
 }
 
-var devPasskeys = authkit.PasskeyRules{
+var devPasskeys = passkey.Rules{
 	RPID: "localhost",
 	Origins: map[authkit.Audience][]string{
 		"staff":  {"http://localhost:3000"},
@@ -181,10 +182,12 @@ var devPasskeys = authkit.PasskeyRules{
 	},
 }
 
-func newWithPasskeys(p authkit.PasskeyRules) error {
-	cfg := passkeyBase
-	cfg.Passkeys = p
-	_, err := authkit.New(cfg, authkittest.NewPrincipals())
+func newWithPasskeys(p passkey.Rules) error {
+	svc, err := authkit.New(passkeyBase, authkittest.NewPrincipals())
+	if err != nil {
+		return err
+	}
+	_, err = passkey.New(svc, p)
 	return err
 }
 
@@ -247,11 +250,11 @@ func TestNewRefusesSecondFactorRulesOutOfRange(t *testing.T) {
 	}
 }
 
-func oneOrigin(rpid, origin string) authkit.PasskeyRules {
-	return authkit.PasskeyRules{RPID: rpid, Origins: map[authkit.Audience][]string{"staff": {origin}}}
+func oneOrigin(rpid, origin string) passkey.Rules {
+	return passkey.Rules{RPID: rpid, Origins: map[authkit.Audience][]string{"staff": {origin}}}
 }
 
-func wantPasskeyRefusal(t *testing.T, name string, p authkit.PasskeyRules, want string) {
+func wantPasskeyRefusal(t *testing.T, name string, p passkey.Rules, want string) {
 	t.Helper()
 	if err := newWithPasskeys(p); err == nil || err.Error() != want {
 		t.Errorf("%s: New = %v, want %q", name, err, want)
@@ -259,7 +262,7 @@ func wantPasskeyRefusal(t *testing.T, name string, p authkit.PasskeyRules, want 
 }
 
 func TestNewAcceptsPasskeyRules(t *testing.T) {
-	for name, p := range map[string]authkit.PasskeyRules{
+	for name, p := range map[string]passkey.Rules{
 		"passkeys off":         {},
 		"production":           prodPasskeys,
 		"development":          devPasskeys,
@@ -276,7 +279,7 @@ func TestNewAcceptsPasskeyRules(t *testing.T) {
 }
 
 func TestNewRefusesABadPasskeyRPID(t *testing.T) {
-	for name, p := range map[string]authkit.PasskeyRules{
+	for name, p := range map[string]passkey.Rules{
 		"a scheme": oneOrigin("https://tasks.inostudio.lv", "https://tasks.inostudio.lv"),
 		"a port":   oneOrigin("tasks.inostudio.lv:443", "https://tasks.inostudio.lv"),
 		"a path":   oneOrigin("tasks.inostudio.lv/app", "https://tasks.inostudio.lv"),
@@ -292,11 +295,11 @@ func TestNewRefusesABadPasskeyRPID(t *testing.T) {
 }
 
 func TestNewRefusesPasskeyOriginsWithoutAnRPIDOrAnAudience(t *testing.T) {
-	wantPasskeyRefusal(t, "origins without an RPID", authkit.PasskeyRules{Origins: map[authkit.Audience][]string{"staff": {"https://tasks.inostudio.lv"}}},
+	wantPasskeyRefusal(t, "origins without an RPID", passkey.Rules{Origins: map[authkit.Audience][]string{"staff": {"https://tasks.inostudio.lv"}}},
 		"authkit: Config.Passkeys.Origins needs Config.Passkeys.RPID")
-	wantPasskeyRefusal(t, "no origins", authkit.PasskeyRules{RPID: "tasks.inostudio.lv"},
+	wantPasskeyRefusal(t, "no origins", passkey.Rules{RPID: "tasks.inostudio.lv"},
 		"authkit: Config.Passkeys.Origins is empty")
-	wantPasskeyRefusal(t, "an audience without an origin", authkit.PasskeyRules{RPID: "tasks.inostudio.lv",
+	wantPasskeyRefusal(t, "an audience without an origin", passkey.Rules{RPID: "tasks.inostudio.lv",
 		Origins: map[authkit.Audience][]string{"staff": {"https://tasks.inostudio.lv"}, "client": {}}},
 		`authkit: Config.Passkeys.Origins["client"] is empty`)
 }
@@ -336,32 +339,32 @@ func TestNewRefusesAPasskeyOriginOutsideTheRPID(t *testing.T) {
 }
 
 func TestNewRefusesAnOriginOnTwoAudiences(t *testing.T) {
-	wantPasskeyRefusal(t, "one origin, two audiences", authkit.PasskeyRules{RPID: "tasks.inostudio.lv",
+	wantPasskeyRefusal(t, "one origin, two audiences", passkey.Rules{RPID: "tasks.inostudio.lv",
 		Origins: map[authkit.Audience][]string{"staff": {"https://tasks.inostudio.lv"}, "client": {"https://tasks.inostudio.lv"}}},
 		`authkit: Config.Passkeys.Origins "https://tasks.inostudio.lv" is listed for both "client" and "staff"`)
 }
 
 func TestNewRefusesPasskeyLimitsOutOfRange(t *testing.T) {
-	with := func(f func(*authkit.PasskeyRules)) authkit.PasskeyRules {
+	with := func(f func(*passkey.Rules)) passkey.Rules {
 		p := prodPasskeys
 		f(&p)
 		return p
 	}
 	for name, c := range map[string]struct {
-		p    authkit.PasskeyRules
+		p    passkey.Rules
 		want string
 	}{
-		"CeremonyTTL negative": {with(func(p *authkit.PasskeyRules) { p.CeremonyTTL = -time.Second }),
+		"CeremonyTTL negative": {with(func(p *passkey.Rules) { p.CeremonyTTL = -time.Second }),
 			"authkit: Config.Passkeys.CeremonyTTL must be in (0, 10m], not -1s"},
-		"CeremonyTTL over 10m": {with(func(p *authkit.PasskeyRules) { p.CeremonyTTL = 10*time.Minute + time.Second }),
+		"CeremonyTTL over 10m": {with(func(p *passkey.Rules) { p.CeremonyTTL = 10*time.Minute + time.Second }),
 			"authkit: Config.Passkeys.CeremonyTTL must be in (0, 10m], not 10m1s"},
-		"Reauth negative": {with(func(p *authkit.PasskeyRules) { p.Reauth = -time.Second }),
+		"Reauth negative": {with(func(p *passkey.Rules) { p.Reauth = -time.Second }),
 			"authkit: Config.Passkeys.Reauth must be in (0, 10m], not -1s"},
-		"Reauth over 10m": {with(func(p *authkit.PasskeyRules) { p.Reauth = 11 * time.Minute }),
+		"Reauth over 10m": {with(func(p *passkey.Rules) { p.Reauth = 11 * time.Minute }),
 			"authkit: Config.Passkeys.Reauth must be in (0, 10m], not 11m0s"},
-		"Max negative": {with(func(p *authkit.PasskeyRules) { p.Max = -1 }),
+		"Max negative": {with(func(p *passkey.Rules) { p.Max = -1 }),
 			"authkit: Config.Passkeys.Max must be in [1, 100], not -1"},
-		"Max over 100": {with(func(p *authkit.PasskeyRules) { p.Max = 101 }),
+		"Max over 100": {with(func(p *passkey.Rules) { p.Max = 101 }),
 			"authkit: Config.Passkeys.Max must be in [1, 100], not 101"},
 	} {
 		wantPasskeyRefusal(t, name, c.p, c.want)

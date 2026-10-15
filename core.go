@@ -118,3 +118,11 @@ func (t LoginThrottle) Fail(ctx context.Context, q db.Querier) error {
 func (t LoginThrottle) Clear(ctx context.Context, q db.Querier) error {
 	return throttle.Clear(ctx, q, t.key, t.aud)
 }
+
+func deleteAllPasskeys(ctx context.Context, q db.Querier, principal uuid.UUID) (int, error) {
+	n, err := q.Exec(ctx, `DELETE FROM auth_passkeys WHERE principal_id = $1`, principal)
+	if err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}

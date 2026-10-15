@@ -14,12 +14,12 @@ package authkit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
@@ -166,7 +166,6 @@ type Service struct {
 	principals Principals
 	codec      *bearer.Codec
 	links      *onetime.Store
-	rps        map[Audience]*webauthn.WebAuthn
 	mu         sync.Mutex
 	attached   map[string]bool
 	verifier   SecondStepVerifier
@@ -184,11 +183,8 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
-	rps, err := relyingParties(cfg.Passkeys)
-	if err != nil {
-		return nil, err
-	}
-	s := &Service{cfg: cfg, principals: principals, rps: rps, attached: map[string]bool{}}
+	var err error
+	s := &Service{cfg: cfg, principals: principals, attached: map[string]bool{}}
 	s.links = onetime.New(s.now, cfg.Rand)
 	if len(cfg.SecondFactors.Key) > 0 {
 		s.verifier = factorVerifier{s: s}
@@ -312,4 +308,20 @@ func PadSince(start time.Time, floor time.Duration) {
 	if d := floor - time.Since(start); d > 0 {
 		time.Sleep(d)
 	}
+}
+
+// Ceremony is a passkey begin's answer: the id the finish sends back, the options for navigator.credentials, and when it expires.
+type Ceremony struct {
+	ID        string
+	Options   json.RawMessage
+	ExpiresAt time.Time
+}
+
+// Passkey is one of a principal's registered passkeys as the app lists it.
+type Passkey struct {
+	ID         uuid.UUID
+	Label      string
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+	BackedUp   bool
 }

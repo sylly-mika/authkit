@@ -17,6 +17,7 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
 )
 
@@ -28,12 +29,14 @@ var Cheap = password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen
 type Rules struct {
 	authkit.Config
 	Password password.Config
+	Passkeys passkey.Rules
 }
 
-// Kit is the Service under test and its password module.
+// Kit is the Service under test and its password and passkey modules.
 type Kit struct {
 	*authkit.Service
 	Password *password.Module
+	Passkeys *passkey.Module
 }
 
 // World is one test's Kit and the fixtures it runs over.
@@ -104,7 +107,11 @@ func NewKit(r Rules, p authkit.Principals) (*Kit, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Kit{Service: svc, Password: pw}, nil
+	pk, err := passkey.New(svc, r.Passkeys)
+	if err != nil {
+		return nil, err
+	}
+	return &Kit{Service: svc, Password: pw, Passkeys: pk}, nil
 }
 
 // User creates a principal with the login and, when pw is not empty, a

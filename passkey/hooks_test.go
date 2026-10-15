@@ -1,4 +1,4 @@
-package authkit_test
+package passkey_test
 
 import (
 	"bytes"
@@ -16,6 +16,7 @@ import (
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/kittest"
+	"github.com/sylly-mika/authkit/passkey"
 )
 
 type world struct{ *kittest.World }
@@ -34,7 +35,7 @@ func TestPasskeyOwnerHandlerRefusesAnotherUsersHandle(t *testing.T) {
 		var user webauthn.User
 		var err error
 		if txErr := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-			user, err = authkit.PasskeyOwnerHandler(w.Ctx, q, cred.ID, userHandle)
+			user, err = passkey.PasskeyOwnerHandler(w.Ctx, q, cred.ID, userHandle)
 			return nil
 		}); txErr != nil {
 			t.Fatalf("lookup: %v", txErr)
@@ -55,7 +56,7 @@ func TestPasskeyOwnerHandlerRefusesAnotherUsersHandle(t *testing.T) {
 
 func passkeyWorld(t *testing.T, ttl time.Duration) *world {
 	return newWorld(t, func(c *kittest.Rules) {
-		c.Passkeys = authkit.PasskeyRules{
+		c.Passkeys = passkey.Rules{
 			RPID:   "localhost",
 			RPName: "ino-tasks",
 			Origins: map[authkit.Audience][]string{
@@ -82,7 +83,7 @@ func optionsMap(t *testing.T, v any) map[string]any {
 
 func TestPasskeyRelyingPartyPerAudience(t *testing.T) {
 	w := passkeyWorld(t, 2*time.Minute)
-	staff, ok, err := authkit.PasskeyRP(w.Svc.Service, "staff")
+	staff, ok, err := passkey.PasskeyRP(w.Svc.Passkeys, "staff")
 	if !ok || err != nil {
 		t.Fatalf("staff relying party: ok=%v err=%v", ok, err)
 	}
@@ -99,7 +100,7 @@ func TestPasskeyRelyingPartyPerAudience(t *testing.T) {
 		t.Errorf("the staff relying party refused its own origin: %v", err)
 	}
 
-	client, ok, err := authkit.PasskeyRP(w.Svc.Service, "client")
+	client, ok, err := passkey.PasskeyRP(w.Svc.Passkeys, "client")
 	if !ok || err != nil {
 		t.Fatalf("client relying party: ok=%v err=%v", ok, err)
 	}
@@ -110,7 +111,7 @@ func TestPasskeyRelyingPartyPerAudience(t *testing.T) {
 		t.Error("the client relying party began a login from the staff origin")
 	}
 
-	rp, ok, err := authkit.PasskeyRP(w.Svc.Service, "agent")
+	rp, ok, err := passkey.PasskeyRP(w.Svc.Passkeys, "agent")
 	if rp != nil || ok || err != nil {
 		t.Fatalf("an audience with no relying party: rp=%v ok=%v err=%v", rp != nil, ok, err)
 	}
@@ -120,11 +121,11 @@ var ada = authkit.Principal{ID: uuid.MustParse("6f1c2a52-8a43-4c1e-9d6f-0b7e2f6c
 
 func TestPasskeyRegistrationOptions(t *testing.T) {
 	w := passkeyWorld(t, 2*time.Minute)
-	rp, _, err := authkit.PasskeyRP(w.Svc.Service, "staff")
+	rp, _, err := passkey.PasskeyRP(w.Svc.Passkeys, "staff")
 	if err != nil {
 		t.Fatal(err)
 	}
-	creation, sess, err := rp.BeginRegistration(authkit.NewPasskeyUser(ada, nil))
+	creation, sess, err := rp.BeginRegistration(passkey.NewPasskeyUser(ada, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +161,7 @@ func TestPasskeyRegistrationOptions(t *testing.T) {
 
 func TestPasskeyLoginOptionsUseTheCeremonyTTL(t *testing.T) {
 	w := passkeyWorld(t, 90*time.Second)
-	rp, _, err := authkit.PasskeyRP(w.Svc.Service, "staff")
+	rp, _, err := passkey.PasskeyRP(w.Svc.Passkeys, "staff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +184,7 @@ func TestPasskeyLoginOptionsUseTheCeremonyTTL(t *testing.T) {
 		t.Errorf("login expiry %v is not about 90s from now", sess.Expires)
 	}
 
-	creation, _, err := rp.BeginRegistration(authkit.NewPasskeyUser(ada, nil))
+	creation, _, err := rp.BeginRegistration(passkey.NewPasskeyUser(ada, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +195,7 @@ func TestPasskeyLoginOptionsUseTheCeremonyTTL(t *testing.T) {
 
 func TestPasskeysOffWithoutRPID(t *testing.T) {
 	w := newWorld(t)
-	rp, ok, err := authkit.PasskeyRP(w.Svc.Service, "staff")
+	rp, ok, err := passkey.PasskeyRP(w.Svc.Passkeys, "staff")
 	if rp != nil || ok || !errors.Is(err, authkit.ErrPasskeysOff) {
 		t.Fatalf("passkeys off: rp=%v ok=%v err=%v, want ErrPasskeysOff", rp != nil, ok, err)
 	}
@@ -202,11 +203,11 @@ func TestPasskeysOffWithoutRPID(t *testing.T) {
 
 func TestPasskeyUserCarriesTheHandleAndCredentials(t *testing.T) {
 	w := passkeyWorld(t, 2*time.Minute)
-	rp, _, err := authkit.PasskeyRP(w.Svc.Service, "staff")
+	rp, _, err := passkey.PasskeyRP(w.Svc.Passkeys, "staff")
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertion, sess, err := rp.BeginLogin(authkit.NewPasskeyUser(ada, []webauthn.Credential{{ID: []byte{1, 2, 3, 4}}}))
+	assertion, sess, err := rp.BeginLogin(passkey.NewPasskeyUser(ada, []webauthn.Credential{{ID: []byte{1, 2, 3, 4}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +219,7 @@ func TestPasskeyUserCarriesTheHandleAndCredentials(t *testing.T) {
 	if len(sess.UserID) != 16 || !bytes.Equal(sess.UserID, ada.ID[:]) {
 		t.Error("session UserID is not the 16-byte principal id")
 	}
-	if got := authkit.NewPasskeyUser(ada, nil).WebAuthnDisplayName(); got != "ada@example.invalid" {
+	if got := passkey.NewPasskeyUser(ada, nil).WebAuthnDisplayName(); got != "ada@example.invalid" {
 		t.Errorf("display name %q, want the login", got)
 	}
 }

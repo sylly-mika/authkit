@@ -1,29 +1,10 @@
 package authkit
 
 import (
-	"context"
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/go-webauthn/webauthn/webauthn"
-
-	"github.com/sylly-mika/authkit/db"
 )
-
-func PasskeyRP(s *Service, aud Audience) (*webauthn.WebAuthn, bool, error) {
-	return s.relyingParty(aud)
-}
-
-func NewPasskeyUser(p Principal, creds []webauthn.Credential) webauthn.User {
-	return passkeyUser{p: p, creds: creds}
-}
-
-func PasskeyOwnerHandler(ctx context.Context, q db.Querier, rawID, userHandle []byte) (webauthn.User, error) {
-	var hit *passkeyRow
-	var infraErr error
-	return passkeyHandler(ctx, q, &hit, &infraErr)(rawID, userHandle)
-}
 
 func TestWithDefaultsFillSecondFactorRules(t *testing.T) {
 	want := SecondFactorRules{Issuer: "authkit", ChallengeTTL: 10 * time.Minute, EmailCodeTTL: 10 * time.Minute, SetupTTL: 15 * time.Minute, ResendEvery: time.Minute, Reauth: 5 * time.Minute, MaxTries: 5, MaxSends: 5, RecoveryCodes: 10}
@@ -33,17 +14,6 @@ func TestWithDefaultsFillSecondFactorRules(t *testing.T) {
 	set := SecondFactorRules{Key: []byte("0123456789abcdef0123456789abcdef"), Issuer: "Ino Tasks", ChallengeTTL: time.Minute, EmailCodeTTL: 2 * time.Minute, SetupTTL: 3 * time.Minute, ResendEvery: 30 * time.Second, Reauth: 4 * time.Minute, MaxTries: 3, MaxSends: 2, RecoveryCodes: 12}
 	if got := withDefaults(Config{SecondFactors: set}).SecondFactors; !reflect.DeepEqual(got, set) {
 		t.Errorf("withDefaults kept SecondFactors = %+v, want the set values %+v", got, set)
-	}
-}
-
-func TestWithDefaultsFillPasskeyRules(t *testing.T) {
-	p := withDefaults(Config{}).Passkeys
-	if p.RPName != "authkit" || p.CeremonyTTL != 2*time.Minute || p.Reauth != 5*time.Minute || p.Max != 10 || p.RPID != "" || p.Origins != nil {
-		t.Errorf("withDefaults(Config{}).Passkeys = %+v, want RPName authkit, CeremonyTTL 2m, Reauth 5m, Max 10", p)
-	}
-	kept := withDefaults(Config{Passkeys: PasskeyRules{RPName: "ino-tasks", CeremonyTTL: time.Minute, Reauth: 3 * time.Minute, Max: 4}}).Passkeys
-	if kept.RPName != "ino-tasks" || kept.CeremonyTTL != time.Minute || kept.Reauth != 3*time.Minute || kept.Max != 4 {
-		t.Errorf("withDefaults kept Passkeys = %+v, want the set values", kept)
 	}
 }
 

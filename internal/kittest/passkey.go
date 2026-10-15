@@ -10,6 +10,7 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
+	"github.com/sylly-mika/authkit/passkey"
 )
 
 // StaffOrigin and ClientOrigin are the origins the passkey tests register under.
@@ -17,7 +18,7 @@ const StaffOrigin, ClientOrigin = "http://localhost:3000", "http://localhost:310
 
 // Passkeys turns passkey sign-in on for localhost, with the staff and client origins.
 func Passkeys(c *Rules) {
-	c.Passkeys = authkit.PasskeyRules{RPID: "localhost", Origins: map[authkit.Audience][]string{"staff": {StaffOrigin}, "client": {ClientOrigin}}, CeremonyTTL: 2 * time.Minute}
+	c.Passkeys = passkey.Rules{RPID: "localhost", Origins: map[authkit.Audience][]string{"staff": {StaffOrigin}, "client": {ClientOrigin}}, CeremonyTTL: 2 * time.Minute}
 }
 
 type testUser struct {

@@ -26,14 +26,14 @@ var (
 func (w *world) begin(aud authkit.Audience) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.BeginPasskeyLogin(w.Ctx, q, aud, passkeyMeta)
+		return w.Svc.Passkeys.BeginPasskeyLogin(w.Ctx, q, aud, passkeyMeta)
 	})
 }
 
 func (w *world) finish(aud authkit.Audience, ceremonyID string, resp []byte) authkit.Result {
 	w.T.Helper()
 	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
-		return w.Svc.FinishPasskeyLogin(w.Ctx, q, aud, ceremonyID, resp, passkeyMeta)
+		return w.Svc.Passkeys.FinishPasskeyLogin(w.Ctx, q, aud, ceremonyID, resp, passkeyMeta)
 	})
 }
 
@@ -191,10 +191,10 @@ func TestPasskeyLoginIsOffWithoutAnRPID(t *testing.T) {
 	w := newWorld(t)
 	calls := map[string]func(q db.Querier) (authkit.Result, error){
 		"BeginPasskeyLogin": func(q db.Querier) (authkit.Result, error) {
-			return w.Svc.BeginPasskeyLogin(w.Ctx, q, "staff", passkeyMeta)
+			return w.Svc.Passkeys.BeginPasskeyLogin(w.Ctx, q, "staff", passkeyMeta)
 		},
 		"FinishPasskeyLogin": func(q db.Querier) (authkit.Result, error) {
-			return w.Svc.FinishPasskeyLogin(w.Ctx, q, "staff", "x", []byte("{}"), passkeyMeta)
+			return w.Svc.Passkeys.FinishPasskeyLogin(w.Ctx, q, "staff", "x", []byte("{}"), passkeyMeta)
 		},
 	}
 	for name, call := range calls {
@@ -328,7 +328,7 @@ func TestPasskeyLoginLocksThePasskeyRow(t *testing.T) {
 	go func() {
 		errc <- w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 			var err error
-			got, err = w.Svc.FinishPasskeyLogin(w.Ctx, q, "staff", res.Ceremony.ID, resp, passkeyMeta)
+			got, err = w.Svc.Passkeys.FinishPasskeyLogin(w.Ctx, q, "staff", res.Ceremony.ID, resp, passkeyMeta)
 			return err
 		})
 	}()

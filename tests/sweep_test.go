@@ -22,6 +22,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
 	"github.com/sylly-mika/authkit/onetime"
+	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
 )
 
@@ -46,7 +47,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "ListPasskeys", "Password.HasCredential", "SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
+	sweptReads = []string{"Authenticate", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek"}
 	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Attach"}
 )
 
@@ -94,18 +95,21 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.Svc.SendSecondStepEmail(ctx, q, "staff", "x", authkit.Meta{})
 			return err
 		},
-		"BeginPasskeyLogin": func() error { _, err := w.Svc.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
-		"FinishPasskeyLogin": func() error {
-			_, err := w.Svc.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
+		"Passkeys.BeginPasskeyLogin": func() error { _, err := w.Svc.Passkeys.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
+		"Passkeys.FinishPasskeyLogin": func() error {
+			_, err := w.Svc.Passkeys.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
 			return err
 		},
-		"BeginPasskeyRegistration": func() error { _, err := w.Svc.BeginPasskeyRegistration(ctx, q, c, authkit.Meta{}); return err },
-		"FinishPasskeyRegistration": func() error {
-			_, err := w.Svc.FinishPasskeyRegistration(ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
+		"Passkeys.BeginPasskeyRegistration": func() error { _, err := w.Svc.Passkeys.BeginPasskeyRegistration(ctx, q, c, authkit.Meta{}); return err },
+		"Passkeys.FinishPasskeyRegistration": func() error {
+			_, err := w.Svc.Passkeys.FinishPasskeyRegistration(ctx, q, c, "x", []byte("{}"), "", authkit.Meta{})
 			return err
 		},
-		"RenamePasskey":           func() error { _, err := w.Svc.RenamePasskey(ctx, q, c, uuid.New(), "x"); return err },
-		"DeletePasskey":           func() error { _, err := w.Svc.DeletePasskey(ctx, q, c, uuid.New(), authkit.Meta{}); return err },
+		"Passkeys.RenamePasskey": func() error { _, err := w.Svc.Passkeys.RenamePasskey(ctx, q, c, uuid.New(), "x"); return err },
+		"Passkeys.DeletePasskey": func() error {
+			_, err := w.Svc.Passkeys.DeletePasskey(ctx, q, c, uuid.New(), authkit.Meta{})
+			return err
+		},
 		"BeginTOTPSetup":          func() error { _, err := w.Svc.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
 		"ConfirmTOTP":             func() error { _, err := w.Svc.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
 		"RegenerateRecoveryCodes": func() error { _, err := w.Svc.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
@@ -149,7 +153,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			t.Errorf("%s ran %d statements on a bare connection before refusing it", name, n)
 		}
 	}
-	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module]()} {
+	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module]()} {
 		for i := range typ.NumMethod() {
 			name := prefix + typ.Method(i).Name
 			if _, swept := calls[name]; !swept && !slices.Contains(sweptReads, name) && !slices.Contains(sweptPure, name) {
@@ -183,7 +187,7 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	if has, err := w.Svc.Password.HasCredential(w.Ctx, q, id); err != nil || !has {
 		t.Errorf("HasCredential = %v, %v", has, err)
 	}
-	if list, err := w.Svc.ListPasskeys(w.Ctx, q, id); err != nil || len(list) != 1 || list[0].ID != pk {
+	if list, err := w.Svc.Passkeys.ListPasskeys(w.Ctx, q, id); err != nil || len(list) != 1 || list[0].ID != pk {
 		t.Errorf("ListPasskeys = %d passkeys, %v, want the one passkey %s", len(list), err, pk)
 	}
 	if status, err := w.Svc.SecondFactorStatus(w.Ctx, q, c); err != nil || status != (authkit.FactorStatus{TOTP: true, RecoveryCodesLeft: 2}) {

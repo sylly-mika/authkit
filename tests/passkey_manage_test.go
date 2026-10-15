@@ -16,10 +16,11 @@ import (
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/kittest"
+	"github.com/sylly-mika/authkit/passkey"
 )
 
 func withPasskeys(c *kittest.Rules) {
-	c.Passkeys = authkit.PasskeyRules{RPID: "localhost", Origins: map[authkit.Audience][]string{"staff": {"http://localhost:3000"}, "client": {"http://localhost:3100"}}}
+	c.Passkeys = passkey.Rules{RPID: "localhost", Origins: map[authkit.Audience][]string{"staff": {"http://localhost:3000"}, "client": {"http://localhost:3100"}}}
 }
 
 func (w *world) addStoredPasskey(owner uuid.UUID, label string, backedUp bool) uuid.UUID {
@@ -42,7 +43,7 @@ func (w *world) listPasskeys(principal uuid.UUID) []authkit.Passkey {
 	var out []authkit.Passkey
 	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		out, err = w.Svc.ListPasskeys(w.Ctx, q, principal)
+		out, err = w.Svc.Passkeys.ListPasskeys(w.Ctx, q, principal)
 		return err
 	}); err != nil {
 		w.T.Fatalf("ListPasskeys: %v", err)
@@ -55,7 +56,7 @@ func (w *world) renamePasskey(c *authkit.Claims, id uuid.UUID, label string) (au
 	var res authkit.Result
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		res, err = w.Svc.RenamePasskey(w.Ctx, q, c, id, label)
+		res, err = w.Svc.Passkeys.RenamePasskey(w.Ctx, q, c, id, label)
 		return err
 	})
 	return res, err
@@ -66,7 +67,7 @@ func (w *world) deletePasskey(c *authkit.Claims, id uuid.UUID) (authkit.Result, 
 	var res authkit.Result
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
 		var err error
-		res, err = w.Svc.DeletePasskey(w.Ctx, q, c, id, authkit.Meta{IP: "192.0.2.7", UserAgent: "authkit-test"})
+		res, err = w.Svc.Passkeys.DeletePasskey(w.Ctx, q, c, id, authkit.Meta{IP: "192.0.2.7", UserAgent: "authkit-test"})
 		return err
 	})
 	return res, err
@@ -405,7 +406,7 @@ func TestPasskeyManagementIsOffWithoutAnRPID(t *testing.T) {
 	c1 := w.Claims(a1)
 	x := w.addStoredPasskey(ada, "Laptop", false)
 	err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
-		_, err := w.Svc.ListPasskeys(w.Ctx, q, ada)
+		_, err := w.Svc.Passkeys.ListPasskeys(w.Ctx, q, ada)
 		return err
 	})
 	if !errors.Is(err, authkit.ErrPasskeysOff) {
@@ -452,7 +453,7 @@ func TestDeletePasskeyWaitsForTheCredentialLock(t *testing.T) {
 		var res authkit.Result
 		err := authkittest.InConnTx(w.Ctx, conn, func(q db.Querier) error {
 			var err error
-			res, err = w.Svc.DeletePasskey(w.Ctx, q, c, x, authkit.Meta{})
+			res, err = w.Svc.Passkeys.DeletePasskey(w.Ctx, q, c, x, authkit.Meta{})
 			return err
 		})
 		done <- outcome{res, err}
