@@ -2,9 +2,12 @@ package register_test
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
@@ -125,6 +128,7 @@ func TestStartNeedsTx(t *testing.T) {
 	}{
 		{"Start", func() error { _, err := f.Reg.Start(f.Ctx, q, "staff", addr, nil); return err }},
 		{"CountMail", func() error { _, err := f.Reg.CountMail(f.Ctx, q, "staff", addr); return err }},
+		{"Mint", func() error { _, err := f.Reg.Mint(f.Ctx, q, uuid.New()); return err }},
 	}
 	for _, c := range calls {
 		t.Run(c.name, func(t *testing.T) {
@@ -209,4 +213,160 @@ func TestCountTableHoldsNoAddress(t *testing.T) {
 	if n := f.Count("SELECT count(*) FROM auth_mail_counts WHERE position(convert_to($1, 'UTF8') IN email_key) > 0 OR audience = $1", a32); n != 0 {
 		t.Fatalf("rows holding the address = %d; want 0", n)
 	}
+}
+
+func TestStartResendSupersedes(t *testing.T) {
+	f := newFixture(t)
+	T0 := f.Clock.Now()
+	st1 := f.start("staff", addr, pAda)
+	id1 := f.regID("staff", addr)
+	m1, err := f.mint(*st1.TokenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Clock.Advance(time.Hour)
+	st2 := f.start("staff", " ADA@example.invalid", pAugusta)
+	if *st2.TokenID == *st1.TokenID {
+		t.Fatal("the resend kept the first link")
+	}
+	_, errOld := f.mint(*st1.TokenID)
+	m2, errNew := f.mint(*st2.TokenID)
+	_, spentOld := f.spend(m1.Raw)
+	tok, spentNew := f.spend(m2.Raw)
+	if n := f.Count("SELECT count(*) FROM auth_registrations"); n != 1 {
+		t.Fatalf("registration rows = %d; want 1", n)
+	}
+	if f.regID("staff", addr) != id1 {
+		t.Fatal("the resend changed the registration id")
+	}
+	if n := f.Count("SELECT count(*) FROM auth_registrations WHERE id = $1 AND payload->>'given_name' = 'Augusta' AND created_at = $2 AND expires_at = $3", id1, T0.Add(time.Hour), T0.Add(49*time.Hour)); n != 1 {
+		t.Fatalf("the resent row does not hold the latest payload and expiry")
+	}
+	if !errors.Is(errOld, register.ErrNothingToSend) {
+		t.Fatalf("minting the superseded link = %v; want ErrNothingToSend", errOld)
+	}
+	if errNew != nil {
+		t.Fatalf("minting the live link: %v", errNew)
+	}
+	var p struct {
+		GivenName string `json:"given_name"`
+	}
+	if err := json.Unmarshal(m2.Payload, &p); err != nil || p.GivenName != "Augusta" {
+		t.Fatal("the mail payload is not the latest registration's")
+	}
+	if !errors.Is(spentOld, authkit.ErrTokenUnknown) {
+		t.Fatalf("spending the superseded link = %v; want ErrTokenUnknown", spentOld)
+	}
+	if spentNew != nil || tok.Owner != id1 {
+		t.Fatalf("spending the live link = %v, owner %v; want the registration", spentNew, tok.Owner)
+	}
+}
+
+func TestMintGone(t *testing.T) {
+	cases := []struct {
+		name     string
+		unminted bool
+		setup    func(t *testing.T, f *fixture) uuid.UUID
+	}{
+		{"unknown", false, func(*testing.T, *fixture) uuid.UUID { return uuid.New() }},
+		{"expired", true, func(_ *testing.T, f *fixture) uuid.UUID {
+			st := f.start("staff", addr, pAda)
+			f.Clock.Advance(48 * time.Hour)
+			return *st.TokenID
+		}},
+		{"deleted", true, func(t *testing.T, f *fixture) uuid.UUID {
+			st := f.start("staff", addr, pAda)
+			f.D.Exec(t, "DELETE FROM auth_registrations")
+			return *st.TokenID
+		}},
+		{"superseded", true, func(_ *testing.T, f *fixture) uuid.UUID {
+			first := f.start("staff", addr, pAda)
+			f.start("staff", addr, pAugusta)
+			return *first.TokenID
+		}},
+		{"spent", false, func(t *testing.T, f *fixture) uuid.UUID {
+			st := f.start("staff", addr, pAda)
+			m, err := f.mint(*st.TokenID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.spend(m.Raw); err != nil {
+				t.Fatal(err)
+			}
+			return *st.TokenID
+		}},
+		{"purpose", true, func(t *testing.T, f *fixture) uuid.UUID {
+			f.start("staff", addr, pAda)
+			var rid uuid.UUID
+			if err := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+				var err error
+				rid, err = f.Svc.OneTime().Create(f.Ctx, q, authkit.PurposeReset, f.regID("staff", addr), time.Hour)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return rid
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			id := c.setup(t, f)
+			mail, err := f.mint(id)
+			if !errors.Is(err, register.ErrNothingToSend) || mail.To != "" || mail.Raw != "" || len(mail.Payload) != 0 || !mail.ExpiresAt.IsZero() {
+				t.Fatalf("Mint = %+v, %v; want ErrNothingToSend and no mail", mail.ExpiresAt, err)
+			}
+			if c.unminted {
+				if n := f.Count("SELECT count(*) FROM auth_tokens WHERE id = $1 AND token_hash IS NULL", id); n != 1 {
+					t.Fatalf("link rows without a hash = %d; want 1", n)
+				}
+			}
+		})
+	}
+}
+
+func TestMintExpiresAt(t *testing.T) {
+	t.Run("registration first", func(t *testing.T) {
+		f := newFixture(t)
+		T0 := f.Clock.Now()
+		st := f.start("staff", addr, pAda)
+		f.Clock.Advance(2 * time.Hour)
+		mail, err := f.mint(*st.TokenID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !mail.ExpiresAt.Equal(T0.Add(48 * time.Hour)) {
+			t.Fatalf("ExpiresAt = %v; want the registration's %v", mail.ExpiresAt, T0.Add(48*time.Hour))
+		}
+		if mail.To != addr {
+			t.Fatal("the mail is addressed to another address")
+		}
+		var p struct {
+			GivenName string `json:"given_name"`
+		}
+		if err := json.Unmarshal(mail.Payload, &p); err != nil || p.GivenName != "Ada" {
+			t.Fatal("the mail payload is not the registration's")
+		}
+		tok, err := f.spend(mail.Raw)
+		if err != nil || tok.Owner != f.regID("staff", addr) {
+			t.Fatalf("spending the minted link = %v; want the registration as owner", err)
+		}
+		if n := f.Count("SELECT count(*) FROM auth_tokens WHERE id = $1 AND expires_at = $2", *st.TokenID, T0.Add(50*time.Hour)); n != 1 {
+			t.Fatalf("the link's own expiry changed: rows = %d; want 1", n)
+		}
+	})
+	t.Run("token first", func(t *testing.T) {
+		f := newFixture(t)
+		T0 := f.Clock.Now()
+		st := f.start("staff", addr, pAda)
+		f.D.Exec(t, "UPDATE auth_registrations SET expires_at = expires_at + interval '4 hours'")
+		f.Clock.Advance(2 * time.Hour)
+		mail, err := f.mint(*st.TokenID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !mail.ExpiresAt.Equal(T0.Add(50 * time.Hour)) {
+			t.Fatalf("ExpiresAt = %v; want the link's %v", mail.ExpiresAt, T0.Add(50*time.Hour))
+		}
+	})
 }

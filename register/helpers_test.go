@@ -12,6 +12,7 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/kittest"
+	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/register"
 )
 
@@ -90,6 +91,32 @@ func (f *fixture) count(aud authkit.Audience, email string) time.Duration {
 		f.T.Fatal(err)
 	}
 	return d
+}
+
+func (f *fixture) mint(id uuid.UUID) (register.Mail, error) {
+	f.T.Helper()
+	var mail register.Mail
+	var err error
+	if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		mail, err = f.Reg.Mint(f.Ctx, q, id)
+		return nil
+	}); e != nil {
+		f.T.Fatal(e)
+	}
+	return mail, err
+}
+
+func (f *fixture) spend(raw string) (onetime.Token, error) {
+	f.T.Helper()
+	var tok onetime.Token
+	var err error
+	if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		tok, err = f.Svc.OneTime().Spend(f.Ctx, q, raw, authkit.PurposeRegister)
+		return nil
+	}); e != nil {
+		f.T.Fatal(e)
+	}
+	return tok, err
 }
 
 func (f *fixture) regID(aud, email string) uuid.UUID {
