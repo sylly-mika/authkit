@@ -86,6 +86,8 @@ type Config struct {
 	ReuseGrace time.Duration
 	Clock      Clock
 	Rand       io.Reader
+	// Schema is the PostgreSQL schema that holds authkit's tables; "" uses the search path, as before.
+	Schema string
 }
 
 func withDefaults(c Config) Config {

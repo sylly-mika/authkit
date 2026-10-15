@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/nsql"
 	"github.com/sylly-mika/authkit/internal/token"
 )
 
@@ -51,12 +52,23 @@ type Minted struct {
 
 // Store is the auth_tokens SQL; an app reaches it through Service.OneTime.
 type Store struct {
-	now  func() time.Time
-	rand io.Reader
+	now   func() time.Time
+	rand  io.Reader
+	names *nsql.Names
 }
 
 // New builds a Store on the given clock and random source.
 func New(now func() time.Time, rand io.Reader) *Store { return &Store{now: now, rand: rand} }
+
+// NewIn builds a Store whose statements name the tables in schema; "" is New.
+func NewIn(schema string, now func() time.Time, rand io.Reader) (*Store, error) {
+	if schema != "" {
+		if err := nsql.Check(schema); err != nil {
+			return nil, err
+		}
+	}
+	return &Store{now: now, rand: rand, names: nsql.NewNames(schema)}, nil
+}
 
 // Lock takes the transaction-scoped advisory lock Create takes, for a caller
 // that reads before it creates (RequestReset's cap).

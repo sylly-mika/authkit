@@ -25,6 +25,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/events"
 	"github.com/sylly-mika/authkit/internal/factor"
+	"github.com/sylly-mika/authkit/internal/nsql"
 	"github.com/sylly-mika/authkit/internal/throttle"
 	"github.com/sylly-mika/authkit/migrations"
 	"github.com/sylly-mika/authkit/onetime"
@@ -164,6 +165,7 @@ func (r Result) Claims() *Claims {
 type Service struct {
 	cfg        Config
 	principals Principals
+	names      *nsql.Names
 	codec      *bearer.Codec
 	links      *onetime.Store
 	mu         sync.Mutex
@@ -183,9 +185,16 @@ func New(cfg Config, principals Principals) (*Service, error) {
 	if err := cfg.check(); err != nil {
 		return nil, err
 	}
+	if cfg.Schema != "" {
+		if err := nsql.Check(cfg.Schema); err != nil {
+			return nil, err
+		}
+	}
 	var err error
-	s := &Service{cfg: cfg, principals: principals, attached: map[string]bool{}}
-	s.links = onetime.New(s.now, cfg.Rand)
+	s := &Service{cfg: cfg, principals: principals, names: nsql.NewNames(cfg.Schema), attached: map[string]bool{}}
+	if s.links, err = onetime.NewIn(cfg.Schema, s.now, cfg.Rand); err != nil {
+		return nil, err
+	}
 	if cfg.Transport == TransportBearer {
 		if s.codec, err = bearer.NewCodec(cfg.Issuer, cfg.Secret, cfg.AccessTTL, s.now); err != nil {
 			return nil, err

@@ -53,6 +53,13 @@ func Pool(pool *pgxpool.Pool) db.Querier {
 // Unwrap hands the app the pgx.Tx behind a Tx Querier, so its own pgx
 // repositories run on authkit's transaction (in Principals, in OnEvent).
 func Unwrap(q db.Querier) (pgx.Tx, bool) {
+	for {
+		u, ok := q.(interface{ Unwrap() db.Querier })
+		if !ok {
+			break
+		}
+		q = u.Unwrap()
+	}
 	p, ok := q.(querier)
 	if !ok || p.tx == nil {
 		return nil, false
