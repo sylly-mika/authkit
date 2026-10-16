@@ -50,7 +50,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.Identities"}
+	sweptReads = []string{"Authenticate", "RequireRecent", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.Identities"}
 	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Password.Hash", "Attach", "OIDC.Providers", "Register.Floor"}
 )
 
@@ -201,6 +201,9 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	q, c := sqldb.Conn(w.Pinned(id)), w.Claims(res)
 	if got, err := w.Svc.Authenticate(w.Ctx, q, c); err != nil || got.Refusal != nil {
 		t.Errorf("Authenticate = %v, %v", got.Refusal, err)
+	}
+	if got, err := w.Svc.RequireRecent(w.Ctx, q, c, 0); err != nil || got.Refusal != nil || got.Principal.ID != id {
+		t.Errorf("RequireRecent = %v, %v, principal %s", got.Refusal, err, got.Principal.ID)
 	}
 	if _, total, err := w.Svc.ListSessions(w.Ctx, q, c, 10, 0); err != nil || total != 1 {
 		t.Errorf("ListSessions = %d, %v", total, err)

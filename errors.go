@@ -112,6 +112,9 @@ const (
 	ResultIdentityLinked   = "identity_linked"
 	ResultIdentityUnlinked = "identity_unlinked"
 	ResultRegistered       = "registered"
+	ResultInviteAccepted   = "invite_accepted"
+	ResultReverified       = "reverified"
+	ResultEmailChanged     = "email_changed"
 )
 
 // Event.Source values: the Service method that recorded the event.
@@ -137,6 +140,9 @@ const (
 	SourceRequestReset    = "request_reset" // RequestReset records no event; reserved
 	SourceOIDC            = "oidc"
 	SourceRegister        = "register"
+	SourceInvite          = "invite"
+	SourceReverify        = "reverify"
+	SourceEmailChange     = "email_change"
 )
 
 // Revoke reasons, as auth_sessions_revoke_reason lists them.
@@ -152,6 +158,8 @@ const (
 	ReasonPasskeyRemoved = "passkey_removed"
 	// ReasonIdentityRemoved is Unlink's: it ends the principal's other sessions.
 	ReasonIdentityRemoved = "identity_removed"
+	// ReasonEmailChanged is a confirmed email change's: it ends the principal's other sessions.
+	ReasonEmailChanged = "email_changed"
 )
 
 // PurposeReset is the one-time-link purpose of RequestReset and CompleteReset.
@@ -159,3 +167,9 @@ const PurposeReset = "reset"
 
 // PurposeRegister is the one-time-link purpose of registration links.
 const PurposeRegister = "register"
+
+// PurposeInvite is the one-time-link purpose of invite links.
+const PurposeInvite = "invite"
+
+// PurposeEmailChange is the one-time-link purpose of email-change confirmation links.
+const PurposeEmailChange = "email_change"

@@ -80,6 +80,8 @@ type Config struct {
 	// EventRetention is how long Prune keeps auth_events rows. Zero is 90
 	// days; negative keeps them forever.
 	EventRetention time.Duration
+	// Recent is how long after a sign-in or re-verify a session may make sensitive changes, at most 10 minutes; zero means 5 minutes, and a negative value is refused.
+	Recent time.Duration
 	// OnEvent runs straight after authkit records an event, on the same
 	// querier, so in the same transaction. Its error fails the method. Nil is none.
 	OnEvent    func(ctx context.Context, q db.Querier, e Event) error
@@ -104,6 +106,7 @@ func withDefaults(c Config) Config {
 	def(&c.Session.AbsoluteTTL, 12*time.Hour)
 	def(&c.Session.RotateEvery, 15*time.Minute)
 	def(&c.EventRetention, 90*24*time.Hour)
+	def(&c.Recent, 5*time.Minute)
 	def(&c.ReuseGrace, 30*time.Second)
 	if c.Throttle.Failures == 0 {
 		c.Throttle.Failures = 5
@@ -141,10 +144,14 @@ func (c Config) check() error {
 	for _, d := range []struct {
 		field string
 		v     time.Duration
-	}{{"Session.IdleTTL", c.Session.IdleTTL}, {"ReuseGrace", c.ReuseGrace}} {
+	}{{"Session.IdleTTL", c.Session.IdleTTL}, {"ReuseGrace", c.ReuseGrace}, {"Recent", c.Recent}} {
 		if d.v <= 0 {
 			return fmt.Errorf("authkit: Config.%s must be positive, not %v", d.field, d.v)
 		}
+	}
+	// WHY: a module's passkey and second-factor re-auth window is at most 10 minutes, and a module with a zero Reauth inherits Recent.
+	if c.Recent > 10*time.Minute {
+		return fmt.Errorf("authkit: Config.Recent must be at most 10m0s, not %v", c.Recent)
 	}
 	return c.checkSessions()
 }
