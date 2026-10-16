@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.1
+
+Moving an app with its own sign-in onto authkit: a legacy password verifier, sessions of another principal, and an absolute lifetime per audience. No existing signature or default changes, and there is no new migration: `CheckSchema` still wants version 7.
+
+`password`: `password.Legacy` verifies a hash format that is not argon2id (`Owns`, `Verify`); `password.Config.Legacy` lists them, tried in order, and nil keeps today's behaviour, where such a hash is `password.ErrMalformed`. `password.Bcrypt()` owns `$2a$`, `$2b$` and `$2y$` hashes; a cost above 14 is `ErrMalformed` and a password over 72 bytes does not match. After a legacy hash verifies, `Login` stores an argon2id hash in its place. `Login` still does not apply the length policy, so a copied password shorter than `MinRunes` keeps working. `Module.SetPassword` is now documented to replace an existing password: it logs `password_reset` for a principal that had one (`password_set` otherwise) and revokes nothing, so call `RevokeAllSessions` after it. Its code is unchanged.
+
+Core: `Service.ListSessionsOf` and `Service.RevokeSessionOf` list and end the sessions of a principal you name, for an admin acting on another login; your app checks that the caller may. `RevokeSessionOf` takes a revoke reason, writes the same row and `revoked` event as `RevokeSession`, and answers `ErrSessionEnded` for an id that is not that principal's open session. `SessionRules.AbsoluteTTLFor` (`map[Audience]time.Duration`) sets the absolute lifetime per audience; `-1` means no cap, and an audience without an entry keeps `Session.AbsoluteTTL`. `New` checks each audience's idle lifetime against that audience's absolute lifetime.
+
+Docs: the README shows how to move users from another system: bcrypt hashes as they are, and open sessions whose refresh tokens were stored as a hex SHA-256.
+
+No new dependency: `golang.org/x/crypto/bcrypt` is part of `golang.org/x/crypto`, already required.
+
 ## v0.7.0
 
 Account management: invites, erasure (`Forget`), recent sign-in with re-verify, and verified email change. No existing signature changes, and with `Config.Recent` and every module `Reauth` left at zero the windows stay 5 minutes. Migration `0007_account` is required: `CheckSchema` refuses a database below version 7, even for an app that uses none of the new parts.

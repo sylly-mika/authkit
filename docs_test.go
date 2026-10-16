@@ -7,22 +7,28 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
 
-func v07Section(t *testing.T) string {
+func changelogSection(t *testing.T, version string) string {
 	t.Helper()
 	b, err := os.ReadFile("CHANGELOG.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, rest, ok := strings.Cut(string(b), "\n## v0.7.0\n")
+	_, rest, ok := strings.Cut(string(b), "\n## "+version+"\n")
 	if !ok {
-		t.Fatal("CHANGELOG.md has no v0.7.0 section")
+		t.Fatalf("CHANGELOG.md has no %s section", version)
 	}
 	sec, _, _ := strings.Cut(rest, "\n## ")
 	return sec
+}
+
+func v07Section(t *testing.T) string {
+	t.Helper()
+	return changelogSection(t, "v0.7.0")
 }
 
 func exportedNames(t *testing.T, dir string) []string {
@@ -79,6 +85,27 @@ func TestChangelogNamesTheV07API(t *testing.T) {
 	for _, n := range names {
 		if !regexp.MustCompile("[`.]" + regexp.QuoteMeta(n) + `\b`).MatchString(sec) {
 			t.Errorf("the v0.7.0 changelog does not name %s", n)
+		}
+	}
+}
+
+func TestChangelogNamesTheV071API(t *testing.T) {
+	sec := changelogSection(t, "v0.7.1")
+	for _, n := range []string{"Legacy", "Bcrypt", "SetPassword", "ListSessionsOf", "RevokeSessionOf", "AbsoluteTTLFor"} {
+		if !regexp.MustCompile("[`.]" + regexp.QuoteMeta(n) + `\b`).MatchString(sec) {
+			t.Errorf("the v0.7.1 changelog does not name %s", n)
+		}
+	}
+	root := exportedNames(t, ".")
+	for _, n := range []string{"ListSessionsOf", "RevokeSessionOf"} {
+		if !slices.Contains(root, n) {
+			t.Errorf("the root package does not export %s", n)
+		}
+	}
+	pw := exportedNames(t, "password")
+	for _, n := range []string{"Legacy", "Bcrypt", "SetPassword"} {
+		if !slices.Contains(pw, n) {
+			t.Errorf("package password does not export %s", n)
 		}
 	}
 }
