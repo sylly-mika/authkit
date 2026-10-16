@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/sylly-mika/authkit"
@@ -21,6 +22,8 @@ type Config struct {
 	RevokeOnPasswordChange authkit.RevokeOnChange
 	HashConcurrency        int
 	HashWait               time.Duration
+	// Legacy verifiers check a hash that is not argon2id, the first that owns it deciding; Login then rewrites it as argon2id.
+	Legacy []Legacy
 }
 
 // Module signs principals in with a password and changes and resets passwords. It is safe for concurrent use.
@@ -47,6 +50,7 @@ func New(svc *authkit.Service, cfg Config) (*Module, error) {
 	if err != nil {
 		return nil, err
 	}
+	hasher.legacy = slices.Clone(cfg.Legacy)
 	return &Module{core: core, cfg: cfg, hasher: hasher, links: svc.OneTime(), principals: core.Principals()}, nil
 }
 
@@ -84,6 +88,11 @@ func (c Config) check() error {
 	}{{"ResetTTL", c.ResetTTL}, {"ResetFloor", c.ResetFloor}, {"HashWait", c.HashWait}} {
 		if d.v <= 0 {
 			return fmt.Errorf("authkit: Config.%s must be positive, not %v", d.field, d.v)
+		}
+	}
+	for i, l := range c.Legacy {
+		if l == nil {
+			return fmt.Errorf("authkit: Config.Legacy[%d] is nil", i)
 		}
 	}
 	return nil

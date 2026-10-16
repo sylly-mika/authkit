@@ -102,10 +102,7 @@ func (s *Module) changeEvent(p authkit.Principal, sess authkit.Session, m authki
 		Result: result, IP: m.IP, UserAgent: m.UserAgent}
 }
 
-// SetPassword gives a principal without a password its first one inside the
-// app's own flow (for example, accepting an invite: the app creates the user,
-// then calls this in the same transaction) and logs password_set. It revokes nothing, so
-// replacing a password goes through ChangePassword or CompleteReset.
+// SetPassword stores pw as p's password inside the caller's transaction, a first one (logs password_set) or a replacement (logs password_reset); it revokes nothing, so end the sessions with RevokeAllSessions.
 func (s *Module) SetPassword(ctx context.Context, q db.Querier, p authkit.Principal, aud authkit.Audience, pw string, m authkit.Meta) (authkit.Result, error) {
 	q = s.core.Q(q)
 	if err := db.RequireTx(q); err != nil {

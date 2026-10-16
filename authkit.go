@@ -243,11 +243,15 @@ func (s *Service) expiry(now time.Time, aud Audience, absolute *time.Time) time.
 	return *absolute
 }
 
-func (s *Service) absoluteFrom(now time.Time) *time.Time {
-	if s.cfg.Session.AbsoluteTTL < 0 {
+func (s *Service) absoluteFrom(now time.Time, aud Audience) *time.Time {
+	ttl := s.cfg.Session.AbsoluteTTL
+	if d, ok := s.cfg.Session.AbsoluteTTLFor[aud]; ok {
+		ttl = d
+	}
+	if ttl < 0 {
 		return nil
 	}
-	at := now.Add(s.cfg.Session.AbsoluteTTL)
+	at := now.Add(ttl)
 	return &at
 }
 

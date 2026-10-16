@@ -476,8 +476,10 @@ revoked or expired), for a workspace switch.
   password. `RevokeOnPasswordChange` decides the caller's own session:
   `RevokeOthers` (default) keeps it, `RevokeAll` replaces it with a new one in
   `Result.Tokens` or `Result.SessionToken`. Passkeys are kept.
-- `kit.Password.SetPassword(ctx, q, p, aud, pw, m)` gives a principal without a password
-  its first one. It revokes nothing.
+- `kit.Password.SetPassword(ctx, q, p, aud, pw, m)` sets a password inside your own
+  flow: a principal's first one (`password_set`) or a replacement (`password_reset`),
+  such as an admin's reset. It revokes nothing; call `RevokeAllSessions` after it to
+  sign the principal out everywhere.
 - `kit.Password.VerifyPassword(ctx, q, p, aud, pw, m)` checks a password inside your own
   flow. A mismatch is `ErrInvalidCredentials`; it does not touch the throttle.
 - `kit.Password.HasCredential(ctx, q, principal)` reports whether a principal has a
@@ -490,6 +492,12 @@ revoked or expired), for a workspace switch.
 - `ListSessions(ctx, q, claims, limit, offset)` returns the caller's open
   sessions, newest first, the current one marked `Current`, and their count.
 - `RevokeSession(ctx, q, claims, id, m)` revokes one of the caller's sessions.
+- `ListSessionsOf(ctx, q, principal, limit, offset)` and
+  `RevokeSessionOf(ctx, q, principal, id, reason, m)` do the same for a principal
+  you name, such as an admin acting on another login. They check nothing about
+  the caller: your app must. `RevokeSessionOf` writes the same row and `revoked`
+  event as `RevokeSession` and answers `ErrSessionEnded` for an id that is not
+  that principal's open session.
 - `RevokeAllSessions(ctx, q, principal, reason, m)` revokes every session of
   a principal; `reason` is one of the `authkit.Reason*` constants, such as
   `authkit.ReasonAdmin`.
@@ -877,6 +885,39 @@ only after the new mailbox confirms a link.
 `Cancel(ctx, q, p)` drops it. OIDC identities stay linked by subject; passkey
 and TOTP labels keep the old login.
 
+### Move users from another system
+
+Copy each user's password hash and open sessions into authkit's tables in one
+migration; users keep their password and stay signed in.
+
+- Passwords: insert each bcrypt hash into `auth_credentials` as it is and set
+  `password.Config.Legacy` to `[]password.Legacy{password.Bcrypt()}`. `Login`
+  verifies a `$2a$`, `$2b$` or `$2y$` hash and, after a correct password,
+  stores an argon2id hash in its place. Implement `password.Legacy` for another
+  format.
+- `Login` does not apply the length policy, so a copied password shorter than
+  `MinRunes` still signs in. `SetPassword`, `ChangePassword`, `CompleteReset`,
+  `Hash` and `CheckPassword` apply it.
+- Sessions: authkit finds a refresh token by the SHA-256 of its text. If your app
+  stored `hex(sha256(token))`, `decode(token_hash, 'hex')` is the same key, so the
+  old token refreshes and gets an authkit token back. An old access token fails;
+  a client that refreshes on a 401 recovers.
+
+  ```sql
+  INSERT INTO auth_sessions (id, principal_id, audience, token_hash, authenticated_at,
+      ip, user_agent, created_at, last_seen_at, expires_at, absolute_expires_at)
+  SELECT s.id, s.user_id, 'staff', decode(s.token_hash, 'hex'), now(),
+      s.ip, s.user_agent, now(), s.last_seen_at,
+      LEAST(s.expires_at, now() + interval '12 hours'), now() + interval '12 hours'
+  FROM old_sessions s
+  WHERE s.revoked_at IS NULL AND s.expires_at > now();
+  ```
+
+  Use the migration time for `authenticated_at` and `created_at`, so the absolute
+  lifetime counts from the move. Set `absolute_expires_at` to that time plus the
+  audience's absolute lifetime (NULL when it has none), and keep `expires_at` at
+  or before it.
+
 ### Write a module
 
 A module is a package whose `New(core *authkit.Service, rules)` checks its
@@ -925,6 +966,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `AccessTTL` | 15 min | Bearer mode: access token lifetime. Ignored in Session mode |
 | `Session.IdleTTL` | 30 min | sign-in ends after this long without activity |
 | `Session.AbsoluteTTL` | 12 h | cap from sign-in; negative: no cap |
+| `Session.AbsoluteTTLFor` | none | `map[Audience]time.Duration`: `AbsoluteTTL` per audience; negative: no cap; zero refused |
 | `Session.RotateEvery` | 15 min | Session mode: token age that triggers a swap; negative: never rotate |
 | `RefreshTTLFor` | none | `map[Audience]time.Duration`: `IdleTTL` per audience |
 | `RefreshTTL` | unset | deprecated name of `Session.IdleTTL`; wins when set |
@@ -948,6 +990,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 |---|---|---|
 | `Password` | 10 to 256 runes | `password.Policy{MinRunes, MaxRunes}` |
 | `Hashing` | argon2id 19 MiB, t=2, p=1 | `password.Params` |
+| `Legacy` | none | `[]password.Legacy`: verifiers for older hash formats, such as `password.Bcrypt()`; a match is rehashed to argon2id |
 | `HashConcurrency` | 4 | argon2id slots |
 | `HashWait` | 2 s | wait for a slot before `ErrBusy` |
 | `RevokeOnPasswordChange` | `RevokeOthers` | `RevokeAll` also replaces the caller's session |
@@ -1038,8 +1081,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 
 - Bearer mode without `Issuer`, with a `Secret` under 32 bytes, or with a
   negative `AccessTTL`.
-- `Session.IdleTTL` (or a `RefreshTTLFor` entry) above `AbsoluteTTL` when
-  there is a cap.
+- An audience's idle timeout (its `RefreshTTLFor` entry, else `Session.IdleTTL`) above its cap (its `Session.AbsoluteTTLFor` entry, else `AbsoluteTTL`) when there is one, and a zero `Session.AbsoluteTTLFor` entry.
 - In Session mode, `RotateEvery` at or above `IdleTTL` (or an entry).
 - A negative `RefreshTTL`, `Session.IdleTTL` or `ReuseGrace`, a throttle
   that cannot work, and a `Schema` that is not a valid schema name.
@@ -1122,6 +1164,12 @@ Each release may add migrations. After every upgrade, rerun `authkit-gen`
 with the same flags and lock file, and apply the new migrations before
 deploying; otherwise `CheckSchema` refuses to start with `ErrSchemaBehind`.
 See `CHANGELOG.md` for the full list of changes.
+
+**v0.7.1.** No migration and no signature or default change: `CheckSchema`
+still wants version 7 and `authkit-gen` writes the same files. Run
+`go get github.com/sylly-mika/authkit@v0.7.1`. New and opt-in:
+`password.Config.Legacy` with `password.Bcrypt()`, `ListSessionsOf`,
+`RevokeSessionOf` and `SessionRules.AbsoluteTTLFor`.
 
 **v0.7.0.** New modules: `invite` and `emailchange`; new core methods `Forget`
 and `RequireRecent`, and re-verify methods on `password`, `secondfactor`,

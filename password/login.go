@@ -15,7 +15,7 @@ import (
 // first (from ctx, or taken here), so a Busy refusal counts nothing; then the
 // login's throttle row, locked until the caller commits, is counted, and an
 // attempt past the limit is refused ErrLocked without a verification. Then
-// the lookup, exactly one argon2id verification, Admit, the session, the
+// the lookup, exactly one verification, Admit, the session, the
 // counter cleared and signed_in. Throttle.CountAfterVerify is v0.1's order:
 // check the lock, verify, count a failure. Its refusals return normally after
 // writing their throttle count and event. A principal holding a confirmed
@@ -86,7 +86,7 @@ func (s *Module) Login(ctx context.Context, q db.Querier, aud authkit.Audience, 
 	return c.SignIn(ctx, q, a, p, authkit.FactorPassword)
 }
 
-// WHY: every login spends one verification, against the dummy when there is no hash, so unknown logins take as long as known ones.
+// WHY: every login spends one verification, against the dummy when there is no hash, so an unknown login takes as long as a known argon2id one.
 func (s *Module) verify(ctx context.Context, hash string, has bool, pw string) (bool, error) {
 	if s.onVerify != nil {
 		s.onVerify()
