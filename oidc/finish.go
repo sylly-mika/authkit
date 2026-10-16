@@ -45,61 +45,14 @@ func (m *Module) Finish(ctx context.Context, q db.Querier, cb Callback, binding 
 	a := m.core.BeginVerified(authkit.SourceOIDC, c.audience, meta)
 	now = a.Now()
 	aud := c.audience
-	p, ok := m.providers[c.provider]
-	if !ok {
-		return refuseBad(ctx, q, a)
-	}
-	if subtle.ConstantTimeCompare(digest(binding), c.bindingHash) != 1 {
-		return refuseBad(ctx, q, a)
-	}
-	if cb.Error == "user_cancelled_authorize" || cb.Error == "access_denied" {
+	ck, err := m.checkCallback(ctx, c, cb, binding, now)
+	if errors.Is(err, ErrCancelled) {
 		return authkit.Result{Refusal: ErrCancelled}, nil, nil
 	}
-	if cb.Error != "" || cb.Code == "" {
-		return refuseBad(ctx, q, a)
-	}
-	secret := p.ClientSecret
-	if p.Secret != nil {
-		s, err := p.Secret(now)
-		if err != nil {
-			return refuseBad(ctx, q, a)
-		}
-		secret = s
-	}
-	cfg := p.config()
-	cfg.ClientSecret = secret
-	xctx := context.WithValue(ctx, oauth2.HTTPClient, m.client)
-	// WHY: the exchange error can carry the provider's response body, which may echo the secret or the code, so it is dropped unread.
-	tok, err := cfg.Exchange(xctx, cb.Code, oauth2.VerifierOption(c.verifier))
 	if err != nil {
 		return refuseBad(ctx, q, a)
 	}
-	raw, ok := tok.Extra("id_token").(string)
-	if !ok {
-		return refuseBad(ctx, q, a)
-	}
-	verifier := gooidc.NewVerifier("", p.keys, &gooidc.Config{
-		ClientID:             p.ClientID,
-		SupportedSigningAlgs: []string{gooidc.RS256},
-		SkipIssuerCheck:      true,
-		Now:                  func() time.Time { return now },
-	})
-	idTok, err := verifier.Verify(xctx, raw)
-	if err != nil {
-		return refuseBad(ctx, q, a)
-	}
-	var cl claims
-	if err := idTok.Claims(&cl); err != nil {
-		return refuseBad(ctx, q, a)
-	}
-	if !slices.Contains(p.Issuers, idTok.Issuer) ||
-		(cl.AZP != "" || len(idTok.Audience) > 1) && cl.AZP != p.ClientID ||
-		idTok.Nonce == "" || subtle.ConstantTimeCompare(digest(idTok.Nonce), c.nonceHash) != 1 ||
-		idTok.IssuedAt.After(now.Add(m.rules.Skew)) ||
-		idTok.Subject == "" {
-		return refuseBad(ctx, q, a)
-	}
-	sub := idTok.Subject
+	p, cl, sub := ck.p, ck.cl, ck.tok.Subject
 	if c.kind == "link" {
 		who, err := m.core.Principals().ByID(ctx, q, c.principal.UUID, aud)
 		if errors.Is(err, authkit.ErrUnknownLogin) {
@@ -197,6 +150,72 @@ func (m *Module) Finish(ctx context.Context, q db.Querier, cb Callback, binding 
 		return authkit.Result{}, nil, err
 	}
 	return authkit.Result{Refusal: ErrIdentityUnknown}, s, nil
+}
+
+var errBadIdentity = errors.New("oidc: bad identity")
+
+type checked struct {
+	p   *provider
+	tok *gooidc.IDToken
+	cl  claims
+}
+
+func (m *Module) checkCallback(ctx context.Context, c *ceremony, cb Callback, binding string, now time.Time) (checked, error) {
+	p, ok := m.providers[c.provider]
+	if !ok {
+		return checked{}, errBadIdentity
+	}
+	if subtle.ConstantTimeCompare(digest(binding), c.bindingHash) != 1 {
+		return checked{}, errBadIdentity
+	}
+	if cb.Error == "user_cancelled_authorize" || cb.Error == "access_denied" {
+		return checked{}, ErrCancelled
+	}
+	if cb.Error != "" || cb.Code == "" {
+		return checked{}, errBadIdentity
+	}
+	secret := p.ClientSecret
+	if p.Secret != nil {
+		s, err := p.Secret(now)
+		if err != nil {
+			return checked{}, errBadIdentity
+		}
+		secret = s
+	}
+	cfg := p.config()
+	cfg.ClientSecret = secret
+	xctx := context.WithValue(ctx, oauth2.HTTPClient, m.client)
+	// WHY: the exchange error can carry the provider's response body, which may echo the secret or the code, so it is dropped unread.
+	tok, err := cfg.Exchange(xctx, cb.Code, oauth2.VerifierOption(c.verifier))
+	if err != nil {
+		return checked{}, errBadIdentity
+	}
+	raw, ok := tok.Extra("id_token").(string)
+	if !ok {
+		return checked{}, errBadIdentity
+	}
+	verifier := gooidc.NewVerifier("", p.keys, &gooidc.Config{
+		ClientID:             p.ClientID,
+		SupportedSigningAlgs: []string{gooidc.RS256},
+		SkipIssuerCheck:      true,
+		Now:                  func() time.Time { return now },
+	})
+	idTok, err := verifier.Verify(xctx, raw)
+	if err != nil {
+		return checked{}, errBadIdentity
+	}
+	var cl claims
+	if err := idTok.Claims(&cl); err != nil {
+		return checked{}, errBadIdentity
+	}
+	if !slices.Contains(p.Issuers, idTok.Issuer) ||
+		(cl.AZP != "" || len(idTok.Audience) > 1) && cl.AZP != p.ClientID ||
+		idTok.Nonce == "" || subtle.ConstantTimeCompare(digest(idTok.Nonce), c.nonceHash) != 1 ||
+		idTok.IssuedAt.After(now.Add(m.rules.Skew)) ||
+		idTok.Subject == "" {
+		return checked{}, errBadIdentity
+	}
+	return checked{p: p, tok: idTok, cl: cl}, nil
 }
 
 // refuseBad records the callback as a bad identity on a and refuses it with no detail.

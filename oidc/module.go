@@ -179,7 +179,7 @@ func (m *Module) Begin(ctx context.Context, q db.Querier, provider string, aud a
 	return m.begin(ctx, q, "signin", provider, aud, nil)
 }
 
-func (m *Module) begin(ctx context.Context, q db.Querier, kind, provider string, aud authkit.Audience, principal *uuid.UUID) (Redirect, error) {
+func (m *Module) begin(ctx context.Context, q db.Querier, kind, provider string, aud authkit.Audience, principal *uuid.UUID, extra ...oauth2.AuthCodeOption) (Redirect, error) {
 	q = m.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Redirect{}, err
@@ -221,6 +221,7 @@ func (m *Module) begin(ctx context.Context, q db.Querier, kind, provider string,
 	if p.FormPost {
 		opts = append(opts, oauth2.SetAuthURLParam("response_mode", "form_post"))
 	}
+	opts = append(opts, extra...)
 	return Redirect{URL: p.config().AuthCodeURL(state, opts...), Binding: binding, SameSite: p.SameSite}, nil
 }
 
