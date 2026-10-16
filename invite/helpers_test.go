@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
@@ -77,4 +80,60 @@ func (f *fixture) invite(r invite.Request) (invite.Invited, error) {
 		f.T.Fatal(e)
 	}
 	return inv, err
+}
+
+func (f *fixture) resend(id uuid.UUID) (invite.Invited, error) {
+	f.T.Helper()
+	var inv invite.Invited
+	var err error
+	if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		inv, err = f.Inv.Resend(f.Ctx, q, id)
+		return nil
+	}); e != nil {
+		f.T.Fatal(e)
+	}
+	return inv, err
+}
+
+func (f *fixture) revoke(id uuid.UUID) error {
+	f.T.Helper()
+	var err error
+	if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		err = f.Inv.Revoke(f.Ctx, q, id)
+		return nil
+	}); e != nil {
+		f.T.Fatal(e)
+	}
+	return err
+}
+
+func (f *fixture) list(aud authkit.Audience, scope *uuid.UUID, limit, offset int) ([]invite.Invite, int, error) {
+	f.T.Helper()
+	var rows []invite.Invite
+	var total int
+	var err error
+	if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		rows, total, err = f.Inv.List(f.Ctx, q, aud, scope, limit, offset)
+		return nil
+	}); e != nil {
+		f.T.Fatal(e)
+	}
+	return rows, total, err
+}
+
+func (f *fixture) accepted(id, by uuid.UUID) {
+	f.T.Helper()
+	f.D.Exec(f.T, "UPDATE auth_invites SET accepted_at = $2, accepted_by = $3 WHERE id = $1", id, f.Clock.Now(), by)
+}
+
+func (f *fixture) clean(raw string, errs ...error) {
+	f.T.Helper()
+	for _, err := range errs {
+		if raw != "" && err != nil && strings.Contains(err.Error(), raw) {
+			f.T.Error("an error carries the raw link")
+		}
+	}
+	if n := f.Count("SELECT count(*) FROM auth_events"); n != 0 {
+		f.T.Errorf("auth_events rows = %d, want 0", n)
+	}
 }

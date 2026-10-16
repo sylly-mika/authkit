@@ -170,6 +170,93 @@ func (m *Module) Invite(ctx context.Context, q db.Querier, req Request) (Invited
 	return Invited{ID: id, TokenID: tok, Holder: holder}, nil
 }
 
+// Resend restarts an open invite's expiry and replaces its link.
+func (m *Module) Resend(ctx context.Context, q db.Querier, id uuid.UUID) (Invited, error) {
+	q = m.core.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return Invited{}, err
+	}
+	now := m.core.Now()
+	row, err := m.lockRow(ctx, q, id)
+	switch {
+	case errors.Is(err, db.ErrNoRows):
+		return Invited{}, ErrInviteClosed
+	case err != nil:
+		return Invited{}, err
+	case row.AcceptedAt != nil || row.RevokedAt != nil:
+		return Invited{}, ErrInviteClosed
+	}
+	holder, err := m.held(ctx, q, row.Email, row.Audience)
+	if err != nil {
+		return Invited{}, err
+	}
+	if holder != nil && m.r.Join == nil {
+		return Invited{}, ErrAddressHeld
+	}
+	if _, err := q.Exec(ctx, `UPDATE auth_invites SET expires_at = $2 WHERE id = $1`, id, now.Add(m.r.TTL)); err != nil {
+		return Invited{}, err
+	}
+	tok, err := m.links.Create(ctx, q, authkit.PurposeInvite, id, m.r.TTL)
+	if err != nil {
+		return Invited{}, err
+	}
+	return Invited{ID: id, TokenID: tok, Holder: holder}, nil
+}
+
+// Revoke closes an open invite; its link then answers revoked.
+func (m *Module) Revoke(ctx context.Context, q db.Querier, id uuid.UUID) error {
+	q = m.core.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return err
+	}
+	row, err := m.lockRow(ctx, q, id)
+	switch {
+	case errors.Is(err, db.ErrNoRows):
+		return ErrInviteClosed
+	case err != nil:
+		return err
+	case row.AcceptedAt != nil || row.RevokedAt != nil:
+		return ErrInviteClosed
+	}
+	return m.void(ctx, q, id)
+}
+
+// List returns the invites of an audience and scope, newest first.
+func (m *Module) List(ctx context.Context, q db.Querier, aud authkit.Audience, scope *uuid.UUID, limit, offset int) ([]Invite, int, error) {
+	q = m.core.Q(q)
+	if limit < 0 || offset < 0 {
+		return nil, 0, errors.New("invite: negative limit or offset")
+	}
+	var total int
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM auth_invites WHERE audience = $1 AND scope_id IS NOT DISTINCT FROM $2::uuid`,
+		string(aud), scope).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	var lim any
+	if limit != 0 {
+		lim = limit
+	}
+	rows, err := q.Query(ctx, "SELECT "+cols+` FROM auth_invites WHERE audience = $1 AND scope_id IS NOT DISTINCT FROM $2::uuid
+		ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4`, string(aud), scope, lim, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	now := m.core.Now()
+	var out []Invite
+	for rows.Next() {
+		inv, err := scanInvite(rows, now)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, inv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
+}
+
 // held returns the principal holding login for aud, or nil when none does.
 func (m *Module) held(ctx context.Context, q db.Querier, login string, aud authkit.Audience) (*authkit.Principal, error) {
 	p, err := m.principals.Lookup(ctx, q, login, aud)

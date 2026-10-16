@@ -5,6 +5,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/db/sqldb"
 	"github.com/sylly-mika/authkit/internal/kittest"
 	"github.com/sylly-mika/authkit/invite"
 	"github.com/sylly-mika/authkit/password"
@@ -114,6 +118,264 @@ func TestInviteHeldNoJoin(t *testing.T) {
 		}
 		if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE purpose = 'invite'`); n != 0 {
 			t.Errorf("invite tokens = %d, want 0", n)
+		}
+	})
+	t.Run("held at resend refused", func(t *testing.T) {
+		f := newFixture(t)
+		T0 := f.Clock.Now()
+		b, err := f.invite(req(bob))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.User(bob, "")
+		f.Clock.Advance(time.Hour)
+		if _, err := f.resend(b.ID); !errors.Is(err, invite.ErrAddressHeld) {
+			t.Fatalf("Resend error = %v, want ErrAddressHeld", err)
+		}
+		if n := f.Count(`SELECT count(*) FROM auth_invites WHERE id = $1 AND expires_at = $2`, b.ID, T0.Add(72*time.Hour)); n != 1 {
+			t.Errorf("invite rows with the original expiry = %d, want 1", n)
+		}
+		if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE owner_id = $1 AND purpose = 'invite'`, b.ID); n != 1 {
+			t.Errorf("invite tokens = %d, want 1", n)
+		}
+		if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE id = $1 AND owner_id = $2 AND purpose = 'invite' AND revoked_at IS NULL`, b.TokenID, b.ID); n != 1 {
+			t.Errorf("live first invite token = %d, want 1", n)
+		}
+	})
+}
+
+func TestInvitePending(t *testing.T) {
+	f := newFixture(t)
+	first, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.invite(invite.Request{Audience: aud, Email: "ADA@example.invalid"}); !errors.Is(err, invite.ErrInvitePending) {
+		t.Fatalf("second invite error = %v, want ErrInvitePending", err)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE email = $1 AND scope_id IS NULL AND audience = 'staff'`, addr); n != 1 {
+		t.Errorf("open invite rows = %d, want 1", n)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE purpose = 'invite'`); n != 1 {
+		t.Errorf("invite tokens = %d, want 1", n)
+	}
+	s := uuid.New()
+	scoped, err := f.invite(invite.Request{Audience: aud, Email: addr, ScopeID: &s})
+	if err != nil {
+		t.Fatalf("scoped invite: %v", err)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE id = $1 AND scope_id = $2`, scoped.ID, s); n != 1 {
+		t.Errorf("scoped invite rows = %d, want 1", n)
+	}
+	if _, err := f.invite(invite.Request{Audience: aud, Email: addr, ScopeID: &s}); !errors.Is(err, invite.ErrInvitePending) {
+		t.Errorf("second scoped invite error = %v, want ErrInvitePending", err)
+	}
+	if _, err := f.invite(invite.Request{Audience: "client", Email: addr}); err != nil {
+		t.Errorf("invite for another audience: %v", err)
+	}
+	if err := f.revoke(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.invite(req(addr)); err != nil {
+		t.Errorf("invite after the open one was revoked: %v", err)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE email = $1 AND scope_id IS NULL AND audience = 'staff'`, addr); n != 2 {
+		t.Errorf("staff invite rows without scope = %d, want 2", n)
+	}
+}
+
+func TestResendClosed(t *testing.T) {
+	f := newFixture(t)
+	closed, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.revoke(closed.ID); err != nil {
+		t.Fatal(err)
+	}
+	acc, err := f.invite(req(bob))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.accepted(acc.ID, f.User("x@example.invalid", ""))
+	for _, id := range []uuid.UUID{closed.ID, acc.ID, uuid.New()} {
+		tokens := f.Count(`SELECT count(*) FROM auth_tokens WHERE owner_id = $1`, id)
+		if _, err := f.resend(id); !errors.Is(err, invite.ErrInviteClosed) {
+			t.Errorf("Resend(%v) error = %v, want ErrInviteClosed", id, err)
+		}
+		if err := f.revoke(id); !errors.Is(err, invite.ErrInviteClosed) {
+			t.Errorf("Revoke(%v) error = %v, want ErrInviteClosed", id, err)
+		}
+		if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE owner_id = $1`, id); n != tokens {
+			t.Errorf("Resend or Revoke(%v) changed its tokens from %d to %d", id, tokens, n)
+		}
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE id = $1 AND accepted_at IS NOT NULL AND revoked_at IS NULL`, acc.ID); n != 1 {
+		t.Errorf("accepted invite rows without revoked_at = %d, want 1", n)
+	}
+}
+
+func TestResendRacesRevoke(t *testing.T) {
+	f := newFixture(t)
+	T0 := f.Clock.Now()
+	inv, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := f.D.Owner.BeginTx(f.Ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err := holder.ExecContext(f.Ctx, f.D.SQL("UPDATE auth_invites SET revoked_at = $2 WHERE id = $1"), inv.ID, T0); err != nil {
+		t.Fatal(err)
+	}
+	type answer struct {
+		inv invite.Invited
+		err error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		var a answer
+		if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+			a.inv, a.err = f.Inv.Resend(f.Ctx, q, inv.ID)
+			return nil
+		}); e != nil {
+			a.err = e
+		}
+		done <- a
+	}()
+	f.D.WaitForLockWaiters(f.T, 1)
+	if err := holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	a := <-done
+	if !errors.Is(a.err, invite.ErrInviteClosed) {
+		t.Errorf("Resend error = %v, want ErrInviteClosed", a.err)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE owner_id = $1 AND revoked_at IS NULL`, inv.ID); n != 1 {
+		t.Errorf("live invite tokens = %d, want 1", n)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE id = $1 AND expires_at = $2`, inv.ID, T0.Add(72*time.Hour)); n != 1 {
+		t.Errorf("invite rows with the original expiry = %d, want 1", n)
+	}
+}
+
+func TestListStates(t *testing.T) {
+	f := newFixture(t, func(r *invite.Rules) { r.TTL = time.Hour })
+	e, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Clock.Advance(2 * time.Hour)
+	p, err := f.invite(req(bob))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Clock.Advance(time.Minute)
+	a, err := f.invite(req("carol@example.invalid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.accepted(a.ID, f.User("x@example.invalid", ""))
+	f.Clock.Advance(time.Minute)
+	r, err := f.invite(req("dan@example.invalid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.revoke(r.ID); err != nil {
+		t.Fatal(err)
+	}
+	s := uuid.New()
+	if _, err := f.invite(invite.Request{Audience: aud, Email: addr, ScopeID: &s}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.invite(invite.Request{Audience: "client", Email: addr}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, total, err := f.list(aud, nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 {
+		t.Errorf("total = %d, want 4", total)
+	}
+	wantIDs := []uuid.UUID{r.ID, a.ID, p.ID, e.ID}
+	wantStates := []invite.State{"revoked", "accepted", "pending", "expired"}
+	if len(rows) != len(wantIDs) {
+		t.Fatalf("rows = %d, want %d", len(rows), len(wantIDs))
+	}
+	for i, row := range rows {
+		if row.ID != wantIDs[i] || row.State != wantStates[i] {
+			t.Errorf("row %d = (%v, %s), want (%v, %s)", i, row.ID, row.State, wantIDs[i], wantStates[i])
+		}
+	}
+	if rows[0].RevokedAt == nil {
+		t.Error("revoked row has no RevokedAt")
+	}
+	if rows[1].AcceptedBy == nil {
+		t.Error("accepted row has no AcceptedBy")
+	}
+
+	page, total, err := f.list(aud, nil, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 4 {
+		t.Errorf("page total = %d, want 4", total)
+	}
+	if len(page) != 2 || page[0].ID != a.ID || page[1].ID != p.ID {
+		t.Errorf("page (limit 2, offset 1) has %d rows with the wrong ids, want the accepted and the pending invite", len(page))
+	}
+
+	scoped, total, err := f.list(aud, &s, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 1 || total != 1 {
+		t.Errorf("scoped list = %d rows of total %d, want 1 of 1", len(scoped), total)
+	}
+
+	if _, _, err := f.list(aud, nil, -1, 0); err == nil {
+		t.Error("list with a negative limit: no error")
+	}
+	f.clean("")
+}
+
+func TestInviteNeedsTx(t *testing.T) {
+	f := newFixture(t)
+	inv, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := sqldb.Conn(f.Pinned(f.User("pin@example.invalid", "")))
+	t.Run("Invite", func(t *testing.T) {
+		var n int
+		_, err := f.Inv.Invite(f.Ctx, counted{c, &n}, req(bob))
+		if !errors.Is(err, db.ErrTxRequired) || n != 0 {
+			t.Errorf("Invite error = %v after %d statements, want ErrTxRequired and none", err, n)
+		}
+	})
+	t.Run("Resend", func(t *testing.T) {
+		var n int
+		_, err := f.Inv.Resend(f.Ctx, counted{c, &n}, inv.ID)
+		if !errors.Is(err, db.ErrTxRequired) || n != 0 {
+			t.Errorf("Resend error = %v after %d statements, want ErrTxRequired and none", err, n)
+		}
+	})
+	t.Run("Revoke", func(t *testing.T) {
+		var n int
+		err := f.Inv.Revoke(f.Ctx, counted{c, &n}, inv.ID)
+		if !errors.Is(err, db.ErrTxRequired) || n != 0 {
+			t.Errorf("Revoke error = %v after %d statements, want ErrTxRequired and none", err, n)
+		}
+	})
+	t.Run("List", func(t *testing.T) {
+		var n int
+		_, _, err := f.Inv.List(f.Ctx, counted{c, &n}, aud, nil, 0, 0)
+		if errors.Is(err, db.ErrTxRequired) {
+			t.Errorf("List error = %v, want no ErrTxRequired", err)
 		}
 	})
 }
