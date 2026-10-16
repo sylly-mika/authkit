@@ -47,3 +47,34 @@ func (w *world) withEmailChange() {
 	}}
 	w.Svc = w.Build(w.Cfg)
 }
+
+func (w *world) inviteLink(email string) string {
+	w.T.Helper()
+	var raw string
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		inv, err := w.Svc.Invite.Invite(w.Ctx, q, invite.Request{Audience: "staff", Email: email})
+		if err != nil {
+			return err
+		}
+		mail, err := w.Svc.Invite.Mint(w.Ctx, q, inv.TokenID)
+		raw = mail.Raw
+		return err
+	}); err != nil {
+		w.T.Fatalf("invite link: %v", err)
+	}
+	return raw
+}
+
+func (w *world) acceptInvite(raw, pass string) authkit.Result {
+	w.T.Helper()
+	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Invite.Accept(w.Ctx, q, raw, pass, nil, authkit.Meta{})
+	})
+}
+
+func (w *world) acceptInviteOIDC(raw, ticket string) authkit.Result {
+	w.T.Helper()
+	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Invite.AcceptOIDC(w.Ctx, q, raw, ticket, nil, authkit.Meta{})
+	})
+}

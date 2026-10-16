@@ -187,6 +187,68 @@ func TestGateEveryPath(t *testing.T) {
 		wantSources(t, rec.take(), "register")
 	})
 
+	t.Run("invite", func(t *testing.T) {
+		w := newWorld(t, factors)
+		w.withInvite(true)
+		rec := withSourceLog(w)
+		raw := w.inviteLink(gateLogin)
+		rec.take()
+		res := w.acceptInvite(raw, gateNewPassword)
+		if res.Refusal != nil || res.SecondStep == nil || !slices.Contains(res.SecondStep.Methods, authkit.FactorTOTP) {
+			t.Fatalf("invite accept: refusal %v, second step %v", res.Refusal, res.SecondStep != nil)
+		}
+		var id uuid.UUID
+		if err := w.D.Row(w.T, `SELECT id FROM users WHERE email = $1`, gateLogin).Scan(&id); err != nil {
+			t.Fatalf("invited principal: %v", err)
+		}
+		gateNoSession(t, res)
+		if n := w.sessions(id); n != 0 {
+			t.Errorf("sessions = %d, want 0", n)
+		}
+		if n := w.challenges(id); n != 1 {
+			t.Errorf("challenges = %d, want 1", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in'`, id); n != 0 {
+			t.Errorf("signed_in events = %d, want 0", n)
+		}
+		wantSources(t, rec.take(), "invite")
+	})
+
+	t.Run("invite_oidc", func(t *testing.T) {
+		w := newWorld(t, factors)
+		fake := w.withOIDC(false)
+		w.withInvite(true)
+		rec := withSourceLog(w)
+		raw := w.inviteLink(gateLogin)
+		_, su := w.googleSignIn(fake, oidcfake.User{Subject: "g-new", Email: gateLogin, EmailVerified: true})
+		if su == nil {
+			t.Fatal("google sign-in gave no sign-up ticket")
+		}
+		rec.take()
+		res := w.acceptInviteOIDC(raw, su.Ticket)
+		if res.Refusal != nil || res.SecondStep == nil || !slices.Contains(res.SecondStep.Methods, authkit.FactorTOTP) {
+			t.Fatalf("invite oidc accept: refusal %v, second step %v", res.Refusal, res.SecondStep != nil)
+		}
+		var id uuid.UUID
+		if err := w.D.Row(w.T, `SELECT id FROM users WHERE email = $1`, gateLogin).Scan(&id); err != nil {
+			t.Fatalf("invited principal: %v", err)
+		}
+		gateNoSession(t, res)
+		if n := w.sessions(id); n != 0 {
+			t.Errorf("sessions = %d, want 0", n)
+		}
+		if n := w.challenges(id); n != 1 {
+			t.Errorf("challenges = %d, want 1", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'signed_in'`, id); n != 0 {
+			t.Errorf("signed_in events = %d, want 0", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_identities WHERE principal_id = $1`, id); n != 1 {
+			t.Errorf("identities = %d, want 1", n)
+		}
+		wantSources(t, rec.take(), "oidc")
+	})
+
 	t.Run("change password", func(t *testing.T) {
 		revokeAll := func(c *kittest.Rules) { c.Password.RevokeOnPasswordChange = authkit.RevokeAll }
 		w := newWorld(t, factors, revokeAll)
