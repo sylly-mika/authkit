@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -546,5 +547,60 @@ func TestNoSecretInOutput(t *testing.T) {
 				t.Errorf("the %s appears in %s", name, o.where)
 			}
 		}
+	}
+}
+
+func TestPruneInvites(t *testing.T) {
+	w := newWorld(t)
+	now := w.Clock.Now()
+	cut := now.Add(-30 * 24 * time.Hour)
+	soon := now.Add(time.Hour)
+	ts := func(at time.Time) *time.Time { return &at }
+	rows := []struct {
+		name              string
+		expires           time.Time
+		accepted, revoked *time.Time
+		gone              bool
+	}{
+		{"expired-old", cut.Add(-time.Second), nil, nil, true},
+		{"expired-edge", cut.Add(time.Second), nil, nil, false},
+		{"accepted-old", soon, ts(cut.Add(-time.Second)), nil, true},
+		{"accepted-edge", soon, ts(cut.Add(time.Second)), nil, false},
+		{"revoked-old", soon, nil, ts(cut.Add(-time.Second)), true},
+		{"revoked-edge", soon, nil, ts(cut.Add(time.Second)), false},
+		{"open", soon, nil, nil, false},
+	}
+	for _, r := range rows {
+		w.D.Exec(t, `INSERT INTO auth_invites (id, audience, email, created_at, expires_at, accepted_at, revoked_at) VALUES ($1, 'staff', $2, $3, $4, $5, $6)`, uuid.New(), r.name+"@example.invalid", now.Add(-40*24*time.Hour), r.expires, r.accepted, r.revoked)
+	}
+	if err := w.D.InGlobalSystemTx(w.Ctx, func(q db.Querier) error { return w.Svc.Prune(w.Ctx, q) }); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		n := w.Count(`SELECT count(*) FROM auth_invites WHERE email = $1`, r.name+"@example.invalid")
+		if r.gone && n != 0 {
+			t.Errorf("invite %s survived Prune: %d rows, want 0", r.name, n)
+		}
+		if !r.gone && n != 1 {
+			t.Errorf("invite %s was pruned: %d rows, want 1", r.name, n)
+		}
+	}
+}
+
+func TestPruneEmailChanges(t *testing.T) {
+	w := newWorld(t)
+	now := w.Clock.Now()
+	old := w.User("old@example.invalid", "")
+	live := w.User("live@example.invalid", "")
+	w.D.Exec(t, `INSERT INTO auth_email_changes (principal_id, audience, old_email, new_email, created_at, expires_at) VALUES ($1, 'staff', $2, $3, $4, $5)`, old, "old@example.invalid", "old-new@example.invalid", now.Add(-time.Hour), now.Add(-time.Second))
+	w.D.Exec(t, `INSERT INTO auth_email_changes (principal_id, audience, old_email, new_email, created_at, expires_at) VALUES ($1, 'staff', $2, $3, $4, $5)`, live, "live@example.invalid", "live-new@example.invalid", now.Add(-time.Hour), now.Add(time.Second))
+	if err := w.D.InGlobalSystemTx(w.Ctx, func(q db.Querier) error { return w.Svc.Prune(w.Ctx, q) }); err != nil {
+		t.Fatal(err)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_email_changes WHERE principal_id = $1`, old); n != 0 {
+		t.Errorf("the stale email change survived Prune: %d rows, want 0", n)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_email_changes WHERE principal_id = $1`, live); n != 1 {
+		t.Errorf("the live email change was pruned: %d rows, want 1", n)
 	}
 }
