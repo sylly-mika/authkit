@@ -159,6 +159,10 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 		"OIDC.Link":          func() error { _, err := w.Svc.OIDC.Link(ctx, q, c, "google", authkit.Meta{}); return err },
 		"OIDC.Unlink":        func() error { return w.Svc.OIDC.Unlink(ctx, q, c, "google", authkit.Meta{}) },
 		"OIDC.BeginReverify": func() error { _, err := w.Svc.OIDC.BeginReverify(ctx, q, c, "google"); return err },
+		"OIDC.FinishReverify": func() error {
+			_, err := w.Svc.OIDC.FinishReverify(ctx, q, c, oidc.Callback{State: "x", Code: "x"}, "x", authkit.Meta{})
+			return err
+		},
 		"Register.Start": func() error {
 			_, err := w.Svc.Register.Start(ctx, q, "staff", "new@example.invalid", nil)
 			return err
