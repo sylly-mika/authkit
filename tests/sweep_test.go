@@ -73,6 +73,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"Logout": func() error { _, err := w.Svc.Logout(ctx, q, c, authkit.Meta{}); return err },
+		"Forget": func() error { _, err := w.Svc.Forget(ctx, q, p); return err },
 		"Password.ChangePassword": func() error {
 			_, err := w.Svc.Password.ChangePassword(ctx, q, c, "the right password", "another password", authkit.Meta{})
 			return err
