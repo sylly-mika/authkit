@@ -21,6 +21,8 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
+	"github.com/sylly-mika/authkit/emailchange"
+	"github.com/sylly-mika/authkit/invite"
 	"github.com/sylly-mika/authkit/oidc"
 	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/passkey"
@@ -50,7 +52,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "RequireRecent", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.TicketEmail", "OIDC.Identities"}
+	sweptReads = []string{"Authenticate", "RequireRecent", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.TicketEmail", "OIDC.Identities", "Invite.List", "Invite.Open", "EmailChange.Pending"}
 	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Password.Hash", "Attach", "OIDC.Providers", "Register.Floor"}
 )
 
@@ -58,6 +60,8 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 	w := newWorld(t)
 	w.withOIDC(true)
 	w.withRegister(false)
+	w.withInvite(false)
+	w.withEmailChange()
 	id := w.User("ada@example.invalid", "the right password")
 	res := w.SignIn("ada@example.invalid", "the right password")
 	var n int
@@ -180,6 +184,39 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"Register.CountMail": func() error { _, err := w.Svc.Register.CountMail(ctx, q, "staff", "new@example.invalid"); return err },
+		"Invite.Invite": func() error {
+			_, err := w.Svc.Invite.Invite(ctx, q, invite.Request{Audience: "staff", Email: "new@example.invalid"})
+			return err
+		},
+		"Invite.Resend": func() error { _, err := w.Svc.Invite.Resend(ctx, q, uuid.New()); return err },
+		"Invite.Revoke": func() error { return w.Svc.Invite.Revoke(ctx, q, uuid.New()) },
+		"Invite.Mint":   func() error { _, err := w.Svc.Invite.Mint(ctx, q, uuid.New()); return err },
+		"Invite.Accept": func() error {
+			_, err := w.Svc.Invite.Accept(ctx, q, "x", "a long enough password", nil, authkit.Meta{})
+			return err
+		},
+		"Invite.AcceptSignedIn": func() error {
+			_, err := w.Svc.Invite.AcceptSignedIn(ctx, q, c, "x", authkit.Meta{})
+			return err
+		},
+		"Invite.AcceptOIDC": func() error {
+			_, err := w.Svc.Invite.AcceptOIDC(ctx, q, "x", "x", nil, authkit.Meta{})
+			return err
+		},
+		"EmailChange.Start": func() error {
+			_, err := w.Svc.EmailChange.Start(ctx, q, c, "new@example.invalid")
+			return err
+		},
+		"EmailChange.StartFor": func() error {
+			_, err := w.Svc.EmailChange.StartFor(ctx, q, p, "staff", "new@example.invalid")
+			return err
+		},
+		"EmailChange.Mint": func() error { _, err := w.Svc.EmailChange.Mint(ctx, q, uuid.New()); return err },
+		"EmailChange.Confirm": func() error {
+			_, err := w.Svc.EmailChange.Confirm(ctx, q, "x", authkit.Meta{})
+			return err
+		},
+		"EmailChange.Cancel": func() error { return w.Svc.EmailChange.Cancel(ctx, q, p) },
 	}
 	for name, call := range calls {
 		n = 0
@@ -190,7 +227,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			t.Errorf("%s ran %d statements on a bare connection before refusing it", name, n)
 		}
 	}
-	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module](), "Factors.": reflect.TypeFor[*secondfactor.Module](), "OIDC.": reflect.TypeFor[*oidc.Module](), "Register.": reflect.TypeFor[*register.Module]()} {
+	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module](), "Factors.": reflect.TypeFor[*secondfactor.Module](), "OIDC.": reflect.TypeFor[*oidc.Module](), "Register.": reflect.TypeFor[*register.Module](), "Invite.": reflect.TypeFor[*invite.Module](), "EmailChange.": reflect.TypeFor[*emailchange.Module]()} {
 		for i := range typ.NumMethod() {
 			name := prefix + typ.Method(i).Name
 			if _, swept := calls[name]; !swept && !slices.Contains(sweptReads, name) && !slices.Contains(sweptPure, name) {
