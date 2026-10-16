@@ -60,7 +60,7 @@ func (s *Service) ListEvents(ctx context.Context, q db.Querier, principal uuid.U
 	return events.List(ctx, q, principal, exclude, limit, offset)
 }
 
-var revokeReasons = []string{ReasonLogout, ReasonUser, ReasonPasswordChanged, ReasonPasswordReset, ReasonReuseDetected, ReasonAdmin, ReasonPasskeyRemoved}
+var revokeReasons = []string{ReasonLogout, ReasonUser, ReasonPasswordChanged, ReasonPasswordReset, ReasonReuseDetected, ReasonAdmin, ReasonPasskeyRemoved, ReasonIdentityRemoved}
 
 // RevokeAllSessions ends every open session of the principal for reason,
 // one of the revoke reasons (ReasonAdmin for an admin's action), and logs

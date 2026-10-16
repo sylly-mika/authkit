@@ -51,8 +51,8 @@ func (s *Service) core() *Core {
 	return &Core{s: s}
 }
 
-func (s *Service) gateMethods(ctx context.Context, q db.Querier, id uuid.UUID, f FactorKind) ([]FactorKind, bool, error) {
-	if f == FactorPasskey {
+func (s *Service) gateMethods(ctx context.Context, q db.Querier, id uuid.UUID, f FactorKind, skip bool) ([]FactorKind, bool, error) {
+	if f == FactorPasskey || (f == FactorOIDC && skip) {
 		return nil, false, nil
 	}
 	kinds, err := factor.ConfirmedKinds(ctx, q, id)
@@ -90,7 +90,7 @@ func (c *Core) SignIn(ctx context.Context, q db.Querier, a *Attempt, p Principal
 		}
 		return Result{Refusal: refusal.Err}, nil
 	}
-	methods, off, err := s.gateMethods(ctx, q, p.ID, f)
+	methods, off, err := s.gateMethods(ctx, q, p.ID, f, a.skip)
 	if err != nil {
 		return Result{}, err
 	}
@@ -103,7 +103,11 @@ func (c *Core) SignIn(ctx context.Context, q db.Querier, a *Attempt, p Principal
 		}
 	}
 	if len(methods) > 0 {
-		return s.issueSecondStep(ctx, q, a.src, p, a.aud, "login", s.throttleKey(a.key), methods, adm.ScopeID, a.m, a.now)
+		key := a.key
+		if !a.keyed {
+			key = Normalize(p.Login)
+		}
+		return s.issueSecondStep(ctx, q, a.src, p, a.aud, "login", s.throttleKey(key), methods, adm.ScopeID, a.m, a.now)
 	}
 	res, err := s.openSession(ctx, q, p, a.aud, adm, a.m, a.now, sessionFactor(f))
 	if err != nil {
@@ -123,7 +127,7 @@ func (c *Core) SignIn(ctx context.Context, q db.Querier, a *Attempt, p Principal
 
 func (c *Core) signInReset(ctx context.Context, q db.Querier, a *Attempt, p Principal, ev events.Event) (Result, error) {
 	s := c.s
-	methods, off, err := s.gateMethods(ctx, q, p.ID, FactorPassword)
+	methods, off, err := s.gateMethods(ctx, q, p.ID, FactorPassword, false)
 	if err != nil {
 		return Result{}, err
 	}

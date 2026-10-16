@@ -6,15 +6,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// FactorKind names a second factor: a stored factor, a recovery code, or a passkey sign-in.
+// FactorKind names a second factor: a stored factor, a recovery code, or a passkey or OIDC sign-in.
 type FactorKind string
 
-// The factor kinds. FactorPasskey only ever names how a session was signed in.
+// The factor kinds. FactorPasskey and FactorOIDC only ever name how a session was signed in.
 const (
 	FactorTOTP     FactorKind = "totp"
 	FactorEmail    FactorKind = "email"
 	FactorRecovery FactorKind = "recovery"
 	FactorPasskey  FactorKind = "passkey"
+	FactorOIDC     FactorKind = "oidc"
 )
 
 // FactorStatus is which second factors a principal has turned on and how many unused recovery codes remain.

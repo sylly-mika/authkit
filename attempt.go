@@ -16,6 +16,7 @@ type Attempt struct {
 	attempt
 	c      *Core
 	keyed  bool
+	skip   bool
 	src    string
 	commit func(ctx context.Context, q db.Querier) error
 }
@@ -95,6 +96,9 @@ func (a *Attempt) Refuse(ctx context.Context, q db.Querier, result string, refus
 func (a *Attempt) Commit(fn func(ctx context.Context, q db.Querier) error) {
 	a.commit = fn
 }
+
+// SkipSecondFactor makes SignIn of a FactorOIDC attempt open the session without the second step, as a passkey does.
+func (a *Attempt) SkipSecondFactor() { a.skip = true }
 
 // Now is the time the attempt began; its writes use it.
 func (a *Attempt) Now() time.Time { return a.now }

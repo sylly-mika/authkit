@@ -289,11 +289,15 @@ const retention = 30 * 24 * time.Hour
 
 const ceremonyRetention = time.Hour
 
+const mailCountRetention = 48 * time.Hour
+
 // Prune deletes what no flow reads any more: throttle counters
 // whose window and lock have passed, sessions and one-time links dead for 30
-// days, passkey ceremonies and second-step challenges an hour past their
-// expiry, and sign-in events older than EventRetention unless it is negative.
-// The app's worker runs it with no workspace bound.
+// days, passkey and OIDC ceremonies and second-step challenges an hour past
+// their expiry (OIDC ceremonies also an hour after their use), registrations
+// past their expiry, mail counts 48 hours after their window began, and
+// sign-in events older than EventRetention unless it is negative. The app's
+// worker runs it with no workspace bound.
 func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
@@ -313,6 +317,15 @@ func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 	}
 	// WHY: the same DELETE as ceremony.Prune, so the core does not import the passkey ceremony package.
 	if _, err := q.Exec(ctx, `DELETE FROM auth_passkey_ceremonies WHERE expires_at < $1`, now.Add(-ceremonyRetention)); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM auth_ceremonies WHERE expires_at < $1 OR spent_at < $1`, now.Add(-ceremonyRetention)); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM auth_registrations WHERE expires_at < $1`, now); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM auth_mail_counts WHERE window_started_at < $1`, now.Add(-mailCountRetention)); err != nil {
 		return err
 	}
 	if _, err := factor.PruneChallenges(ctx, q, now.Add(-ceremonyRetention)); err != nil {

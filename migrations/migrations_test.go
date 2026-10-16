@@ -27,6 +27,16 @@ func TestAllIsContiguousAndComplete(t *testing.T) {
 	}
 }
 
+func TestVersionIsSix(t *testing.T) {
+	all := migrations.All()
+	if migrations.Version != 6 || len(all) != 6 {
+		t.Fatalf("Version = %d with %d migrations, want 6 and 6", migrations.Version, len(all))
+	}
+	if all[4].Name != "oidc" || all[5].Name != "register" {
+		t.Errorf("migrations 5 and 6 are %q and %q, want oidc and register", all[4].Name, all[5].Name)
+	}
+}
+
 func TestAllRefusesTwoNamesUnderOneID(t *testing.T) {
 	fsys := fstest.MapFS{
 		"0001_a.up.sql":   {Data: []byte("SELECT 1;")},
@@ -141,7 +151,7 @@ func TestRenderInWithoutASchemaKeepsTheBytes(t *testing.T) {
 
 func TestRenderInQualifiesEveryTableName(t *testing.T) {
 	const schema = "kit_ns"
-	counts := []struct{ id, up, down int }{{1, 14, 6}, {2, 2, 2}, {3, 11, 7}, {4, 9, 7}}
+	counts := []struct{ id, up, down int }{{1, 14, 6}, {2, 2, 2}, {3, 11, 7}, {4, 9, 7}, {5, 11, 9}, {6, 3, 3}}
 	all := migrations.All()
 	for _, c := range counts {
 		m := all[c.id-1]

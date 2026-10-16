@@ -25,6 +25,9 @@ func TestModuleDeps(t *testing.T) {
 		{"password", modulePath + "/password", heavy, "golang.org/x/crypto/argon2"},
 		{"passkey", modulePath + "/passkey", []string{"github.com/pquerna/otp", "github.com/coreos/go-oidc", "go-jose"}, "github.com/go-webauthn/webauthn/webauthn"},
 		{"secondfactor", modulePath + "/secondfactor", []string{"github.com/go-webauthn/", "github.com/coreos/go-oidc", "go-jose"}, "github.com/pquerna/otp/totp"},
+		{"oidc", modulePath + "/oidc", []string{"github.com/go-webauthn/", "github.com/pquerna/otp"}, "github.com/coreos/go-oidc/v3/oidc"},
+		{"register", modulePath + "/register", heavy, "golang.org/x/crypto/argon2"},
+		{"authkittest", modulePath + "/authkittest", []string{"github.com/coreos/go-oidc", "go-jose"}, "github.com/lib/pq"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

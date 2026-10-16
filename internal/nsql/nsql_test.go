@@ -33,6 +33,22 @@ func TestRewriteLeavesNames(t *testing.T) {
 			"SELECT myauth_sessions, auth_other FROM auth_tokens",
 			"SELECT myauth_sessions, auth_other FROM kit_ns.auth_tokens",
 		},
+		{
+			"CREATE TABLE auth_registrations (id uuid, CONSTRAINT auth_registrations_audience_email_key UNIQUE (audience, email))",
+			"CREATE TABLE kit_ns.auth_registrations (id uuid, CONSTRAINT auth_registrations_audience_email_key UNIQUE (audience, email))",
+		},
+		{
+			"INSERT INTO auth_mail_counts (audience) VALUES ('auth_mail_counts') ON CONFLICT ON CONSTRAINT auth_mail_counts_pkey DO NOTHING",
+			"INSERT INTO kit_ns.auth_mail_counts (audience) VALUES ('auth_mail_counts') ON CONFLICT ON CONSTRAINT auth_mail_counts_pkey DO NOTHING",
+		},
+		{
+			"CREATE INDEX idx_auth_ceremonies_expires_at ON auth_ceremonies (expires_at);",
+			"CREATE INDEX idx_auth_ceremonies_expires_at ON kit_ns.auth_ceremonies (expires_at);",
+		},
+		{
+			"ALTER TABLE auth_identities ADD CONSTRAINT auth_identities_subject UNIQUE (provider, subject)",
+			"ALTER TABLE kit_ns.auth_identities ADD CONSTRAINT auth_identities_subject UNIQUE (provider, subject)",
+		},
 	}
 	for _, c := range cases {
 		if got := Rewrite(K, c.in); got != c.want {
@@ -45,7 +61,7 @@ func TestRewriteQualifiesEveryTable(t *testing.T) {
 	names := []string{
 		"schema", "sessions", "tokens", "events", "throttle", "credentials", "passkeys",
 		"passkey_ceremonies", "second_factors", "recovery_codes", "second_step_challenges",
-		"email_codes", "ceremonies", "identities",
+		"email_codes", "ceremonies", "identities", "registrations", "mail_counts",
 	}
 	for _, n := range names {
 		in := "DELETE FROM auth_" + n + " WHERE true"

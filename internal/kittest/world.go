@@ -19,8 +19,10 @@ import (
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/nsql"
+	"github.com/sylly-mika/authkit/oidc"
 	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
+	"github.com/sylly-mika/authkit/register"
 	"github.com/sylly-mika/authkit/secondfactor"
 )
 
@@ -34,14 +36,18 @@ type Rules struct {
 	Password password.Config
 	Passkeys passkey.Rules
 	Factors  secondfactor.Rules
+	OIDC     oidc.Rules
+	Register register.Rules
 }
 
-// Kit is the Service under test and its password, passkey and second-factor modules.
+// Kit is the Service under test and its modules; OIDC and Register are nil unless their rules are set.
 type Kit struct {
 	*authkit.Service
 	Password *password.Module
 	Passkeys *passkey.Module
 	Factors  *secondfactor.Module
+	OIDC     *oidc.Module
+	Register *register.Module
 }
 
 // World is one test's Kit and the fixtures it runs over.
@@ -138,6 +144,16 @@ func newKit(r Rules, p authkit.Principals, factors bool) (*Kit, error) {
 	kit := &Kit{Service: svc, Password: pw, Passkeys: pk}
 	if factors {
 		if kit.Factors, err = secondfactor.New(svc, r.Factors); err != nil {
+			return nil, err
+		}
+	}
+	if len(r.OIDC.Providers) > 0 {
+		if kit.OIDC, err = oidc.New(svc, r.OIDC); err != nil {
+			return nil, err
+		}
+	}
+	if r.Register.Create != nil {
+		if kit.Register, err = register.New(svc, pw, r.Register); err != nil {
 			return nil, err
 		}
 	}
