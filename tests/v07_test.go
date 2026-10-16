@@ -125,7 +125,6 @@ func (w *world) changeEmail(c *authkit.Claims, to string) emailchange.Changed {
 	return ch
 }
 
-// erase is the app's erasure: Forget, then a tombstone in place of the user row.
 func (w *world) erase(id uuid.UUID, login string) {
 	w.T.Helper()
 	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {

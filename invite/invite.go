@@ -257,7 +257,6 @@ func (m *Module) List(ctx context.Context, q db.Querier, aud authkit.Audience, s
 	return out, total, nil
 }
 
-// held returns the principal holding login for aud, or nil when none does.
 func (m *Module) held(ctx context.Context, q db.Querier, login string, aud authkit.Audience) (*authkit.Principal, error) {
 	p, err := m.principals.Lookup(ctx, q, login, aud)
 	switch {
@@ -296,17 +295,14 @@ func scanInvite(r interface{ Scan(dest ...any) error }, now time.Time) (Invite, 
 	return inv, nil
 }
 
-// readRow returns the invite row id, or db.ErrNoRows.
 func (m *Module) readRow(ctx context.Context, q db.Querier, id uuid.UUID) (Invite, error) {
 	return scanInvite(q.QueryRow(ctx, "SELECT "+cols+" FROM auth_invites WHERE id = $1", id), m.core.Now())
 }
 
-// lockRow returns the invite row id and locks it until the transaction ends.
 func (m *Module) lockRow(ctx context.Context, q db.Querier, id uuid.UUID) (Invite, error) {
 	return scanInvite(q.QueryRow(ctx, "SELECT "+cols+" FROM auth_invites WHERE id = $1 FOR UPDATE", id), m.core.Now())
 }
 
-// void closes an open invite and revokes its link.
 func (m *Module) void(ctx context.Context, q db.Querier, id uuid.UUID) error {
 	if _, err := q.Exec(ctx, `UPDATE auth_invites SET revoked_at = $2 WHERE id = $1 AND accepted_at IS NULL AND revoked_at IS NULL`,
 		id, m.core.Now()); err != nil {
