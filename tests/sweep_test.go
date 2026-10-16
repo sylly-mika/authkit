@@ -50,7 +50,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "RequireRecent", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.Identities"}
+	sweptReads = []string{"Authenticate", "RequireRecent", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.TicketEmail", "OIDC.Identities"}
 	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Password.Hash", "Attach", "OIDC.Providers", "Register.Floor"}
 )
 

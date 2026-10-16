@@ -102,6 +102,20 @@ func (e *acctEnv) ticket(raw string) (*oidc.SignUp, error) {
 	return su, err
 }
 
+func (e *acctEnv) ticketEmail(raw string) (string, bool, error) {
+	e.w.T.Helper()
+	var email string
+	var private bool
+	var terr error
+	if err := e.w.D.InAuthTx(e.w.Ctx, func(q db.Querier) error {
+		email, private, terr = e.m.TicketEmail(e.w.Ctx, q, raw)
+		return nil
+	}); err != nil {
+		e.w.T.Fatalf("InAuthTx: %v", err)
+	}
+	return email, private, terr
+}
+
 func (e *acctEnv) link(cl *authkit.Claims, provider string) (oidc.Redirect, error) {
 	e.w.T.Helper()
 	var r oidc.Redirect
@@ -303,6 +317,67 @@ func TestTicketExpired(t *testing.T) {
 	if n := e.sessions(id); n != 0 {
 		t.Fatalf("sessions = %d, want 0", n)
 	}
+}
+
+func TestTicketEmail(t *testing.T) {
+	t.Run("google", func(t *testing.T) {
+		e := acctSetup(t)
+		_, su := e.signIn("google", e.gUser("g-ada", "Ada@Example.invalid"))
+		for range 2 {
+			email, private, err := e.ticketEmail(su.Ticket)
+			if err != nil || email != "Ada@Example.invalid" || private {
+				t.Fatalf("TicketEmail = %q, %v, %v; want Ada@Example.invalid, false, nil", email, private, err)
+			}
+		}
+		const open = "SELECT count(*) FROM auth_ceremonies WHERE kind = 'signup' AND spent_at IS NULL"
+		if n := e.w.Count(open); n != 1 {
+			t.Fatalf("open tickets after reads = %d, want 1", n)
+		}
+		id := e.w.User("ada@example.invalid", "")
+		res, err := e.signUp(su.Ticket, id, acctAud)
+		if err != nil || res.Session == nil {
+			t.Fatalf("SignUp = %+v, %v; want a session", res, err)
+		}
+	})
+	t.Run("apple", func(t *testing.T) {
+		e := acctSetup(t)
+		relay := "x7@privaterelay.appleid.com"
+		_, su := e.signIn("apple", oidcfake.User{Subject: "a-x7", Email: relay, EmailVerified: true, PrivateEmail: true})
+		email, private, err := e.ticketEmail(su.Ticket)
+		if err != nil || email != relay || !private {
+			t.Fatalf("TicketEmail = %q, %v, %v; want %s, true, nil", email, private, err, relay)
+		}
+	})
+}
+
+func TestTicketEmailUnknown(t *testing.T) {
+	check := func(t *testing.T, e *acctEnv, raw string) {
+		t.Helper()
+		email, private, err := e.ticketEmail(raw)
+		if !errors.Is(err, oidc.ErrTicketUnknown) || email != "" || private {
+			t.Fatalf("TicketEmail = %q, %v, %v; want \"\", false, ErrTicketUnknown", email, private, err)
+		}
+		if err != nil && strings.Contains(err.Error(), raw) {
+			t.Fatalf("error text contains the ticket: %v", err)
+		}
+	}
+	t.Run("unknown", func(t *testing.T) {
+		check(t, acctSetup(t), "no-such-ticket")
+	})
+	t.Run("spent", func(t *testing.T) {
+		e := acctSetup(t)
+		_, su := e.signIn("google", e.gUser("g-ada", "ada@example.invalid"))
+		if _, err := e.signUp(su.Ticket, e.w.User("ada@example.invalid", ""), acctAud); err != nil {
+			t.Fatalf("SignUp: %v", err)
+		}
+		check(t, e, su.Ticket)
+	})
+	t.Run("expired", func(t *testing.T) {
+		e := acctSetup(t)
+		_, su := e.signIn("google", e.gUser("g-ada", "ada@example.invalid"))
+		e.w.Clock.Advance(10 * time.Minute)
+		check(t, e, su.Ticket)
+	})
 }
 
 func TestSignUpAdmitRefusal(t *testing.T) {
