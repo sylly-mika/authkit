@@ -88,7 +88,8 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.Svc.Password.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
 			return err
 		},
-		"Password.SetHash": func() error { return w.Svc.Password.SetHash(ctx, q, p, password.Hash{}) },
+		"Password.SetHash":  func() error { return w.Svc.Password.SetHash(ctx, q, p, password.Hash{}) },
+		"Password.Reverify": func() error { _, err := w.Svc.Password.Reverify(ctx, q, c, "x", authkit.Meta{}); return err },
 		"Password.VerifyPassword": func() error {
 			_, err := w.Svc.Password.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{})
 			return err
