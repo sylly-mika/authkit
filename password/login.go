@@ -86,7 +86,7 @@ func (s *Module) Login(ctx context.Context, q db.Querier, aud authkit.Audience, 
 	return c.SignIn(ctx, q, a, p, authkit.FactorPassword)
 }
 
-// WHY: every login spends one verification, against the dummy when there is no hash, so unknown logins take as long as known ones.
+// WHY: every login spends one verification, against the dummy when there is no hash, so an unknown login takes as long as a known argon2id one.
 func (s *Module) verify(ctx context.Context, hash string, has bool, pw string) (bool, error) {
 	if s.onVerify != nil {
 		s.onVerify()
