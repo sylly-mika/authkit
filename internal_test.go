@@ -8,7 +8,7 @@ import (
 func TestWithDefaultsAreTheSpecs(t *testing.T) {
 	c := withDefaults(Config{})
 	if c.Transport != TransportBearer || c.AccessTTL != 15*time.Minute || c.RefreshTTL != 0 ||
-		c.Session != (SessionRules{IdleTTL: 30 * time.Minute, AbsoluteTTL: 12 * time.Hour, RotateEvery: 15 * time.Minute}) ||
+		c.Session.IdleTTL != 30*time.Minute || c.Session.AbsoluteTTL != 12*time.Hour || c.Session.RotateEvery != 15*time.Minute || c.Session.AbsoluteTTLFor != nil ||
 		c.ReuseGrace != 30*time.Second ||
 		c.Throttle != (Throttle{Failures: 5, Window: 15 * time.Minute, Lockout: 15 * time.Minute}) ||
 		c.Events != (EventRules{}) ||

@@ -32,6 +32,8 @@ type SessionRules struct {
 	// AbsoluteTTL ends a session this long after its sign-in, however busy.
 	// Zero is 12 hours; negative is no cap.
 	AbsoluteTTL time.Duration
+	// AbsoluteTTLFor is AbsoluteTTL per audience: negative is no cap, zero is refused, and an absent audience uses AbsoluteTTL.
+	AbsoluteTTLFor map[Audience]time.Duration
 	// RotateEvery (Session mode) replaces the session token once it is this
 	// old. Zero is 15 minutes; negative never rotates.
 	RotateEvery time.Duration
@@ -157,19 +159,45 @@ func (c Config) check() error {
 }
 
 func (c Config) checkSessions() error {
-	idle := map[string]time.Duration{"Session.IdleTTL": c.Session.IdleTTL}
+	s := c.Session
 	for aud, d := range c.RefreshTTLFor {
 		if d <= 0 {
 			return fmt.Errorf("authkit: Config.RefreshTTLFor[%q] is not positive", aud)
 		}
-		idle[fmt.Sprintf("RefreshTTLFor[%q]", aud)] = d
 	}
-	for field, d := range idle {
-		if s := c.Session; s.AbsoluteTTL > 0 && d > s.AbsoluteTTL {
-			return fmt.Errorf("authkit: Config.%s (%v) exceeds Session.AbsoluteTTL (%v)", field, d, s.AbsoluteTTL)
+	for aud, d := range s.AbsoluteTTLFor {
+		if d == 0 {
+			return fmt.Errorf("authkit: Config.Session.AbsoluteTTLFor[%q] is zero; set a positive cap, or a negative one for none", aud)
 		}
-		if s := c.Session; c.Transport == TransportSession && s.RotateEvery > 0 && s.RotateEvery >= d {
-			return fmt.Errorf("authkit: Config.Session.RotateEvery (%v) must be shorter than %s (%v)", s.RotateEvery, field, d)
+	}
+	type pair struct {
+		idleField, limitField string
+		idle, limit           time.Duration
+	}
+	pairs := []pair{{"Session.IdleTTL", "Session.AbsoluteTTL", s.IdleTTL, s.AbsoluteTTL}}
+	auds := map[Audience]bool{}
+	for aud := range c.RefreshTTLFor {
+		auds[aud] = true
+	}
+	for aud := range s.AbsoluteTTLFor {
+		auds[aud] = true
+	}
+	for aud := range auds {
+		p := pairs[0]
+		if d, ok := c.RefreshTTLFor[aud]; ok {
+			p.idleField, p.idle = fmt.Sprintf("RefreshTTLFor[%q]", aud), d
+		}
+		if d, ok := s.AbsoluteTTLFor[aud]; ok {
+			p.limitField, p.limit = fmt.Sprintf("Session.AbsoluteTTLFor[%q]", aud), d
+		}
+		pairs = append(pairs, p)
+	}
+	for _, p := range pairs {
+		if p.limit > 0 && p.idle > p.limit {
+			return fmt.Errorf("authkit: Config.%s (%v) exceeds %s (%v)", p.idleField, p.idle, p.limitField, p.limit)
+		}
+		if c.Transport == TransportSession && s.RotateEvery > 0 && s.RotateEvery >= p.idle {
+			return fmt.Errorf("authkit: Config.Session.RotateEvery (%v) must be shorter than %s (%v)", s.RotateEvery, p.idleField, p.idle)
 		}
 	}
 	return nil
