@@ -15,12 +15,13 @@ import (
 	"github.com/sylly-mika/authkit/internal/token"
 )
 
-// Kind is the purpose of a ceremony: register or login.
+// Kind is the purpose of a ceremony: register, login or reverify.
 type Kind string
 
 const (
 	KindRegister Kind = "register"
 	KindLogin    Kind = "login"
+	KindReverify Kind = "reverify"
 )
 
 // Create saves a ceremony's SessionData under the hash of a new random id and returns the id and its expiry.
