@@ -794,6 +794,10 @@ audience: sessions, password, passkeys, second factors, OIDC identities, reset
 links, invites to its address, its pending registration and email change, and
 its throttle counters. Run it in one transaction:
 
+Sign-in log rows are not deleted: they are unlinked (no principal, no session)
+and kept until `Config.EventRetention`, then pruned. A negative retention
+deletes them at once.
+
 1. Lock your principal row `FOR UPDATE`.
 2. Call `kit.Forget`.
 3. Delete or anonymise your row.
@@ -862,7 +866,10 @@ only after the new mailbox confirms a link.
    `authkit.ErrTokenGone`, `emailchange.ErrStale` (the login changed since
    `Start`) and `emailchange.ErrAddressHeld`. An error from `Change` is
    returned: roll back. Mail `ch.Old` that the address changed. The link alone
-   confirms, since the new mailbox may be on another device.
+   confirms, since the new mailbox may be on another device. `Start` and
+   `Confirm` lock rows in opposite order, so two of them on one principal at
+   the same moment can deadlock: PostgreSQL reports `40P01` and rolls one
+   back. Retry that transaction.
 
 `Pending(ctx, q, p)` reads the pending change (nil when none) and
 `Cancel(ctx, q, p)` drops it. OIDC identities stay linked by subject; passkey

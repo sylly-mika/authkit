@@ -179,6 +179,28 @@ func TestConfirmOnce(t *testing.T) {
 }
 
 func TestConfirmUnknown(t *testing.T) {
+	t.Run("never issued", func(t *testing.T) {
+		f := newFixture(t)
+		raw := f.link(f.session())
+		other := "A" + raw[1:]
+		if raw[0] == 'A' {
+			other = "B" + raw[1:]
+		}
+		ch, err := f.confirm(other)
+		if err != nil || ch.Refusal != authkit.ErrTokenUnknown {
+			t.Fatalf("Confirm of a never-issued link = refusal %v, err %v; want ErrTokenUnknown", ch.Refusal, err)
+		}
+		f.assertUnchanged()
+		if p := f.pending(); p == nil || p.New != addr {
+			t.Fatalf("pending = %+v; want the change still pending", p)
+		}
+		if ch, err := f.confirm(raw); err != nil || ch.Refusal != nil {
+			t.Fatalf("Confirm of the issued link = refusal %v, err %v; want a change", ch.Refusal, err)
+		}
+		if f.login() != addr {
+			t.Fatalf("login %q; want %q after the issued link", f.login(), addr)
+		}
+	})
 	t.Run("expired", func(t *testing.T) {
 		f := newFixture(t)
 		raw := f.link(f.session())
@@ -327,6 +349,28 @@ func TestConfirmThrottleMoves(t *testing.T) {
 	}
 	if got := f.Count("SELECT count(*) FROM auth_throttle WHERE login = $1", ada); got != 0 {
 		t.Fatalf("%d throttle rows still under %q; want none", got, ada)
+	}
+}
+
+func TestConfirmKeepsTheLock(t *testing.T) {
+	f := newFixture(t)
+	cl := f.session()
+	raw := f.link(cl)
+	var lk authkit.ErrLocked
+	for i := 0; ; i++ {
+		if i == 50 {
+			t.Fatal("no ErrLocked under the old login within 50 wrong passwords")
+		}
+		if res := f.Login("staff", ada, "a wrong password"); errors.As(res.Refusal, &lk) {
+			break
+		}
+	}
+	if ch, err := f.confirm(raw); err != nil || ch.Refusal != nil {
+		t.Fatalf("Confirm = refusal %v, err %v; want a change", ch.Refusal, err)
+	}
+	res := f.Login("staff", addr, pw)
+	if !errors.As(res.Refusal, &lk) {
+		t.Fatalf("sign-in under the new login after the change = refusal %v; want ErrLocked", res.Refusal)
 	}
 }
 
