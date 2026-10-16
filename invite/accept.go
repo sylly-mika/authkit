@@ -89,7 +89,59 @@ func (m *Module) Accept(ctx context.Context, q db.Querier, raw, pw string, input
 // AcceptSignedIn spends the link for the signed-in principal that holds the invited address.
 // A refusal is Result.Refusal with a nil error: commit it. An error from Rules.Join is returned: roll back.
 func (m *Module) AcceptSignedIn(ctx context.Context, q db.Querier, cl *authkit.Claims, raw string, meta authkit.Meta) (authkit.Result, error) {
-	return authkit.Result{}, errors.New("todo")
+	in := q
+	q = m.core.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return authkit.Result{}, err
+	}
+	meta = meta.Clean()
+	now := m.core.Now()
+
+	inv, err := m.acceptLink(ctx, q, raw)
+	switch {
+	case refused(err):
+		return authkit.Result{Refusal: err}, nil
+	case err != nil:
+		return authkit.Result{}, err
+	}
+
+	sess, err := m.core.LockSession(ctx, q, cl, now)
+	switch {
+	case errors.Is(err, db.ErrNoRows):
+		return authkit.Result{Refusal: authkit.ErrSessionEnded}, nil
+	case err != nil:
+		return authkit.Result{}, err
+	}
+	holder, err := m.core.Principals().ByID(ctx, q, cl.Subject, authkit.Audience(sess.Audience))
+	if err != nil {
+		return authkit.Result{}, err
+	}
+	if sess.Audience != string(inv.Audience) || authkit.Normalize(holder.Login) != inv.Email {
+		return authkit.Result{Refusal: ErrOtherAccount}, nil
+	}
+	if m.r.Join == nil {
+		return authkit.Result{Refusal: ErrAddressHeld}, nil
+	}
+
+	refusal, err := m.checkAndSpend(ctx, in, q, raw, inv)
+	switch {
+	case err != nil:
+		return authkit.Result{}, err
+	case refusal != nil:
+		return authkit.Result{Refusal: refusal}, nil
+	}
+
+	if err := m.r.Join(ctx, in, inv.Pending, holder); err != nil {
+		return authkit.Result{}, err
+	}
+	if err := markAccepted(ctx, q, inv.ID, holder.ID, now); err != nil {
+		return authkit.Result{}, err
+	}
+	if err := m.core.Record(ctx, q, authkit.SourceInvite, authkit.Event{PrincipalID: &holder.ID, Audience: sess.Audience, Login: holder.Login,
+		Result: authkit.ResultInviteAccepted, IP: meta.IP, UserAgent: meta.UserAgent}); err != nil {
+		return authkit.Result{}, err
+	}
+	return authkit.Result{Principal: holder}, nil
 }
 
 func (m *Module) acceptLink(ctx context.Context, q db.Querier, raw string) (Invite, error) {

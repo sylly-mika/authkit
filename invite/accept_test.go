@@ -444,3 +444,140 @@ func TestAcceptOldLink(t *testing.T) {
 	f.noRaw(raw, res.Refusal)
 	f.noRaw(mail.Raw, again.Refusal)
 }
+
+func TestAcceptHeld(t *testing.T) {
+	f := newAccFixture(t, true)
+	id, tok, raw := f.invite(accAda)
+	adaID := f.User(accAda, accPW)
+	res := f.accept(raw, accPW)
+	if res.Refusal != invite.ErrSignInToAccept || res.Session != nil {
+		t.Fatalf("refusal %v; want the held address to need a sign-in", res.Refusal)
+	}
+	if len(f.created) != 0 || f.users(accAda) != 1 || f.creds() != 1 || f.sessions() != 0 {
+		t.Fatal("the held address gained a principal, a credential or a session")
+	}
+	if f.unspent(tok) != 1 || f.open(id) != 1 || f.events("registered") != 0 {
+		t.Fatal("a held address spent the link or accepted the invite")
+	}
+	cl := f.Claims(f.SignIn(accAda, accPW))
+	if r := f.signedIn(cl, raw); r.Refusal != nil || r.Principal.ID != adaID {
+		t.Fatalf("the signed-in holder got refusal %v; want the link to join it", r.Refusal)
+	}
+	f.noRaw(raw, res.Refusal)
+}
+
+func TestAcceptSignedIn(t *testing.T) {
+	f := newAccFixture(t, true)
+	adaID := f.User(accAda, accPW)
+	id, tok, raw := f.invite(accAda)
+	cl := f.Claims(f.SignIn(accAda, accPW))
+	n := f.sessions()
+	res := f.signedIn(cl, raw)
+	if res.Refusal != nil || res.Principal.ID != adaID {
+		t.Fatalf("refusal %v; want the holder joined", res.Refusal)
+	}
+	if res.Session != nil || res.Tokens != nil || res.SessionToken != "" {
+		t.Fatal("joining created a session or a token")
+	}
+	if f.sessions() != n {
+		t.Fatal("joining changed the sessions")
+	}
+	if len(f.joined) != 1 || f.joined[0] != adaID {
+		t.Fatalf("Join ran for %v; want the holder once", f.joined)
+	}
+	if f.acceptedBy(id, adaID) != 1 || f.used(tok) != 1 {
+		t.Fatal("the invite or the link was not accepted by the holder")
+	}
+	if got := f.trail(adaID); !strings.Contains(got, "invite_accepted/invite") {
+		t.Fatalf("audit trail %q; want the join recorded from the invite", got)
+	}
+	if len(f.created) != 0 {
+		t.Fatal("joining created a principal")
+	}
+	f.noRaw(raw, res.Refusal)
+}
+
+func TestAcceptSignedInOtherAccount(t *testing.T) {
+	f := newAccFixture(t, true)
+	f.User(accBob, accPW)
+	id, tok, raw := f.invite(accAda)
+	cl := f.Claims(f.SignIn(accBob, accPW))
+	res := f.signedIn(cl, raw)
+	if res.Refusal != invite.ErrOtherAccount {
+		t.Fatalf("refusal %v; want the other account refused", res.Refusal)
+	}
+	if f.unspent(tok) != 1 || f.open(id) != 1 || len(f.joined) != 0 || f.events("invite_accepted") != 0 {
+		t.Fatal("another account spent the link, joined or accepted the invite")
+	}
+	f.noRaw(raw, res.Refusal)
+}
+
+func TestAcceptSignedInOtherAudience(t *testing.T) {
+	f := newAccFixture(t, true)
+	f.User(accAda, accPW)
+	id, tok, raw := f.invite(accAda)
+	res := f.Login("client", accAda, accPW)
+	if res.Refusal != nil {
+		t.Fatalf("sign-in to client refused: %v", res.Refusal)
+	}
+	got := f.signedIn(f.Claims(res), raw)
+	if got.Refusal != invite.ErrOtherAccount {
+		t.Fatalf("refusal %v; want a session outside the invite's audience refused", got.Refusal)
+	}
+	if f.unspent(tok) != 1 || f.open(id) != 1 || len(f.joined) != 0 || f.events("invite_accepted") != 0 {
+		t.Fatal("a session outside the invite's audience spent the link or joined")
+	}
+	f.noRaw(raw, got.Refusal)
+}
+
+func TestAcceptSignedInEnded(t *testing.T) {
+	f := newAccFixture(t, true)
+	f.User(accAda, accPW)
+	id, tok, raw := f.invite(accAda)
+	cl := f.Claims(f.SignIn(accAda, accPW))
+	f.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return f.Svc.Logout(f.Ctx, q, cl, accMeta)
+	})
+	res := f.signedIn(cl, raw)
+	if res.Refusal != authkit.ErrSessionEnded {
+		t.Fatalf("refusal %v; want the ended session refused", res.Refusal)
+	}
+	if f.unspent(tok) != 1 || f.open(id) != 1 || len(f.joined) != 0 || f.events("invite_accepted") != 0 {
+		t.Fatal("an ended session spent the link or joined")
+	}
+	f.noRaw(raw, res.Refusal)
+}
+
+func TestAcceptSignedInNoJoin(t *testing.T) {
+	f := newAccFixture(t, false)
+	id, tok, raw := f.invite(accAda)
+	f.User(accAda, accPW)
+	cl := f.Claims(f.SignIn(accAda, accPW))
+	res := f.signedIn(cl, raw)
+	if res.Refusal != invite.ErrAddressHeld {
+		t.Fatalf("refusal %v; want the held address refused without a Join", res.Refusal)
+	}
+	if f.unspent(tok) != 1 || f.open(id) != 1 || f.events("invite_accepted") != 0 {
+		t.Fatal("a module without Join spent the link or accepted the invite")
+	}
+	f.noRaw(raw, res.Refusal)
+}
+
+func TestAcceptSignedInCheckVoids(t *testing.T) {
+	f := newAccFixture(t, true)
+	f.User(accAda, accPW)
+	id, tok, raw := f.invite(accAda)
+	cl := f.Claims(f.SignIn(accAda, accPW))
+	f.checkErr = errAccCheck
+	res := f.signedIn(cl, raw)
+	if res.Refusal != errAccCheck {
+		t.Fatalf("refusal %v; want the Check refusal", res.Refusal)
+	}
+	if f.revokedRow(id) != 1 || f.revokedTok(tok) != 1 {
+		t.Fatal("a Check refusal did not void the invite and its link")
+	}
+	if len(f.joined) != 0 || f.events("invite_accepted") != 0 {
+		t.Fatal("a Check refusal joined the holder")
+	}
+	f.noRaw(raw, res.Refusal)
+}
