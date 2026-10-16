@@ -22,7 +22,7 @@ type Rules struct {
 	SetupTTL time.Duration
 	// ResendEvery is the least time between two emailed codes. Zero is 60 seconds.
 	ResendEvery time.Duration
-	// Reauth is how recent a sign-in must be to change sign-in methods. Zero is 5 minutes.
+	// Reauth is how recent a sign-in must be to change sign-in methods. Zero is Config.Recent.
 	Reauth time.Duration
 	// MaxTries is how many wrong codes end a second step or an emailed code. Zero is 5.
 	MaxTries int
@@ -40,6 +40,7 @@ type Module struct {
 
 // New attaches second factors to svc. Zero fields of r take their defaults. With a Key, New gives svc its second-step verifier; with an empty Key every method answers authkit.ErrSecondFactorsOff and a sign-in that needs a second factor fails closed. New refuses rules out of range, and answers authkit.ErrAttached when svc already has second factors.
 func New(svc *authkit.Service, r Rules) (*Module, error) {
+	inherit := r.Reauth == 0
 	r = withDefaults(r)
 	if err := r.check(); err != nil {
 		return nil, err
@@ -47,6 +48,9 @@ func New(svc *authkit.Service, r Rules) (*Module, error) {
 	core, err := svc.Attach("secondfactor")
 	if err != nil {
 		return nil, err
+	}
+	if inherit {
+		r.Reauth = core.Config().Recent
 	}
 	m := &Module{core: core, r: r}
 	if len(r.Key) > 0 {

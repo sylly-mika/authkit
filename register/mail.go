@@ -11,7 +11,7 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
-	"github.com/sylly-mika/authkit/onetime"
+	"github.com/sylly-mika/authkit/internal/pending"
 )
 
 // Mail is what the app's worker puts in the activation email.
@@ -80,17 +80,12 @@ func (m *Module) Mint(ctx context.Context, q db.Querier, tokenID uuid.UUID) (Mai
 	case err != nil:
 		return Mail{}, err
 	}
-	mt, err := m.links.Mint(ctx, q, tokenID)
-	var gone onetime.ErrGone
+	mt, ok, err := pending.Mint(ctx, q, m.links, tokenID, expires)
 	switch {
-	case errors.Is(err, onetime.ErrUnknown), errors.As(err, &gone):
-		return Mail{}, ErrNothingToSend
 	case err != nil:
 		return Mail{}, err
+	case !ok:
+		return Mail{}, ErrNothingToSend
 	}
-	expiresAt := mt.ExpiresAt
-	if expires.Before(expiresAt) {
-		expiresAt = expires
-	}
-	return Mail{To: email, Raw: mt.Raw, Payload: json.RawMessage(payload), ExpiresAt: expiresAt}, nil
+	return Mail{To: email, Raw: mt.Raw, Payload: json.RawMessage(payload), ExpiresAt: mt.ExpiresAt}, nil
 }

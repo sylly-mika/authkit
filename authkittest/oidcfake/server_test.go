@@ -737,3 +737,77 @@ func TestFakeTokenOverrides(t *testing.T) {
 		t.Error("an HS256 token verifies against the provider's keys")
 	}
 }
+
+func TestFakeAuthTime(t *testing.T) {
+	a := at.Add(-time.Minute)
+	cases := []struct {
+		name   string
+		user   User
+		want   any
+		absent bool
+	}{
+		{name: "set", user: User{Subject: "g-1", Email: "ada@example.invalid", EmailVerified: true, AuthTime: &a}, want: float64(a.Unix())},
+		{name: "nil", user: User{Subject: "g-1", Email: "ada@example.invalid", EmailVerified: true}, absent: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newServer(t, Google)
+			p := s.Provider(redirect)
+			r, verifier, _ := begin(t, s, p)
+			cb := s.Authorize(t, r, tc.user)
+			tok, err := exchange(t, s, p, p.AuthStyle, cb.Code, verifier)
+			if err != nil {
+				t.Fatalf("exchange: %v", err)
+			}
+			idToken, _ := tok.Extra("id_token").(string)
+			_, claims, _ := parts(t, idToken)
+			got, ok := claims["auth_time"]
+			if tc.absent {
+				if ok {
+					t.Errorf("auth_time = %v, want no claim", got)
+				}
+				return
+			}
+			if !ok || got != tc.want {
+				t.Errorf("auth_time = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFakeRecordsPrompt(t *testing.T) {
+	s := newServer(t, Google)
+	p := s.Provider(redirect)
+	if s.LastAuthorize() != nil {
+		t.Fatalf("LastAuthorize before any request = %v, want nil", s.LastAuthorize())
+	}
+	u := User{Subject: "g-1", Email: "ada@example.invalid", EmailVerified: true}
+
+	r, _, _ := begin(t, s, p)
+	edited := oidc.Redirect{URL: editQuery(t, r.URL, func(q url.Values) {
+		q.Set("prompt", "login")
+		q.Set("max_age", "0")
+	})}
+	s.Authorize(t, edited, u)
+	last := s.LastAuthorize()
+	state := mustQuery(t, edited.URL).Get("state")
+	if last.Get("prompt") != "login" || last.Get("max_age") != "0" || last.Get("state") != state {
+		t.Errorf("the edited request: prompt %q, max_age %q, state %q; want login, 0, %q",
+			last.Get("prompt"), last.Get("max_age"), last.Get("state"), state)
+	}
+
+	plain, _, _ := begin(t, s, p)
+	s.Authorize(t, plain, u)
+	if got := s.LastAuthorize().Get("prompt"); got != "" {
+		t.Errorf("the plain request: prompt %q, want none", got)
+	}
+}
+
+func mustQuery(t *testing.T, raw string) url.Values {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("the redirect URL: %v", err)
+	}
+	return u.Query()
+}

@@ -27,6 +27,8 @@ func TestModuleDeps(t *testing.T) {
 		{"secondfactor", modulePath + "/secondfactor", []string{"github.com/go-webauthn/", "github.com/coreos/go-oidc", "go-jose"}, "github.com/pquerna/otp/totp"},
 		{"oidc", modulePath + "/oidc", []string{"github.com/go-webauthn/", "github.com/pquerna/otp"}, "github.com/coreos/go-oidc/v3/oidc"},
 		{"register", modulePath + "/register", heavy, "golang.org/x/crypto/argon2"},
+		{"invite", modulePath + "/invite", append(slices.Clone(heavy), modulePath+"/oidc"), "golang.org/x/crypto/argon2"},
+		{"emailchange", modulePath + "/emailchange", heavy, modulePath + "/onetime"},
 		{"authkittest", modulePath + "/authkittest", []string{"github.com/coreos/go-oidc", "go-jose"}, "github.com/lib/pq"},
 	}
 	for _, tc := range cases {

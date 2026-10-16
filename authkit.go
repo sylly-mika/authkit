@@ -10,6 +10,14 @@
 // VerifyPassword's bad_password write what the caller's transaction must
 // commit, CompleteReset keeps the spend of a link whose owner is gone, and
 // every other refusal comes before the method's first write.
+//
+// RequireRecent asks for a sign-in or re-verify within Config.Recent before a
+// sensitive change. A re-verify (password, TOTP, passkey or OIDC) stamps the
+// session's authenticated time in place: the session token is not rotated.
+// ASVS 7.2.4 asks for a new token on re-authentication; authkit deviates
+// because a rotation would make the app swap its cookie in the middle of a
+// flow, while the refresh token already rotates on every refresh. ASVS 7.1.1
+// asks for such a deviation to be documented; this paragraph is that record.
 package authkit
 
 import (
@@ -293,11 +301,12 @@ const mailCountRetention = 48 * time.Hour
 
 // Prune deletes what no flow reads any more: throttle counters
 // whose window and lock have passed, sessions and one-time links dead for 30
-// days, passkey and OIDC ceremonies and second-step challenges an hour past
+// days, invites 30 days after they expired, were accepted or were revoked,
+// passkey and OIDC ceremonies and second-step challenges an hour past
 // their expiry (OIDC ceremonies also an hour after their use), registrations
-// past their expiry, mail counts 48 hours after their window began, and
-// sign-in events older than EventRetention unless it is negative. The app's
-// worker runs it with no workspace bound.
+// and email changes past their expiry, mail counts 48 hours after their
+// window began, and sign-in events older than EventRetention unless it is
+// negative. The app's worker runs it with no workspace bound.
 func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
@@ -323,6 +332,12 @@ func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 		return err
 	}
 	if _, err := q.Exec(ctx, `DELETE FROM auth_registrations WHERE expires_at < $1`, now); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM auth_invites WHERE expires_at < $1 OR accepted_at < $1 OR revoked_at < $1`, now.Add(-retention)); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM auth_email_changes WHERE expires_at < $1`, now); err != nil {
 		return err
 	}
 	if _, err := q.Exec(ctx, `DELETE FROM auth_mail_counts WHERE window_started_at < $1`, now.Add(-mailCountRetention)); err != nil {

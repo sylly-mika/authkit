@@ -18,7 +18,7 @@ import (
 
 const kitSchema = "kit_ns"
 
-var authTables = []string{"auth_schema", "auth_credentials", "auth_sessions", "auth_tokens", "auth_events", "auth_throttle", "auth_passkeys", "auth_passkey_ceremonies", "auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes", "auth_ceremonies", "auth_identities", "auth_registrations", "auth_mail_counts"}
+var authTables = []string{"auth_schema", "auth_credentials", "auth_sessions", "auth_tokens", "auth_events", "auth_throttle", "auth_passkeys", "auth_passkey_ceremonies", "auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes", "auth_ceremonies", "auth_identities", "auth_registrations", "auth_mail_counts", "auth_invites", "auth_email_changes"}
 
 func TestTheAppRoleIsANonOwnerThatCannotBypassRLS(t *testing.T) {
 	d := authkittest.NewDB(t)
@@ -70,8 +70,8 @@ SELECT f.conrelid::regclass::text, f.conname
 func TestEveryForeignKeyHasALeadingIndex(t *testing.T) {
 	d := authkittest.NewDB(t)
 	var fks int
-	if err := d.Owner.QueryRow(`SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid::regclass::text LIKE 'auth\_%'`).Scan(&fks); err != nil || fks != 13 {
-		t.Fatalf("authkit declares %d foreign keys (%v), want 13:the check below would pass vacuously", fks, err)
+	if err := d.Owner.QueryRow(`SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid::regclass::text LIKE 'auth\_%'`).Scan(&fks); err != nil || fks != 17 {
+		t.Fatalf("authkit declares %d foreign keys (%v), want 17:the check below would pass vacuously", fks, err)
 	}
 	rows, err := d.Owner.Query(fkIndexCheck)
 	if err != nil {
@@ -163,6 +163,12 @@ const insertIdentitySQL = `INSERT INTO auth_identities (id, principal_id, provid
 
 const insertRegistrationSQL = `INSERT INTO auth_registrations (id, audience, email, created_at, expires_at) VALUES ($1, 'staff', $2, now(), now() + interval '1 day')`
 
+const insertInviteSQL = `INSERT INTO auth_invites (id, audience, email, scope_id, invited_by, created_at, expires_at) VALUES ($1, 'staff', $2, $3, $4, now(), now() + interval '7 days')`
+
+const insertEmailChangeSQL = `INSERT INTO auth_email_changes (principal_id, audience, old_email, new_email, session_id, created_at, expires_at) VALUES ($1, 'staff', 'a@example.invalid', $2, $3, now(), now() + interval '1 hour')`
+
+const revokeSessionSQL = `UPDATE auth_sessions SET revoked_at = now(), revoke_reason = $2 WHERE id = $1`
+
 const upsertMailCountSQL = `INSERT INTO auth_mail_counts (audience, email_key, window_started_at, sent) VALUES ('staff', $1, now(), 1) ON CONFLICT (audience, email_key) DO UPDATE SET sent = auth_mail_counts.sent + 1`
 
 var secondFactorTables = []string{"auth_second_factors", "auth_recovery_codes", "auth_second_step_challenges", "auth_email_codes"}
@@ -199,6 +205,14 @@ func wantCode(t *testing.T, what string, err error, want string) {
 	t.Helper()
 	if got := pgCode(err); got != want {
 		t.Errorf("%s: SQLSTATE %q, want %q", what, got, want)
+	}
+}
+
+func wantConstraint(t *testing.T, what string, err error, code, constraint string) {
+	t.Helper()
+	wantCode(t, what, err, code)
+	if got := pgConstraint(err); got != constraint {
+		t.Errorf("%s: constraint %q, want %q", what, got, constraint)
 	}
 }
 
@@ -1020,6 +1034,228 @@ func TestTheDownMigration0005RefusesOIDCRows(t *testing.T) {
 	var factor string
 	if err := d.Row(t, `SELECT second_factor FROM auth_sessions WHERE id = $1`, s).Scan(&factor); err != nil || factor != "oidc" {
 		t.Errorf("the oidc session reads %q (%v) after the refused down, want oidc", factor, err)
+	}
+}
+
+func TestTheDownMigration0007RestoresVersion6(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		schema string
+		opts   []authkittest.Option
+	}{
+		{"public", "", nil},
+		{"kit_ns", kitSchema, []authkittest.Option{authkittest.Schema(kitSchema)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := authkittest.NewDB(t, c.opts...)
+			a := d.NewPrincipal(t, "a@example.invalid")
+			tbl := func(n string) string {
+				if c.schema == "" {
+					return n
+				}
+				return c.schema + "." + n
+			}
+			gone := func(table string) bool {
+				var g bool
+				if err := d.Row(t, `SELECT to_regclass($1) IS NULL`, tbl(table)).Scan(&g); err != nil {
+					t.Fatal(err)
+				}
+				return g
+			}
+			render := func(id int, down bool) string {
+				sql := migrationByID(t, id).Up
+				if down {
+					sql = migrationByID(t, id).Down
+				}
+				out, err := migrations.RenderIn(sql, "users", c.schema)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return out
+			}
+			refused := func(what string, err error, constraint string) {
+				t.Helper()
+				wantConstraint(t, what, err, "23514", constraint)
+			}
+			open := newSession(t, d, a)
+			user := newSession(t, d, a)
+			ec := newSession(t, d, a)
+			idr := newSession(t, d, a)
+			d.Exec(t, revokeSessionSQL, user, "user")
+			d.Exec(t, revokeSessionSQL, ec, "email_changed")
+			d.Exec(t, revokeSessionSQL, idr, "identity_removed")
+			wantOK(t, "a passkey reverify", exec(d, d.SQL(insertCeremonySQL), uuid.New(), hash(), "reverify", a, open))
+			wantOK(t, "a passkey login", exec(d, d.SQL(insertCeremonySQL), uuid.New(), hash(), "login", nil, nil))
+			wantOK(t, "an oidc reverify", exec(d, d.SQL(insertOIDCCeremonySQL), uuid.New(), "reverify", hash32(), hash32(), hash32(), a))
+			wantOK(t, "an oidc link", exec(d, d.SQL(insertOIDCCeremonySQL), uuid.New(), "link", hash32(), hash32(), hash32(), a))
+			wantOK(t, "an invite", exec(d, d.SQL(insertInviteSQL), uuid.New(), "x@example.invalid", nil, a))
+			wantOK(t, "an email change", exec(d, d.SQL(insertEmailChangeSQL), a, "b@example.invalid", ec))
+
+			d.Exec(t, render(7, true))
+			if !gone("auth_invites") || !gone("auth_email_changes") {
+				t.Error("after the 0007 down, an account table survives")
+			}
+			if n := count(t, d, `SELECT version FROM auth_schema`); n != 6 {
+				t.Errorf("schema version after the 0007 down = %d, want 6", n)
+			}
+			if n := count(t, d, `SELECT count(*) FROM auth_passkey_ceremonies`); n != 1 {
+				t.Errorf("passkey ceremonies after the 0007 down = %d, want 1", n)
+			}
+			if n := count(t, d, `SELECT count(*) FROM auth_passkey_ceremonies WHERE kind = 'reverify'`); n != 0 {
+				t.Errorf("passkey reverify ceremonies after the 0007 down = %d, want 0", n)
+			}
+			if n := count(t, d, `SELECT count(*) FROM auth_ceremonies WHERE kind = 'link'`); n != 1 {
+				t.Errorf("link ceremonies after the 0007 down = %d, want 1", n)
+			}
+			if n := count(t, d, `SELECT count(*) FROM auth_ceremonies`); n != 1 {
+				t.Errorf("oidc ceremonies after the 0007 down = %d, want 1", n)
+			}
+			if n := count(t, d, `SELECT count(*) FROM auth_sessions`); n != 3 {
+				t.Errorf("sessions after the 0007 down = %d, want 3", n)
+			}
+			if n := count(t, d, `SELECT count(*) FROM auth_sessions WHERE revoke_reason = 'email_changed'`); n != 0 {
+				t.Errorf("email_changed sessions after the 0007 down = %d, want 0", n)
+			}
+			if n := count(t, d, `SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoke_reason = 'identity_removed'`, idr); n != 1 {
+				t.Errorf("the identity_removed session after the 0007 down is not kept")
+			}
+
+			s := newSession(t, d, a)
+			refused("email_changed after the 0007 down", exec(d, d.SQL(revokeSessionSQL), s, "email_changed"), "auth_sessions_revoke_reason")
+			refused("passkey reverify after the 0007 down", exec(d, d.SQL(insertCeremonySQL), uuid.New(), hash(), "reverify", a, open), "auth_passkey_ceremonies_kind_check")
+			wantConstraint(t, "oidc reverify without a principal after the 0007 down", exec(d, d.SQL(insertOIDCCeremonySQL), uuid.New(), "reverify", hash32(), hash32(), hash32(), nil), "23514", "auth_ceremonies_kind_check")
+
+			d.Exec(t, render(7, false))
+			for _, table := range []string{"auth_invites", "auth_email_changes"} {
+				if gone(table) {
+					t.Errorf("after the 0007 up, %s is absent", table)
+				}
+			}
+			if n := count(t, d, `SELECT version FROM auth_schema`); n != 7 {
+				t.Errorf("schema version after the 0007 up = %d, want 7", n)
+			}
+			wantOK(t, "email_changed after the 0007 up", exec(d, d.SQL(revokeSessionSQL), s, "email_changed"))
+			wantOK(t, "oidc reverify after the 0007 up", exec(d, d.SQL(insertOIDCCeremonySQL), uuid.New(), "reverify", hash32(), hash32(), hash32(), a))
+		})
+	}
+}
+
+func TestCeremoniesTakeReverify(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	s := newSession(t, d, a)
+	wantOK(t, "a passkey reverify with its session", exec(d, insertCeremonySQL, uuid.New(), hash(), "reverify", a, s))
+	wantConstraint(t, "a passkey reverify without a session", exec(d, insertCeremonySQL, uuid.New(), hash(), "reverify", a, nil), "23514", "auth_passkey_ceremonies_session")
+	wantOK(t, "an oidc reverify with its principal", exec(d, insertOIDCCeremonySQL, uuid.New(), "reverify", hash32(), hash32(), hash32(), a))
+	wantConstraint(t, "an oidc reverify without a principal", exec(d, insertOIDCCeremonySQL, uuid.New(), "reverify", hash32(), hash32(), hash32(), nil), "23514", "auth_ceremonies_principal")
+	wantOK(t, "an oidc link with its principal", exec(d, insertOIDCCeremonySQL, uuid.New(), "link", hash32(), hash32(), hash32(), a))
+	wantConstraint(t, "an oidc signin with a principal", exec(d, insertOIDCCeremonySQL, uuid.New(), "signin", hash32(), hash32(), hash32(), a), "23514", "auth_ceremonies_principal")
+	if n := count(t, d, `SELECT count(*) FROM auth_passkey_ceremonies WHERE kind = 'reverify'`); n != 1 {
+		t.Errorf("passkey reverify ceremonies = %d, want 1", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_ceremonies WHERE kind = 'reverify'`); n != 1 {
+		t.Errorf("oidc reverify ceremonies = %d, want 1", n)
+	}
+}
+
+func TestSessionsTakeEmailChangedReason(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	s1 := newSession(t, d, a)
+	s2 := newSession(t, d, a)
+	wantOK(t, "a session revoked for email_changed", exec(d, d.SQL(revokeSessionSQL), s1, "email_changed"))
+	wantConstraint(t, "a session revoked for an unknown reason", exec(d, d.SQL(revokeSessionSQL), s2, "renamed"), "23514", "auth_sessions_revoke_reason")
+	if n := count(t, d, `SELECT count(*) FROM auth_sessions WHERE revoke_reason = 'email_changed'`); n != 1 {
+		t.Errorf("sessions revoked for email_changed = %d, want 1", n)
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL`, s2); n != 1 {
+		t.Errorf("the session after the refused revoke is not open")
+	}
+}
+
+func TestAccountRowsKeepTheirShape(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	scope := uuid.New()
+	const email = "x@example.invalid"
+	i1 := uuid.New()
+	wantOK(t, "an invite with no scope", exec(d, d.SQL(insertInviteSQL), i1, email, nil, a))
+	wantConstraint(t, "a second open invite with no scope", exec(d, d.SQL(insertInviteSQL), uuid.New(), email, nil, a), "23505", "auth_invites_open")
+	i3 := uuid.New()
+	wantOK(t, "an invite for a scope", exec(d, d.SQL(insertInviteSQL), i3, email, scope, a))
+	wantConstraint(t, "a second open invite for the scope", exec(d, d.SQL(insertInviteSQL), uuid.New(), email, scope, a), "23505", "auth_invites_open")
+	d.Exec(t, `UPDATE auth_invites SET revoked_at = now() WHERE id = $1`, i1)
+	wantOK(t, "a new invite with no scope after the revoke", exec(d, d.SQL(insertInviteSQL), uuid.New(), email, nil, a))
+	wantConstraint(t, "an accepted and revoked invite", exec(d, d.SQL(`UPDATE auth_invites SET accepted_at = now(), accepted_by = $2 WHERE id = $1`), i1, a), "23514", "auth_invites_closed")
+	wantConstraint(t, "an accepter without an acceptance time", exec(d, d.SQL(`UPDATE auth_invites SET accepted_by = $2 WHERE id = $1`), i3, a), "23514", "auth_invites_accepted")
+	wantOK(t, "an email change", exec(d, d.SQL(insertEmailChangeSQL), a, "b@example.invalid", nil))
+	wantConstraint(t, "a second email change for the principal", exec(d, d.SQL(insertEmailChangeSQL), a, "c@example.invalid", nil), "23505", "auth_email_changes_pkey")
+	if n := count(t, d, `SELECT count(*) FROM auth_invites`); n != 3 {
+		t.Errorf("invites = %d, want 3", n)
+	}
+}
+
+func TestAccountRowsOutliveTheirPrincipals(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	b := d.NewPrincipal(t, "b@example.invalid")
+	s := newSession(t, d, a)
+	i := uuid.New()
+	wantOK(t, "an invite sent by a", exec(d, d.SQL(insertInviteSQL), i, "x@example.invalid", nil, a))
+	d.Exec(t, `UPDATE auth_invites SET accepted_at = now(), accepted_by = $2 WHERE id = $1`, i, b)
+	wantOK(t, "an email change for a with a session", exec(d, d.SQL(insertEmailChangeSQL), a, "b@example.invalid", s))
+
+	d.Exec(t, `DELETE FROM auth_sessions WHERE id = $1`, s)
+	if n := count(t, d, `SELECT count(*) FROM auth_email_changes WHERE principal_id = $1 AND session_id IS NULL`, a); n != 1 {
+		t.Errorf("email changes without their session = %d, want 1", n)
+	}
+	wantOK(t, "delete the accepter", exec(d, `DELETE FROM users WHERE id = $1`, b))
+	if n := count(t, d, `SELECT count(*) FROM auth_invites WHERE id = $1 AND accepted_at IS NOT NULL AND accepted_by IS NULL`, i); n != 1 {
+		t.Errorf("the invite after its accepter is deleted is not accepted without an accepter")
+	}
+	wantOK(t, "delete the sender", exec(d, `DELETE FROM users WHERE id = $1`, a))
+	if n := count(t, d, `SELECT count(*) FROM auth_invites WHERE id = $1 AND invited_by IS NULL`, i); n != 1 {
+		t.Errorf("the invite after its sender is deleted still names the sender")
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_email_changes`); n != 0 {
+		t.Errorf("email changes after the principal is deleted = %d, want 0", n)
+	}
+}
+
+func TestNewTablesOnlyInTheAuthContext(t *testing.T) {
+	d := authkittest.NewDB(t)
+	a := d.NewPrincipal(t, "a@example.invalid")
+	ctx := context.Background()
+	err := d.InAuthTx(ctx, func(q db.Querier) error {
+		if _, err := q.Exec(ctx, insertInviteSQL, uuid.New(), "x@example.invalid", nil, a); err != nil {
+			return err
+		}
+		_, err := q.Exec(ctx, insertEmailChangeSQL, a, "b@example.invalid", nil)
+		return err
+	})
+	wantOK(t, "the auth context writes both new tables", err)
+	for _, table := range []string{"auth_invites", "auth_email_changes"} {
+		var seen int
+		err := d.InSystemTx(ctx, uuid.New(), func(q db.Querier) error {
+			return q.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&seen)
+		})
+		wantOK(t, "the system role counts "+table, err)
+		if seen != 0 {
+			t.Errorf("the system role sees %d rows in %s, want 0", seen, table)
+		}
+		if n := count(t, d, "SELECT count(*) FROM "+table); n != 1 {
+			t.Errorf("the owner sees %d rows in %s, want 1", n, table)
+		}
+	}
+	err = d.InSystemTx(ctx, uuid.New(), func(q db.Querier) error {
+		_, err := q.Exec(ctx, insertInviteSQL, uuid.New(), "y@example.invalid", nil, a)
+		return err
+	})
+	if err == nil {
+		t.Error("the system role inserted an invite")
+	}
+	if n := count(t, d, `SELECT count(*) FROM auth_invites`); n != 1 {
+		t.Errorf("invites after the refused system insert = %d, want 1", n)
 	}
 }
 

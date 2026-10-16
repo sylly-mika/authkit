@@ -21,6 +21,8 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
+	"github.com/sylly-mika/authkit/emailchange"
+	"github.com/sylly-mika/authkit/invite"
 	"github.com/sylly-mika/authkit/oidc"
 	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/passkey"
@@ -50,7 +52,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.Identities"}
+	sweptReads = []string{"Authenticate", "RequireRecent", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.TicketEmail", "OIDC.Identities", "Invite.List", "Invite.Open", "EmailChange.Pending"}
 	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Password.Hash", "Attach", "OIDC.Providers", "Register.Floor"}
 )
 
@@ -58,6 +60,8 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 	w := newWorld(t)
 	w.withOIDC(true)
 	w.withRegister(false)
+	w.withInvite(false)
+	w.withEmailChange()
 	id := w.User("ada@example.invalid", "the right password")
 	res := w.SignIn("ada@example.invalid", "the right password")
 	var n int
@@ -73,6 +77,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"Logout": func() error { _, err := w.Svc.Logout(ctx, q, c, authkit.Meta{}); return err },
+		"Forget": func() error { _, err := w.Svc.Forget(ctx, q, p); return err },
 		"Password.ChangePassword": func() error {
 			_, err := w.Svc.Password.ChangePassword(ctx, q, c, "the right password", "another password", authkit.Meta{})
 			return err
@@ -87,7 +92,8 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.Svc.Password.SetPassword(ctx, q, p, "staff", "another password", authkit.Meta{})
 			return err
 		},
-		"Password.SetHash": func() error { return w.Svc.Password.SetHash(ctx, q, p, password.Hash{}) },
+		"Password.SetHash":  func() error { return w.Svc.Password.SetHash(ctx, q, p, password.Hash{}) },
+		"Password.Reverify": func() error { _, err := w.Svc.Password.Reverify(ctx, q, c, "x", authkit.Meta{}); return err },
 		"Password.VerifyPassword": func() error {
 			_, err := w.Svc.Password.VerifyPassword(ctx, q, p, "staff", "x", authkit.Meta{})
 			return err
@@ -102,6 +108,11 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"Passkeys.BeginPasskeyLogin": func() error { _, err := w.Svc.Passkeys.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
+		"Passkeys.FinishReverify": func() error {
+			_, err := w.Svc.Passkeys.FinishReverify(ctx, q, c, "x", []byte("{}"), authkit.Meta{})
+			return err
+		},
+		"Passkeys.BeginReverify": func() error { _, err := w.Svc.Passkeys.BeginReverify(ctx, q, c); return err },
 		"Passkeys.FinishPasskeyLogin": func() error {
 			_, err := w.Svc.Passkeys.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
 			return err
@@ -118,6 +129,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 		},
 		"Factors.BeginTOTPSetup":          func() error { _, err := w.Svc.Factors.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
 		"Factors.ConfirmTOTP":             func() error { _, err := w.Svc.Factors.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
+		"Factors.Reverify":                func() error { _, err := w.Svc.Factors.Reverify(ctx, q, c, "000000", authkit.Meta{}); return err },
 		"Factors.RegenerateRecoveryCodes": func() error { _, err := w.Svc.Factors.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
 		"Factors.BeginEmailCodeSetup":     func() error { _, err := w.Svc.Factors.BeginEmailCodeSetup(ctx, q, c, authkit.Meta{}); return err },
 		"Factors.ConfirmEmailCode": func() error {
@@ -154,9 +166,14 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, _, err := w.Svc.OIDC.Finish(ctx, q, oidc.Callback{State: "x", Code: "x"}, "x", authkit.Meta{})
 			return err
 		},
-		"OIDC.SignUp": func() error { _, err := w.Svc.OIDC.SignUp(ctx, q, "x", id, "staff", authkit.Meta{}); return err },
-		"OIDC.Link":   func() error { _, err := w.Svc.OIDC.Link(ctx, q, c, "google", authkit.Meta{}); return err },
-		"OIDC.Unlink": func() error { return w.Svc.OIDC.Unlink(ctx, q, c, "google", authkit.Meta{}) },
+		"OIDC.SignUp":        func() error { _, err := w.Svc.OIDC.SignUp(ctx, q, "x", id, "staff", authkit.Meta{}); return err },
+		"OIDC.Link":          func() error { _, err := w.Svc.OIDC.Link(ctx, q, c, "google", authkit.Meta{}); return err },
+		"OIDC.Unlink":        func() error { return w.Svc.OIDC.Unlink(ctx, q, c, "google", authkit.Meta{}) },
+		"OIDC.BeginReverify": func() error { _, err := w.Svc.OIDC.BeginReverify(ctx, q, c, "google"); return err },
+		"OIDC.FinishReverify": func() error {
+			_, err := w.Svc.OIDC.FinishReverify(ctx, q, c, oidc.Callback{State: "x", Code: "x"}, "x", authkit.Meta{})
+			return err
+		},
 		"Register.Start": func() error {
 			_, err := w.Svc.Register.Start(ctx, q, "staff", "new@example.invalid", nil)
 			return err
@@ -167,6 +184,39 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"Register.CountMail": func() error { _, err := w.Svc.Register.CountMail(ctx, q, "staff", "new@example.invalid"); return err },
+		"Invite.Invite": func() error {
+			_, err := w.Svc.Invite.Invite(ctx, q, invite.Request{Audience: "staff", Email: "new@example.invalid"})
+			return err
+		},
+		"Invite.Resend": func() error { _, err := w.Svc.Invite.Resend(ctx, q, uuid.New()); return err },
+		"Invite.Revoke": func() error { return w.Svc.Invite.Revoke(ctx, q, uuid.New()) },
+		"Invite.Mint":   func() error { _, err := w.Svc.Invite.Mint(ctx, q, uuid.New()); return err },
+		"Invite.Accept": func() error {
+			_, err := w.Svc.Invite.Accept(ctx, q, "x", "a long enough password", nil, authkit.Meta{})
+			return err
+		},
+		"Invite.AcceptSignedIn": func() error {
+			_, err := w.Svc.Invite.AcceptSignedIn(ctx, q, c, "x", authkit.Meta{})
+			return err
+		},
+		"Invite.AcceptOIDC": func() error {
+			_, err := w.Svc.Invite.AcceptOIDC(ctx, q, "x", "x", nil, authkit.Meta{})
+			return err
+		},
+		"EmailChange.Start": func() error {
+			_, err := w.Svc.EmailChange.Start(ctx, q, c, "new@example.invalid")
+			return err
+		},
+		"EmailChange.StartFor": func() error {
+			_, err := w.Svc.EmailChange.StartFor(ctx, q, p, "staff", "new@example.invalid")
+			return err
+		},
+		"EmailChange.Mint": func() error { _, err := w.Svc.EmailChange.Mint(ctx, q, uuid.New()); return err },
+		"EmailChange.Confirm": func() error {
+			_, err := w.Svc.EmailChange.Confirm(ctx, q, "x", authkit.Meta{})
+			return err
+		},
+		"EmailChange.Cancel": func() error { return w.Svc.EmailChange.Cancel(ctx, q, p) },
 	}
 	for name, call := range calls {
 		n = 0
@@ -177,7 +227,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			t.Errorf("%s ran %d statements on a bare connection before refusing it", name, n)
 		}
 	}
-	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module](), "Factors.": reflect.TypeFor[*secondfactor.Module](), "OIDC.": reflect.TypeFor[*oidc.Module](), "Register.": reflect.TypeFor[*register.Module]()} {
+	for prefix, typ := range map[string]reflect.Type{"": reflect.TypeFor[*authkit.Service](), "OneTime.": reflect.TypeFor[*onetime.Store](), "Password.": reflect.TypeFor[*password.Module](), "Passkeys.": reflect.TypeFor[*passkey.Module](), "Factors.": reflect.TypeFor[*secondfactor.Module](), "OIDC.": reflect.TypeFor[*oidc.Module](), "Register.": reflect.TypeFor[*register.Module](), "Invite.": reflect.TypeFor[*invite.Module](), "EmailChange.": reflect.TypeFor[*emailchange.Module]()} {
 		for i := range typ.NumMethod() {
 			name := prefix + typ.Method(i).Name
 			if _, swept := calls[name]; !swept && !slices.Contains(sweptReads, name) && !slices.Contains(sweptPure, name) {
@@ -201,6 +251,9 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	q, c := sqldb.Conn(w.Pinned(id)), w.Claims(res)
 	if got, err := w.Svc.Authenticate(w.Ctx, q, c); err != nil || got.Refusal != nil {
 		t.Errorf("Authenticate = %v, %v", got.Refusal, err)
+	}
+	if got, err := w.Svc.RequireRecent(w.Ctx, q, c, 0); err != nil || got.Refusal != nil || got.Principal.ID != id {
+		t.Errorf("RequireRecent = %v, %v, principal %s", got.Refusal, err, got.Principal.ID)
 	}
 	if _, total, err := w.Svc.ListSessions(w.Ctx, q, c, 10, 0); err != nil || total != 1 {
 		t.Errorf("ListSessions = %d, %v", total, err)

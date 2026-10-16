@@ -4,15 +4,17 @@ authkit is a Go library for password authentication on PostgreSQL. It covers
 password sign-in, sessions with token-reuse detection, password reset,
 registration with an emailed activation link, sign-in with Google and Apple
 (OpenID Connect), one-time links, a sign-in log, a per-login throttle,
-passkeys and second factors (TOTP, emailed codes, recovery codes). Passwords
-are hashed with argon2id. authkit owns its `auth_*` tables; your app owns its
-users ("principals") table and its own data.
+passkeys and second factors (TOTP, emailed codes, recovery codes), invites,
+erasure of a person's authkit rows, re-verification before sensitive changes
+and verified email change. Passwords are hashed with argon2id. authkit owns
+its `auth_*` tables; your app owns its users ("principals") table and its own
+data.
 
 The core package `authkit` owns sessions, the login throttle, `Admit`, the
-second-factor gate and the sign-in log. Password sign-in, passkeys, second
-factors, registration and OIDC sign-in are modules (`password`, `passkey`,
-`secondfactor`, `register`, `oidc`); an app links only
-the modules it imports.
+second-factor gate, the sign-in log, `Forget` and `RequireRecent`. Password
+sign-in, passkeys, second factors, registration, OIDC sign-in, invites and
+email change are modules (`password`, `passkey`, `secondfactor`, `register`,
+`oidc`, `invite`, `emailchange`); an app links only the modules it imports.
 
 What it does not do:
 
@@ -246,9 +248,11 @@ on `kit.Password`, `kit.Passkeys` and `kit.Factors`. A module given empty
 rules is attached but off: `passkey` without `RPID` answers
 `ErrPasskeysOff`; `secondfactor` without `Key` answers `ErrSecondFactorsOff`,
 and so does a sign-in by a principal with a confirmed factor. Leaving
-`secondfactor` out has the same effect. `oidc` and `register` attach the same
-way; add `OIDC *oidc.Module` and `Register *register.Module` to `Kit` (see
-"Add Google and Apple sign-in" and "Add registration").
+`secondfactor` out has the same effect. `oidc`, `register`, `invite` and
+`emailchange` attach the same way; add `OIDC *oidc.Module`,
+`Register *register.Module`, `Invite *invite.Module` and
+`EmailChange *emailchange.Module` to `Kit` (see "Add Google and Apple
+sign-in", "Add registration", "Invite people" and "Change a sign-in email").
 
 ### Add the database tables
 
@@ -510,7 +514,9 @@ window has passed and that are not locked, sessions and one-time links dead
 for 30 days, passkey ceremonies and second-step challenges an hour past
 expiry, OIDC ceremonies and sign-up tickets an hour after they expire or are
 used, registrations past their expiry, mail counts 48 hours after their window
-began, and events older than `EventRetention` (none when it is negative).
+began, invites 30 days after they expired, were accepted or were revoked,
+email changes past their expiry, and events older than `EventRetention`
+(none when it is negative).
 
 ### Add passkeys
 
@@ -724,6 +730,153 @@ the activation page, so whoever reads the mail chooses it.
 An OIDC sign-up for a pending address creates the principal; the pending
 registration then ends with `register.ErrAddressHeld`.
 
+### Invite people
+
+`invite.New(core, k.Password, invite.Rules{Create: createPrincipal, Join: joinPrincipal})`
+adds invitations by an admin. Your app checks that the caller may invite
+before it calls `Invite`, `Resend`, `Revoke` or `List`; authkit stores
+`InvitedBy` as data and never decides who may invite. Write your audit row in
+the same transaction.
+
+1. Invite handler, one transaction: `inv, err := kit.Invite.Invite(ctx, q,
+   invite.Request{Audience: aud, Email: email, ScopeID: scope, InvitedBy:
+   &admin.ID, Payload: payload})`. Enqueue the mail with `inv.TokenID`.
+   `inv.Holder` is set when a principal already holds the address; without
+   `Rules.Join` that is `invite.ErrAddressHeld` instead.
+   `invite.ErrInvitePending` means an open invite to the address exists.
+   `Resend(ctx, q, id)` replaces the link and restarts the expiry,
+   `Revoke(ctx, q, id)` closes the invite, and both return
+   `invite.ErrInviteClosed` for an accepted or revoked one.
+   `List(ctx, q, aud, scope, limit, offset)` pages the invites with their
+   `State` (`pending`, `expired`, `accepted`, `revoked`) and the total.
+2. Mail worker, own transaction: `mail, err := kit.Invite.Mint(ctx, q,
+   tokenID)`. `invite.ErrNothingToSend` means the invite or link is gone, or
+   `Rules.Check` voided it. On that error, commit the transaction (the void is
+   in it), then drop the job. `mail.Held` says the address has an account:
+   word the mail "sign in to accept".
+3. Invite page: `op, err := kit.Invite.Open(ctx, q, raw)` shows the invite and
+   spends nothing; it returns `authkit.ErrTokenUnknown` or
+   `authkit.ErrTokenGone`. Send `Referrer-Policy: no-referrer` on this page,
+   because its URL carries the token.
+4. Accept, one transaction, in one of three ways. Refusals come in
+   `Result.Refusal` with a nil `err`; commit them.
+   - `kit.Invite.Accept(ctx, q, raw, password, input, m)` creates the
+     principal with `Rules.Create`, stores the password and signs it in.
+     `invite.ErrSignInToAccept` means the address has an account: the link
+     stays live, and the person signs in and accepts as below. When `Create`
+     hits your unique index, return the error and roll back; a retry gets
+     `invite.ErrSignInToAccept`.
+   - `kit.Invite.AcceptSignedIn(ctx, q, claims, raw, m)` lets the signed-in
+     principal whose login is the invited address join through `Rules.Join`
+     (`ResultInviteAccepted`, no new session, no recent sign-in needed).
+     Another principal gets `invite.ErrOtherAccount` and the link stays live.
+   - `kit.Invite.AcceptOIDC(ctx, q, raw, ticket, input, m)`, with
+     `Rules.OIDC: k.OIDC`. The page's "Continue with Google" or "Continue with
+     Apple" POST carries the raw invite token in its body. Call `Open`, then
+     `kit.OIDC.Begin`, and set two cookies: the binding and the raw invite
+     token, both `HttpOnly` and `Secure`, with `Redirect.SameSite` and
+     `Max-Age` equal to `CeremonyTTL` (10 minutes). The token goes into no URL
+     the provider sees. Your callback calls `Finish` as for any sign-in. A
+     sign-up ticket (`oidc.ErrIdentityUnknown`) goes back to the invite page
+     in the URL fragment; the page POSTs `{ticket, input}`, and the server
+     reads the invite token from the cookie, calls `AcceptOIDC` and clears
+     the cookie. A sign-in of an already linked subject may go on to
+     `AcceptSignedIn`. Refusals: `invite.ErrEmailMismatch`,
+     `invite.ErrPrivateEmail` (an Apple private relay address, even one equal
+     to the invite) and `invite.ErrSignInToAccept`; the link stays live.
+     Errors, roll back: `invite.ErrNoOIDC`, `oidc.ErrTicketUnknown`,
+     `oidc.ErrIdentityTaken`, an error from `Create`, and your `Admit`
+     refusal.
+
+### Erase a person
+
+`f, err := kit.Forget(ctx, q, p)` deletes every authkit row of `p` in every
+audience: sessions, password, passkeys, second factors, OIDC identities, reset
+links, invites to its address, its pending registration and email change, and
+its throttle counters. Its sign-in log rows are unlinked (no principal, no
+session) and kept until `Config.EventRetention` has passed (90 days by
+default), then `Prune` removes them. With a negative `EventRetention`, which
+otherwise keeps the log forever, `Forget` deletes the person's rows at once.
+
+Run it in one transaction:
+
+1. Lock your principal row `FOR UPDATE`.
+2. Call `kit.Forget`.
+3. Delete or anonymise your row.
+4. Commit.
+
+If you keep the row as a tombstone, your `Admit` must refuse it: a sign-in
+that raced step 2 is then refused on its first use. `Forgotten` counts
+`Sessions`, `Passkeys` and `Identities` and names the `Providers` for your
+receipt; authkit stores no provider token, so revoking the app at Google or
+Apple is up to you. The sign-in log keeps the person's rows, unlinked from
+the principal and session, until `Prune` removes them at `EventRetention`
+(90 days by default), to investigate account takeover and abuse. With a
+negative `EventRetention`, `Forget` deletes them. Gate the route with
+`RequireRecent`.
+
+### Require a recent sign-in
+
+`res, err := kit.RequireRecent(ctx, q, claims, 0)` refuses with
+`authkit.ErrReauthRequired` unless the session signed in or re-verified within
+`Config.Recent` (5 minutes, at most 10), and with `authkit.ErrSessionEnded`
+when it is not open. A zero window means `Config.Recent`, and so does a
+module's zero `Reauth`. Use it before account deletion, role changes or API
+keys. On `ErrReauthRequired`, ask for one factor of the account:
+
+- `kit.Password.Reverify(ctx, q, claims, password, m)`; it counts on the login
+  throttle (`ErrLocked`).
+- `kit.Factors.Reverify(ctx, q, claims, code, m)`: TOTP only; an emailed or
+  recovery code is not accepted.
+- `kit.Passkeys.BeginReverify(ctx, q, claims)`, then
+  `FinishReverify(ctx, q, claims, ceremonyID, response, m)`.
+- `kit.OIDC.BeginReverify(ctx, q, claims, provider)` sends `prompt=login`
+  and `max_age=0`; `FinishReverify(ctx, q, claims, cb, binding, m)` needs a
+  subject linked to the caller.
+
+Each records `reverified` and marks the session as just authenticated in
+place. The session token is not rotated, so your cookie stays. ASVS 7.2.4 asks
+for a new token on re-authentication; authkit deviates because a rotation
+would make the app swap its cookie in the middle of a flow, while the refresh
+token already rotates on every refresh. ASVS 7.1.1 asks for such a deviation
+to be documented; the package doc records it. `ChangePassword` needs no recent
+sign-in: the current password is the proof.
+
+### Change a sign-in email
+
+`emailchange.New(core, emailchange.Rules{Change: setLogin})` changes a login
+only after the new mailbox confirms a link.
+
+1. Settings handler, one transaction: `st, err :=
+   kit.EmailChange.Start(ctx, q, claims, newEmail)`. `st.Refusal` is
+   `authkit.ErrReauthRequired` (re-verify first) or
+   `emailchange.ErrSameAddress`. `st.RetryAfter` set means 3 starts this hour:
+   send nothing. `st.AddressHeld` means another principal holds the address
+   and nothing was written: answer exactly as on success (you may mail that
+   address a notice). Otherwise enqueue the confirmation mail with
+   `st.TokenID` and a notice to `st.Old`. A new `Start` replaces the pending
+   change. `StartFor(ctx, q, p, aud, newEmail)` is the admin path, with no
+   recent check: your app authorises.
+2. Mail worker: `mail, err := kit.EmailChange.Mint(ctx, q, tokenID)` gives
+   `To`, `Raw`, `Old` and `ExpiresAt`; `emailchange.ErrNothingToSend`: drop
+   the job.
+3. Confirm page, one transaction: `ch, err := kit.EmailChange.Confirm(ctx, q,
+   raw, m)`. It spends the link, calls `Rules.Change`, moves the login
+   throttle to the new address and ends the principal's other sessions (all
+   of them with `Rules.RevokeAll` or after `StartFor`). Refusals in
+   `ch.Refusal`, commit them: `authkit.ErrTokenUnknown`,
+   `authkit.ErrTokenGone`, `emailchange.ErrStale` (the login changed since
+   `Start`) and `emailchange.ErrAddressHeld`. An error from `Change` is
+   returned: roll back. Mail `ch.Old` that the address changed. The link alone
+   confirms, since the new mailbox may be on another device. `Start` and
+   `Confirm` lock rows in opposite order, so two of them on one principal at
+   the same moment can deadlock: PostgreSQL reports `40P01` and rolls one
+   back. Retry that transaction.
+
+`Pending(ctx, q, p)` reads the pending change (nil when none) and
+`Cancel(ctx, q, p)` drops it. OIDC identities stay linked by subject; passkey
+and TOTP labels keep the old login.
+
 ### Write a module
 
 A module is a package whose `New(core *authkit.Service, rules)` checks its
@@ -783,6 +936,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `Throttle.PlainLoginKey` | false | false: key `auth_throttle` on hex(sha256(normalised login)); true: the plain login |
 | `Events.ChangeLogsReset` | false | true: `ChangePassword` logs `password_reset` instead of `password_changed` |
 | `EventRetention` | 90 days | `Prune` deletes older events; negative: keep forever |
+| `Recent` | 5 min | how recent a sign-in or re-verify must be for a sensitive change; at most 10 min |
 | `OnEvent` | nil | `func(ctx, q db.Querier, e Event) error`, run after each event |
 | `Clock` | system clock | source of every timestamp |
 | `Rand` | `crypto/rand.Reader` | random source |
@@ -809,7 +963,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `RPName` | `authkit` | relying party name |
 | `Origins` | none | `map[Audience][]string` of allowed origins |
 | `CeremonyTTL` | 2 min | ceremony lifetime, at most 10 min |
-| `Reauth` | 5 min | how recent a sign-in must be to add or delete a passkey |
+| `Reauth` | `Config.Recent` | how recent a sign-in must be to add or delete a passkey |
 | `Max` | 10 | passkeys per principal |
 
 `secondfactor.Rules` (`secondfactor.New`):
@@ -824,7 +978,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `ResendEvery` | 60 s | minimum gap between emailed codes |
 | `MaxSends` | 5 | emailed codes per setup or challenge |
 | `MaxTries` | 5 | wrong tries per code |
-| `Reauth` | 5 min | how recent a sign-in must be to manage factors |
+| `Reauth` | `Config.Recent` | how recent a sign-in must be to manage factors |
 | `RecoveryCodes` | 10 | recovery codes issued |
 
 `oidc.Rules` (`oidc.New`):
@@ -834,7 +988,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `Providers` | none (required) | `[]oidc.Provider`, built by `oidc.Google`, `oidc.Apple` or by hand |
 | `CeremonyTTL` | 10 min | how long a `Begin` or `Link` can be finished, and a sign-up ticket lives |
 | `Skew` | 5 min | how far ahead of the clock an ID token's `iat` may be |
-| `Reauth` | 5 min | how recent a sign-in must be to link or unlink |
+| `Reauth` | `Config.Recent` | how recent a sign-in must be to link or unlink |
 | `HTTPClient` | a client with a 10 s timeout | carries token requests and key fetches |
 
 `oidc.Provider` (for a provider other than Google and Apple):
@@ -862,6 +1016,24 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `MailWindow` | 1 h | the window the cap counts over; at most 24 h |
 | `Floor` | 500 ms | minimum time of your register handler (`PadSince`) |
 
+`invite.Rules` (`invite.New`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Create` | none (required) | ``func(ctx, q, invite.Pending, input json.RawMessage) (authkit.Principal, error)``: inserts your principal at `Accept` and `AcceptOIDC` |
+| `Join` | nil | ``func(ctx, q, invite.Pending, holder authkit.Principal) error``: adds a holder at `AcceptSignedIn`; nil refuses held addresses with `invite.ErrAddressHeld` |
+| `Check` | nil | ``func(ctx, q, invite.Pending) error``: an error voids the invite |
+| `OIDC` | nil | an `invite.Tickets` (your `*oidc.Module`); nil: `AcceptOIDC` returns `invite.ErrNoOIDC` |
+| `TTL` | 72 h | invite and link lifetime |
+
+`emailchange.Rules` (`emailchange.New`):
+
+| Field | Default | Meaning |
+|---|---|---|
+| `Change` | none (required) | ``func(ctx, q, authkit.Principal, newLogin string) error``: sets your principal's login at `Confirm` |
+| `TTL` | 24 h | change and link lifetime |
+| `RevokeAll` | false | true: `Confirm` ends every session, the starter's too |
+
 `authkit.New` refuses:
 
 - Bearer mode without `Issuer`, with a `Secret` under 32 bytes, or with a
@@ -871,6 +1043,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 - In Session mode, `RotateEvery` at or above `IdleTTL` (or an entry).
 - A negative `RefreshTTL`, `Session.IdleTTL` or `ReuseGrace`, a throttle
   that cannot work, and a `Schema` that is not a valid schema name.
+- A negative `Recent`, or one over 10 minutes.
 
 `password.New` refuses a policy that cannot work, an unknown
 `RevokeOnPasswordChange`, and a negative `ResetTTL`, `ResetFloor`,
@@ -888,6 +1061,9 @@ that is not `https://` (except on `http://localhost` and
 zero `AuthStyle` or `SameSite`, and negative durations. `register.New`
 refuses a nil `Create` or password module, negative values and a
 `MailWindow` over 24 h.
+
+`invite.New` refuses a nil `Create` or password module and a negative `TTL`;
+`emailchange.New` refuses a nil `Change` and a negative `TTL`.
 
 Switching `PlainLoginKey` off on a running app orphans the existing throttle
 counters; nothing migrates them.
@@ -928,6 +1104,13 @@ are the ones echov5's documentation suggests; elsewhere they are your choice.
 | `oidc.ErrBadCallback` (an error) | `oidc.ParseCallback` | the callback cannot be read |
 | `PolicyError`, `ErrBusy`, `ErrTokenUnknown`, `register.ErrAddressHeld` | `register` `Activate` | bad password (link unspent); no hashing slot (link unspent); link unknown, used, replaced or expired; a principal holds the address |
 | `register.ErrNothingToSend` (an error) | `register` `Mint` | the registration or link is gone: drop the mail job |
+| `ErrReauthRequired`, `ErrSessionEnded` | `RequireRecent`, `emailchange` `Start`; `ErrSessionEnded` also from the `Reverify` methods | sign-in too old: re-verify; session not open |
+| `invite.ErrSignInToAccept`, `invite.ErrOtherAccount`, `invite.ErrEmailMismatch`, `invite.ErrPrivateEmail`, `ErrTokenUnknown`, `ErrTokenGone` | `invite` accepts | the address has an account: sign in, then `AcceptSignedIn`; the signed-in principal is not the invited address; the provider's address is another; an Apple private relay address; link unknown; link or invite closed |
+| `invite.ErrInvitePending`, `invite.ErrInviteClosed`, `invite.ErrAddressHeld` (errors) | `invite` `Invite`, `Resend`, `Revoke` | an open invite exists; the invite is accepted or revoked; a principal holds the address and `Rules.Join` is nil |
+| `invite.ErrNothingToSend`, `emailchange.ErrNothingToSend` (errors) | `Mint` | drop the mail job |
+| `invite.ErrNoOIDC` (an error) | `invite` `AcceptOIDC` | `Rules.OIDC` is nil |
+| `emailchange.ErrSameAddress` | `emailchange` `Start`, `StartFor` | the new address is the current one |
+| `emailchange.ErrStale`, `emailchange.ErrAddressHeld`, `ErrTokenUnknown`, `ErrTokenGone` | `emailchange` `Confirm` | the login changed since the start; another principal took the address; link unknown; link spent or expired |
 | your `Refuse(result, err)` error | any method that calls `Admit` | your app refused the session |
 | `db.ErrTxRequired` (an `error`, not a refusal) | methods that write or lock | called outside a transaction |
 | `ErrSchemaBehind` (an `error`) | `CheckSchema` | run the migrations |
@@ -939,6 +1122,18 @@ Each release may add migrations. After every upgrade, rerun `authkit-gen`
 with the same flags and lock file, and apply the new migrations before
 deploying; otherwise `CheckSchema` refuses to start with `ErrSchemaBehind`.
 See `CHANGELOG.md` for the full list of changes.
+
+**v0.7.0.** New modules: `invite` and `emailchange`; new core methods `Forget`
+and `RequireRecent`, and re-verify methods on `password`, `secondfactor`,
+`passkey` and `oidc`. No existing signature changes; with `Config.Recent` and
+every module `Reauth` left at zero the windows stay 5 minutes. Migration 0007
+(`auth_invites`, `auth_email_changes`, the `reverify` ceremony kinds, the
+`email_changed` revoke reason) is required: `CheckSchema` refuses a database
+below version 7, even for an app that uses none of the new parts. Run
+`go get github.com/sylly-mika/authkit@v0.7.0` and `go mod tidy`, rerun
+`authkit-gen` with the same flags and lock, and apply the migration. If you
+use RLS, give the two new tables policies, as `authkittest/policies.sql`
+shows.
 
 **v0.6.0.** New modules: `oidc` (Google and Apple sign-in) and `register`.
 No existing signature changes. Migrations 0005 (`auth_ceremonies`,

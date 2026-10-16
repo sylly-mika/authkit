@@ -24,6 +24,7 @@ type Module struct {
 
 // New attaches passkeys to svc. Zero fields of r take their defaults, and an empty RPID leaves passkeys off: every method then answers authkit.ErrPasskeysOff. New refuses rules that are out of range, and answers authkit.ErrAttached when svc already has passkeys.
 func New(svc *authkit.Service, r Rules) (*Module, error) {
+	inherit := r.Reauth == 0
 	r = withDefaults(r)
 	if err := r.check(); err != nil {
 		return nil, err
@@ -35,6 +36,9 @@ func New(svc *authkit.Service, r Rules) (*Module, error) {
 	core, err := svc.Attach("passkey")
 	if err != nil {
 		return nil, err
+	}
+	if inherit {
+		r.Reauth = core.Config().Recent
 	}
 	return &Module{core: core, rules: r, rps: rps}, nil
 }
@@ -122,7 +126,7 @@ type Rules struct {
 	Origins map[authkit.Audience][]string
 	// CeremonyTTL is how long a begun ceremony may be finished. Zero is 2 minutes.
 	CeremonyTTL time.Duration
-	// Reauth is how recent a sign-in must be to add or remove a passkey. Zero is 5 minutes.
+	// Reauth is how recent a sign-in must be to add or remove a passkey. Zero is Config.Recent.
 	Reauth time.Duration
 	// Max is the most passkeys one principal may hold. Zero is 10.
 	Max int

@@ -134,6 +134,12 @@ func (t LoginThrottle) Clear(ctx context.Context, q db.Querier) error {
 	return throttle.Clear(ctx, q, t.key, t.aud)
 }
 
+// MoveTo carries the login's failed attempts over to the login of to, under t's audience, and forgets them under t's login.
+func (t LoginThrottle) MoveTo(ctx context.Context, q db.Querier, to LoginThrottle) error {
+	q = t.s.names.Q(q)
+	return throttle.Move(ctx, q, t.key, to.key, t.aud)
+}
+
 func deleteAllPasskeys(ctx context.Context, q db.Querier, principal uuid.UUID) (int, error) {
 	n, err := q.Exec(ctx, `DELETE FROM auth_passkeys WHERE principal_id = $1`, principal)
 	if err != nil {

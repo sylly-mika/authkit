@@ -12,7 +12,7 @@ import (
 
 var schemaName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
-var tables = regexp.MustCompile(`\bauth_(schema|sessions|tokens|events|throttle|credentials|passkeys|passkey_ceremonies|second_factors|recovery_codes|second_step_challenges|email_codes|ceremonies|identities|registrations|mail_counts)\b`)
+var tables = regexp.MustCompile(`\bauth_(schema|sessions|tokens|events|throttle|credentials|passkeys|passkey_ceremonies|second_factors|recovery_codes|second_step_challenges|email_codes|ceremonies|identities|registrations|mail_counts|invites|email_changes)\b`)
 
 // Check reports whether schema can name an install's PostgreSQL schema.
 func Check(schema string) error {

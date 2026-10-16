@@ -47,6 +47,15 @@ func (m *Module) Ticket(ctx context.Context, q db.Querier, ticket string) (*Sign
 	return s, nil
 }
 
+// TicketEmail returns the email of a live sign-up ticket and whether it is a private relay address, without spending it.
+func (m *Module) TicketEmail(ctx context.Context, q db.Querier, ticket string) (email string, private bool, err error) {
+	s, err := m.Ticket(ctx, q, ticket)
+	if err != nil {
+		return "", false, err
+	}
+	return s.Email, s.PrivateEmail, nil
+}
+
 // SignUp spends the ticket, links its identity to principal and signs the principal in. Every error it returns means the caller should roll back, including ErrTicketUnknown and ErrIdentityTaken; only an Admit refusal is a Refusal, and the caller should roll back any principal it created for this sign-up.
 func (m *Module) SignUp(ctx context.Context, q db.Querier, ticket string, principal uuid.UUID, aud authkit.Audience, meta authkit.Meta) (authkit.Result, error) {
 	q = m.core.Q(q)

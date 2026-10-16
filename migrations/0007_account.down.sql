@@ -1,0 +1,14 @@
+DROP TABLE auth_email_changes;
+DROP TABLE auth_invites;
+DELETE FROM auth_sessions WHERE revoke_reason = 'email_changed';
+ALTER TABLE auth_sessions DROP CONSTRAINT auth_sessions_revoke_reason;
+ALTER TABLE auth_sessions ADD CONSTRAINT auth_sessions_revoke_reason CHECK (revoke_reason IS NULL OR revoke_reason IN ('logout', 'user', 'password_changed', 'password_reset', 'reuse_detected', 'admin', 'passkey_removed', 'identity_removed'));
+DELETE FROM auth_ceremonies WHERE kind = 'reverify';
+ALTER TABLE auth_ceremonies DROP CONSTRAINT auth_ceremonies_principal;
+ALTER TABLE auth_ceremonies DROP CONSTRAINT auth_ceremonies_kind_check;
+ALTER TABLE auth_ceremonies ADD CONSTRAINT auth_ceremonies_kind_check CHECK (kind IN ('signin', 'link', 'signup'));
+ALTER TABLE auth_ceremonies ADD CONSTRAINT auth_ceremonies_principal CHECK ((kind = 'link') = (principal_id IS NOT NULL));
+DELETE FROM auth_passkey_ceremonies WHERE kind = 'reverify';
+ALTER TABLE auth_passkey_ceremonies DROP CONSTRAINT auth_passkey_ceremonies_kind_check;
+ALTER TABLE auth_passkey_ceremonies ADD CONSTRAINT auth_passkey_ceremonies_kind_check CHECK (kind IN ('register', 'login'));
+UPDATE auth_schema SET version = 6;

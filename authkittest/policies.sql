@@ -150,4 +150,16 @@ CREATE POLICY auth_mail_counts_auth ON auth_mail_counts FOR ALL
     USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
     WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
 
+ALTER TABLE auth_invites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_invites FORCE  ROW LEVEL SECURITY;
+CREATE POLICY auth_invites_auth ON auth_invites FOR ALL
+    USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
+    WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
+
+ALTER TABLE auth_email_changes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth_email_changes FORCE  ROW LEVEL SECURITY;
+CREATE POLICY auth_email_changes_auth ON auth_email_changes FOR ALL
+    USING (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL)
+    WITH CHECK (NULLIF(current_setting('app.workspace_id', true), '')::uuid IS NULL);
+
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authkit_app;

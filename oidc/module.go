@@ -24,7 +24,7 @@ import (
 type Rules struct {
 	// Providers are the sign-in providers, reported by Providers in this order.
 	Providers []Provider
-	// CeremonyTTL is how long a Begin can be finished; Skew is the clock skew tolerated on iat; Reauth is the re-authentication window.
+	// CeremonyTTL is how long a Begin can be finished; Skew is the clock skew tolerated on iat; Reauth is the re-authentication window, zero meaning Config.Recent.
 	CeremonyTTL, Skew, Reauth time.Duration
 	// HTTPClient carries token exchanges and key fetches.
 	HTTPClient *http.Client
@@ -67,6 +67,7 @@ var providerName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
 // New attaches the oidc module to svc. It refuses a provider whose endpoints are not https or whose client is incomplete, and answers authkit.ErrAttached when svc already has the module; a refused New attaches nothing.
 func New(svc *authkit.Service, r Rules) (*Module, error) {
+	inherit := r.Reauth == 0
 	r = withDefaults(r)
 	if err := checkRules(r); err != nil {
 		return nil, err
@@ -82,6 +83,9 @@ func New(svc *authkit.Service, r Rules) (*Module, error) {
 		return nil, err
 	}
 	m.core = core
+	if inherit {
+		m.rules.Reauth = core.Config().Recent
+	}
 	return m, nil
 }
 
@@ -175,7 +179,7 @@ func (m *Module) Begin(ctx context.Context, q db.Querier, provider string, aud a
 	return m.begin(ctx, q, "signin", provider, aud, nil)
 }
 
-func (m *Module) begin(ctx context.Context, q db.Querier, kind, provider string, aud authkit.Audience, principal *uuid.UUID) (Redirect, error) {
+func (m *Module) begin(ctx context.Context, q db.Querier, kind, provider string, aud authkit.Audience, principal *uuid.UUID, extra ...oauth2.AuthCodeOption) (Redirect, error) {
 	q = m.core.Q(q)
 	if err := db.RequireTx(q); err != nil {
 		return Redirect{}, err
@@ -217,6 +221,7 @@ func (m *Module) begin(ctx context.Context, q db.Querier, kind, provider string,
 	if p.FormPost {
 		opts = append(opts, oauth2.SetAuthURLParam("response_mode", "form_post"))
 	}
+	opts = append(opts, extra...)
 	return Redirect{URL: p.config().AuthCodeURL(state, opts...), Binding: binding, SameSite: p.SameSite}, nil
 }
 

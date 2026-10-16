@@ -2,6 +2,7 @@ package throttle_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync"
 	"testing"
@@ -270,4 +271,122 @@ func TestCountNeedsATransaction(t *testing.T) {
 	if !errors.Is(err, db.ErrTxRequired) {
 		t.Fatalf("Count on a bare connection = %v, want db.ErrTxRequired", err)
 	}
+}
+
+type counter struct {
+	failures    int
+	windowStart time.Time
+	lockedUntil *time.Time
+}
+
+func (c counter) equal(o counter) bool {
+	if c.failures != o.failures || !c.windowStart.Equal(o.windowStart) {
+		return false
+	}
+	if (c.lockedUntil == nil) != (o.lockedUntil == nil) {
+		return false
+	}
+	return c.lockedUntil == nil || c.lockedUntil.Equal(*o.lockedUntil)
+}
+
+func seedCounter(t *testing.T, d *authkittest.DB, login, aud string, c counter) {
+	t.Helper()
+	d.Exec(t, `INSERT INTO auth_throttle (login, audience, failures, window_start, locked_until) VALUES ($1, $2, $3, $4, $5)`,
+		login, aud, c.failures, c.windowStart, c.lockedUntil)
+}
+
+func readCounter(t *testing.T, d *authkittest.DB, login, aud string) (counter, bool) {
+	t.Helper()
+	var c counter
+	err := d.Row(t, `SELECT failures, window_start, locked_until FROM auth_throttle WHERE login = $1 AND audience = $2`, login, aud).
+		Scan(&c.failures, &c.windowStart, &c.lockedUntil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return counter{}, false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, true
+}
+
+func TestMoveMerges(t *testing.T) {
+	ctx := context.Background()
+	t0 := authkittest.NewClock().Now()
+	at := func(d time.Duration) *time.Time {
+		u := t0.Add(d)
+		return &u
+	}
+	for _, tc := range []struct {
+		name string
+		from counter
+		to   *counter
+		want counter
+	}{
+		{"the higher count and the later lock of from win", counter{2, t0, at(10 * time.Minute)}, &counter{4, t0.Add(time.Minute), nil}, counter{4, t0.Add(time.Minute), at(10 * time.Minute)}},
+		{"the later window start and the later lock of to win", counter{5, t0.Add(2 * time.Minute), at(5 * time.Minute)}, &counter{1, t0, at(20 * time.Minute)}, counter{5, t0.Add(2 * time.Minute), at(20 * time.Minute)}},
+		{"a row for from without a row for to is copied", counter{3, t0, at(10 * time.Minute)}, nil, counter{3, t0, at(10 * time.Minute)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := authkittest.NewDB(t)
+			seedCounter(t, d, "old", "staff", tc.from)
+			seedCounter(t, d, "old", "client", counter{7, t0, nil})
+			if tc.to != nil {
+				seedCounter(t, d, "new", "staff", *tc.to)
+			}
+			if err := d.InAuthTx(ctx, func(q db.Querier) error { return throttle.Move(ctx, q, "old", "new", "staff") }); err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := readCounter(t, d, "new", "staff"); !ok || !got.equal(tc.want) {
+				t.Errorf("new/staff = %+v, %v; want %+v", got, ok, tc.want)
+			}
+			if _, ok := readCounter(t, d, "old", "staff"); ok {
+				t.Error("the row of old under staff is still there")
+			}
+			if got, ok := readCounter(t, d, "old", "client"); !ok || !got.equal(counter{7, t0, nil}) {
+				t.Errorf("old/client = %+v, %v; want it untouched", got, ok)
+			}
+		})
+	}
+}
+
+func TestMoveNoRow(t *testing.T) {
+	ctx := context.Background()
+	t0 := authkittest.NewClock().Now()
+	t.Run("without a row for from nothing is written", func(t *testing.T) {
+		d := authkittest.NewDB(t)
+		seedCounter(t, d, "new", "staff", counter{1, t0, nil})
+		if err := d.InAuthTx(ctx, func(q db.Querier) error { return throttle.Move(ctx, q, "old", "new", "staff") }); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := readCounter(t, d, "new", "staff"); !ok || !got.equal(counter{1, t0, nil}) {
+			t.Errorf("new/staff = %+v, %v; want it unchanged", got, ok)
+		}
+		var n int
+		if err := d.Row(t, `SELECT count(*) FROM auth_throttle`).Scan(&n); err != nil || n != 1 {
+			t.Errorf("rows = %d (%v), want 1", n, err)
+		}
+	})
+	t.Run("the same login is left alone", func(t *testing.T) {
+		d := authkittest.NewDB(t)
+		until := t0.Add(10 * time.Minute)
+		seedCounter(t, d, "same", "staff", counter{4, t0, &until})
+		if err := d.InAuthTx(ctx, func(q db.Querier) error { return throttle.Move(ctx, q, "same", "same", "staff") }); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := readCounter(t, d, "same", "staff"); !ok || !got.equal(counter{4, t0, &until}) {
+			t.Errorf("same/staff = %+v, %v; want it unchanged", got, ok)
+		}
+	})
+	t.Run("needs a transaction", func(t *testing.T) {
+		d := authkittest.NewDB(t)
+		conn, err := d.App.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		err = throttle.Move(ctx, sqldb.Conn(conn), "old", "new", "staff")
+		if !errors.Is(err, db.ErrTxRequired) {
+			t.Fatalf("Move on a bare connection = %v, want db.ErrTxRequired", err)
+		}
+	})
 }

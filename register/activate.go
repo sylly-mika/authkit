@@ -10,6 +10,7 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/pending"
 	"github.com/sylly-mika/authkit/password"
 )
 
@@ -36,12 +37,12 @@ func (m *Module) Activate(ctx context.Context, q db.Querier, raw, pw string, met
 		return authkit.Result{}, err
 	}
 
-	tok, err := m.links.Peek(ctx, q, raw)
+	tok, ok, err := pending.Owner(ctx, q, m.links, raw, authkit.PurposeRegister)
 	switch {
-	case errors.Is(err, authkit.ErrTokenUnknown), err == nil && tok.Purpose != authkit.PurposeRegister:
-		return authkit.Result{Refusal: authkit.ErrTokenUnknown}, nil
 	case err != nil:
 		return authkit.Result{}, err
+	case !ok:
+		return authkit.Result{Refusal: authkit.ErrTokenUnknown}, nil
 	}
 	reg, ok, err := m.lockPending(ctx, q, tok.Owner, now)
 	if err != nil {

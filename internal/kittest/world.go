@@ -18,7 +18,9 @@ import (
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/authkittest"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/emailchange"
 	"github.com/sylly-mika/authkit/internal/nsql"
+	"github.com/sylly-mika/authkit/invite"
 	"github.com/sylly-mika/authkit/oidc"
 	"github.com/sylly-mika/authkit/passkey"
 	"github.com/sylly-mika/authkit/password"
@@ -33,21 +35,25 @@ var Cheap = password.Params{Memory: 64, Time: 1, Threads: 1, SaltLen: 16, KeyLen
 // Rules is the configuration a World builds its Kit from.
 type Rules struct {
 	authkit.Config
-	Password password.Config
-	Passkeys passkey.Rules
-	Factors  secondfactor.Rules
-	OIDC     oidc.Rules
-	Register register.Rules
+	Password    password.Config
+	Passkeys    passkey.Rules
+	Factors     secondfactor.Rules
+	OIDC        oidc.Rules
+	Register    register.Rules
+	Invite      *invite.Rules
+	EmailChange *emailchange.Rules
 }
 
-// Kit is the Service under test and its modules; OIDC and Register are nil unless their rules are set.
+// Kit is the Service under test and its modules; OIDC, Register, Invite and EmailChange are nil unless their rules are set.
 type Kit struct {
 	*authkit.Service
-	Password *password.Module
-	Passkeys *passkey.Module
-	Factors  *secondfactor.Module
-	OIDC     *oidc.Module
-	Register *register.Module
+	Password    *password.Module
+	Passkeys    *passkey.Module
+	Factors     *secondfactor.Module
+	OIDC        *oidc.Module
+	Register    *register.Module
+	Invite      *invite.Module
+	EmailChange *emailchange.Module
 }
 
 // World is one test's Kit and the fixtures it runs over.
@@ -154,6 +160,21 @@ func newKit(r Rules, p authkit.Principals, factors bool) (*Kit, error) {
 	}
 	if r.Register.Create != nil {
 		if kit.Register, err = register.New(svc, pw, r.Register); err != nil {
+			return nil, err
+		}
+	}
+	if r.Invite != nil {
+		ir := *r.Invite
+		// WHY: a nil *oidc.Module in the Tickets interface is a non-nil interface; invite would call it.
+		if ir.OIDC == nil && kit.OIDC != nil {
+			ir.OIDC = kit.OIDC
+		}
+		if kit.Invite, err = invite.New(svc, pw, ir); err != nil {
+			return nil, err
+		}
+	}
+	if r.EmailChange != nil {
+		if kit.EmailChange, err = emailchange.New(svc, *r.EmailChange); err != nil {
 			return nil, err
 		}
 	}
