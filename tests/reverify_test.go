@@ -31,6 +31,13 @@ func (w *world) rvEvents(id uuid.UUID, result string) int {
 	return w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = $2 AND source = 'reverify'`, id, result)
 }
 
+func (w *world) rvTOTP(c *authkit.Claims, code string) authkit.Result {
+	w.T.Helper()
+	return w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Factors.Reverify(w.Ctx, q, c, code, rvMeta)
+	})
+}
+
 func TestPasswordReverify(t *testing.T) {
 	w := newWorld(t)
 	id := w.User(rvLogin, pw)
@@ -160,6 +167,31 @@ func TestReverifyEnded(t *testing.T) {
 			t.Fatal("a re-verify on an ended session stamped it")
 		}
 	})
+	t.Run("totp", func(t *testing.T) {
+		w := newWorld(t, withSecondFactors)
+		id := w.User(rvLogin, pw)
+		c := w.Claims(w.SignIn(rvLogin, pw))
+		secret, _ := w.setUpTOTP(c)
+		w.Clock.Advance(10 * time.Minute)
+		w.logout(w.Pinned(id), c)
+		_, before, _ := w.totpRow(id)
+
+		if res := w.rvTOTP(c, totpCode(t, secret, w.Clock.Now())); !errors.Is(res.Refusal, authkit.ErrSessionEnded) {
+			t.Fatalf("a TOTP re-verify on an ended session = %v, want ErrSessionEnded", res.Refusal)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_events WHERE source = 'reverify'`); n != 0 {
+			t.Fatalf("reverify events on an ended session = %d, want 0", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_throttle`); n != 0 {
+			t.Fatalf("throttle rows on an ended session = %d, want 0", n)
+		}
+		if w.rvStamped(c) {
+			t.Fatal("a TOTP re-verify on an ended session stamped it")
+		}
+		if _, after, _ := w.totpRow(id); after != before {
+			t.Fatal("a TOTP re-verify on an ended session spent a step")
+		}
+	})
 }
 
 func TestReverifyOtherAudience(t *testing.T) {
@@ -191,4 +223,169 @@ func TestReverifyOtherAudience(t *testing.T) {
 			t.Fatalf("staff reverify events = %d, want 0", n)
 		}
 	})
+	t.Run("totp", func(t *testing.T) {
+		w := newWorld(t, withSecondFactors)
+		w.User(rvLogin, pw)
+		c0 := w.Claims(w.Login("client", rvLogin, pw))
+		secret, _ := w.setUpTOTP(c0)
+		w.Clock.Advance(10 * time.Minute)
+		cl := *c0
+		cl.Audience = "staff"
+
+		if res := w.rvTOTP(&cl, w.wrongTOTP(secret)); !errors.Is(res.Refusal, authkit.ErrBadCode) {
+			t.Fatalf("a wrong code = %v, want ErrBadCode", res.Refusal)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_throttle WHERE audience = 'client'`); n != 1 {
+			t.Fatalf("client throttle rows = %d, want 1", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_throttle WHERE audience = 'staff'`); n != 0 {
+			t.Fatalf("staff throttle rows = %d, want 0", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_events WHERE result = 'bad_code' AND source = 'reverify' AND audience = 'client'`); n != 1 {
+			t.Fatalf("client bad_code events = %d, want 1", n)
+		}
+		if res := w.rvTOTP(&cl, totpCode(t, secret, w.Clock.Now())); res.Refusal != nil {
+			t.Fatalf("the right code refused: %v", res.Refusal)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_events WHERE result = 'reverified' AND source = 'reverify' AND audience = 'client'`); n != 1 {
+			t.Fatalf("client reverified events = %d, want 1", n)
+		}
+		if n := w.Count(`SELECT count(*) FROM auth_events WHERE audience = 'staff' AND source = 'reverify'`); n != 0 {
+			t.Fatalf("staff reverify events = %d, want 0", n)
+		}
+	})
+}
+
+func TestTOTPReverify(t *testing.T) {
+	w := newWorld(t, withSecondFactors)
+	id := w.User(rvLogin, pw)
+	c := w.Claims(w.SignIn(rvLogin, pw))
+	secret, _ := w.setUpTOTP(c)
+	w.Clock.Advance(10 * time.Minute)
+
+	wrong := w.rvTOTP(c, w.wrongTOTP(secret))
+	if !errors.Is(wrong.Refusal, authkit.ErrBadCode) {
+		t.Fatalf("a wrong code = %v, want ErrBadCode", wrong.Refusal)
+	}
+	if w.rvStamped(c) {
+		t.Fatal("a wrong code stamped the session")
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'bad_code' AND source = 'reverify' AND second_factor = 'totp'`, id); n != 1 {
+		t.Fatalf("bad_code events = %d, want 1", n)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_throttle WHERE login = $1 AND failures = 1`, rvLogin); n != 1 {
+		t.Fatalf("throttle rows with one failure = %d, want 1", n)
+	}
+
+	code := totpCode(t, secret, w.Clock.Now())
+	right := w.rvTOTP(c, code)
+	if right.Refusal != nil {
+		t.Fatalf("the right code refused: %v", right.Refusal)
+	}
+	if right.Principal.ID != id || right.Tokens != nil {
+		t.Fatal("the right code gave more than the principal")
+	}
+	if !w.rvStamped(c) {
+		t.Fatal("the right code did not stamp the session")
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'reverified' AND source = 'reverify' AND second_factor = 'totp' AND session_id = $2`, id, c.SessionID); n != 1 {
+		t.Fatalf("reverified events = %d, want 1", n)
+	}
+	if replay := w.rvTOTP(c, code); !errors.Is(replay.Refusal, authkit.ErrBadCode) {
+		t.Fatalf("a replayed code = %v, want ErrBadCode", replay.Refusal)
+	}
+}
+
+func TestTOTPReverifyRefusesEmailCode(t *testing.T) {
+	w := newWorld(t, withSecondFactors)
+	id := w.User(rvLogin, pw)
+	c := w.Claims(w.SignIn(rvLogin, pw))
+	w.enrolEmail(c)
+	tok := w.challenge(rvLogin)
+	sent := w.stepSend("staff", tok)
+	mail, err := w.mint(sent.EmailCode.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Clock.Advance(time.Minute)
+
+	if res := w.rvTOTP(c, mail.Code); !errors.Is(res.Refusal, authkit.ErrBadCode) {
+		t.Fatalf("an email sign-in code = %v, want ErrBadCode", res.Refusal)
+	}
+	if w.rvStamped(c) {
+		t.Fatal("an email sign-in code stamped the session")
+	}
+	if n := w.codeRow(id).Tries; n != 0 {
+		t.Fatalf("sign-in code tries = %d, want 0: the code was spent", n)
+	}
+	if n := w.rvEvents(id, authkit.ResultReverified); n != 0 {
+		t.Fatalf("reverified events = %d, want 0", n)
+	}
+}
+
+func TestTOTPReverifyRefusesRecovery(t *testing.T) {
+	w := newWorld(t, withSecondFactors)
+	id := w.User(rvLogin, pw)
+	c := w.Claims(w.SignIn(rvLogin, pw))
+	_, codes := w.setUpTOTP(c)
+	w.Clock.Advance(time.Minute)
+
+	if res := w.rvTOTP(c, codes[0]); !errors.Is(res.Refusal, authkit.ErrBadCode) {
+		t.Fatalf("a recovery code = %v, want ErrBadCode", res.Refusal)
+	}
+	if w.rvStamped(c) {
+		t.Fatal("a recovery code stamped the session")
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_recovery_codes WHERE principal_id = $1 AND used_at IS NULL`, id); n != len(codes) {
+		t.Fatalf("unspent recovery codes = %d, want %d", n, len(codes))
+	}
+	if n := w.rvEvents(id, authkit.ResultReverified); n != 0 {
+		t.Fatalf("reverified events = %d, want 0", n)
+	}
+}
+
+func TestTOTPReverifyLocked(t *testing.T) {
+	w := newWorld(t, withSecondFactors, throttleAt(3))
+	id := w.User(rvLogin, pw)
+	c := w.Claims(w.SignIn(rvLogin, pw))
+	secret, _ := w.setUpTOTP(c)
+	w.Clock.Advance(10 * time.Minute)
+	for range 3 {
+		w.rvTOTP(c, w.wrongTOTP(secret))
+	}
+	_, before, _ := w.totpRow(id)
+
+	res := w.rvTOTP(c, totpCode(t, secret, w.Clock.Now()))
+	var locked authkit.ErrLocked
+	if !errors.As(res.Refusal, &locked) || locked.RetryAfter <= 0 {
+		t.Fatalf("a code on a locked login = %v, want ErrLocked", res.Refusal)
+	}
+	if w.rvStamped(c) {
+		t.Fatal("a code on a locked login stamped the session")
+	}
+	if n := w.rvEvents(id, authkit.ResultLocked); n != 1 {
+		t.Fatalf("locked events = %d, want 1", n)
+	}
+	if _, after, _ := w.totpRow(id); after != before {
+		t.Fatal("a code on a locked login spent a step")
+	}
+	if res := w.Login("staff", rvLogin, pw); !errors.As(res.Refusal, &locked) {
+		t.Fatalf("a password sign-in on a locked login = %v, want ErrLocked", res.Refusal)
+	}
+}
+
+func TestTOTPReverifyOff(t *testing.T) {
+	w := newWorld(t)
+	w.User(rvLogin, pw)
+	c := w.Claims(w.SignIn(rvLogin, pw))
+
+	if res := w.rvTOTP(c, "000000"); !errors.Is(res.Refusal, authkit.ErrSecondFactorsOff) {
+		t.Fatalf("a TOTP re-verify with second factors off = %v, want ErrSecondFactorsOff", res.Refusal)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE source = 'reverify'`); n != 0 {
+		t.Fatalf("reverify events = %d, want 0", n)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_throttle`); n != 0 {
+		t.Fatalf("throttle rows = %d, want 0", n)
+	}
 }

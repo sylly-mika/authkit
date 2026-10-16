@@ -120,6 +120,7 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 		},
 		"Factors.BeginTOTPSetup":          func() error { _, err := w.Svc.Factors.BeginTOTPSetup(ctx, q, c, authkit.Meta{}); return err },
 		"Factors.ConfirmTOTP":             func() error { _, err := w.Svc.Factors.ConfirmTOTP(ctx, q, c, "000000", authkit.Meta{}); return err },
+		"Factors.Reverify":                func() error { _, err := w.Svc.Factors.Reverify(ctx, q, c, "000000", authkit.Meta{}); return err },
 		"Factors.RegenerateRecoveryCodes": func() error { _, err := w.Svc.Factors.RegenerateRecoveryCodes(ctx, q, c, authkit.Meta{}); return err },
 		"Factors.BeginEmailCodeSetup":     func() error { _, err := w.Svc.Factors.BeginEmailCodeSetup(ctx, q, c, authkit.Meta{}); return err },
 		"Factors.ConfirmEmailCode": func() error {
