@@ -27,13 +27,13 @@ func TestAllIsContiguousAndComplete(t *testing.T) {
 	}
 }
 
-func TestVersionIsSix(t *testing.T) {
+func TestVersionIsSeven(t *testing.T) {
 	all := migrations.All()
-	if migrations.Version != 6 || len(all) != 6 {
-		t.Fatalf("Version = %d with %d migrations, want 6 and 6", migrations.Version, len(all))
+	if migrations.Version != 7 || len(all) != 7 {
+		t.Fatalf("Version = %d with %d migrations, want 7 and 7", migrations.Version, len(all))
 	}
-	if all[4].Name != "oidc" || all[5].Name != "register" {
-		t.Errorf("migrations 5 and 6 are %q and %q, want oidc and register", all[4].Name, all[5].Name)
+	if all[5].Name != "register" || all[6].Name != "account" {
+		t.Errorf("migrations 6 and 7 are %q and %q, want register and account", all[5].Name, all[6].Name)
 	}
 }
 
@@ -118,6 +118,8 @@ func TestRenderInWithoutASchemaKeepsTheBytes(t *testing.T) {
 		{"0f61986ffb9cbb39d8056141de54c64f4daf86e4550403db43b1fa19964c1b5e", "7efa200f4caae25fcfdf3536e44e807bdeae3a530e6d1a6a42a9fb55958e5ac9"},
 		{"61e3763bd06f552ae7677873f48c5ebdbd01e7414324d4c4fffe5d432327e3ac", "619a15413852904fbbd4d3cacb961e8df843d3183ee3576c94550b382db0d348"},
 		{"2f6f0b1898562c1533ce322e267c32aef87db054bc8bec8f12aad7218247548a", "26ff7d19dfea7e662c7700641a7ef8e5c02996e138a120afb5ba47dc928ca59c"},
+		{"1310e33a903f308ec748a39fe26406c5c725a341644827dd9be72d0c8510dfde", "ca57c2e6e723cff698a246b2c9f00051d3240eac5c0b1920674c334158027a01"},
+		{"bb196942ecfc817d3c85c1708d8a8a47f9a04553788e822c60bc460a3ee53e65", "c2670d448a7222edba4231d54467d2e6da324d34eefca2a0e9f7e1c628b9dd62"},
 	}
 	all := migrations.All()
 	for i, h := range hashes {
@@ -151,7 +153,7 @@ func TestRenderInWithoutASchemaKeepsTheBytes(t *testing.T) {
 
 func TestRenderInQualifiesEveryTableName(t *testing.T) {
 	const schema = "kit_ns"
-	counts := []struct{ id, up, down int }{{1, 14, 6}, {2, 2, 2}, {3, 11, 7}, {4, 9, 7}, {5, 11, 9}, {6, 3, 3}}
+	counts := []struct{ id, up, down int }{{1, 14, 6}, {2, 2, 2}, {3, 11, 7}, {4, 9, 7}, {5, 11, 9}, {6, 3, 3}, {7, 18, 14}}
 	all := migrations.All()
 	for _, c := range counts {
 		m := all[c.id-1]
