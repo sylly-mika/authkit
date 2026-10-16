@@ -33,6 +33,44 @@ func TestListSessionsPagesAndMarksTheCurrentOne(t *testing.T) {
 	}
 }
 
+func TestListSessionsOfListsAnotherPrincipalsOpenSessions(t *testing.T) {
+	w := newWorld(t)
+	ada := w.User("ada@example.invalid", "the right password")
+	bob := w.User("bob@example.invalid", "bob's password")
+	mine := w.SignIn("ada@example.invalid", "the right password")
+	expired := w.SignIn("bob@example.invalid", "bob's password")
+	w.Clock.Advance(time.Minute)
+	gone := w.SignIn("bob@example.invalid", "bob's password")
+	w.Clock.Advance(time.Minute)
+	second := w.SignIn("bob@example.invalid", "bob's password")
+	w.Clock.Advance(time.Minute)
+	third := w.SignIn("bob@example.invalid", "bob's password")
+	w.D.Exec(t, `UPDATE auth_sessions SET expires_at = $2 WHERE id = $1`, expired.Session.ID, w.Clock.Now().Add(-time.Second))
+	w.D.Exec(t, `UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'logout' WHERE id = $1`, gone.Session.ID, w.Clock.Now())
+	var (
+		page1, page2, adas       []authkit.Session
+		total1, total2, totalAda int
+		err1, err2, errAda       error
+	)
+	if err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+		page1, total1, err1 = w.Svc.ListSessionsOf(w.Ctx, q, bob, 1, 0)
+		page2, total2, err2 = w.Svc.ListSessionsOf(w.Ctx, q, bob, 1, 1)
+		adas, totalAda, errAda = w.Svc.ListSessionsOf(w.Ctx, q, ada, 10, 0)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err1 != nil || total1 != 2 || len(page1) != 1 || page1[0].ID != third.Session.ID || page1[0].Current {
+		t.Fatalf("page 1 = %+v, total %d (%v)", page1, total1, err1)
+	}
+	if err2 != nil || total2 != 2 || len(page2) != 1 || page2[0].ID != second.Session.ID || page2[0].Current {
+		t.Fatalf("page 2 = %+v, total %d (%v)", page2, total2, err2)
+	}
+	if errAda != nil || totalAda != 1 || len(adas) != 1 || adas[0].ID != mine.Session.ID {
+		t.Fatalf("ada's sessions = %+v, total %d (%v)", adas, totalAda, errAda)
+	}
+}
+
 func TestRevokeSessionLogsRevokedAndReachesOnlyOwnSessions(t *testing.T) {
 	w := newWorld(t)
 	id := w.User("ada@example.invalid", "the right password")

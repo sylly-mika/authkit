@@ -52,7 +52,7 @@ func (c counted) QueryRow(ctx context.Context, query string, args ...any) db.Row
 }
 
 var (
-	sweptReads = []string{"Authenticate", "RequireRecent", "CheckSchema", "ListSessions", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.TicketEmail", "OIDC.Identities", "Invite.List", "Invite.Open", "EmailChange.Pending"}
+	sweptReads = []string{"Authenticate", "RequireRecent", "CheckSchema", "ListSessions", "ListSessionsOf", "ListEvents", "Passkeys.ListPasskeys", "Password.HasCredential", "Factors.SecondFactorStatus", "OneTime.CreatedSince", "OneTime.Peek", "OIDC.Ticket", "OIDC.TicketEmail", "OIDC.Identities", "Invite.List", "Invite.Open", "EmailChange.Pending"}
 	sweptPure  = []string{"Codec", "OneTime", "Password.ResetFloor", "Password.CheckPassword", "Password.AcquireHashSlot", "Password.Hash", "Attach", "OIDC.Providers", "Register.Floor"}
 )
 
@@ -257,6 +257,9 @@ func TestReadMethodsAcceptABarePinnedConnection(t *testing.T) {
 	}
 	if _, total, err := w.Svc.ListSessions(w.Ctx, q, c, 10, 0); err != nil || total != 1 {
 		t.Errorf("ListSessions = %d, %v", total, err)
+	}
+	if list, total, err := w.Svc.ListSessionsOf(w.Ctx, q, id, 10, 0); err != nil || total != 1 || len(list) != 1 || list[0].ID != res.Session.ID {
+		t.Errorf("ListSessionsOf = %d, %v", total, err)
 	}
 	if _, total, err := w.Svc.ListEvents(w.Ctx, q, id, nil, 10, 0); err != nil || total != 1 {
 		t.Errorf("ListEvents = %d, %v", total, err)

@@ -24,6 +24,11 @@ func (s *Service) ListSessions(ctx context.Context, q db.Querier, c *Claims, lim
 	return list, total, err
 }
 
+// ListSessionsOf is the principal's open sessions, newest first, none marked Current, and their count; the app authorises the caller.
+func (s *Service) ListSessionsOf(ctx context.Context, q db.Querier, principal uuid.UUID, limit, offset int) ([]Session, int, error) {
+	return session.ListOpen(ctx, s.names.Q(q), principal, s.now(), limit, offset)
+}
+
 // RevokeSession ends one of the caller's own open sessions and logs revoked
 // with the caller's scope; ErrSessionEnded when there is no such open session.
 func (s *Service) RevokeSession(ctx context.Context, q db.Querier, c *Claims, id uuid.UUID, m Meta) (Result, error) {
