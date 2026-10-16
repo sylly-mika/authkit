@@ -792,11 +792,11 @@ the same transaction.
 `f, err := kit.Forget(ctx, q, p)` deletes every authkit row of `p` in every
 audience: sessions, password, passkeys, second factors, OIDC identities, reset
 links, invites to its address, its pending registration and email change, and
-its throttle counters. Run it in one transaction:
+its throttle counters. Sign-in log rows are not deleted: they are unlinked (no
+principal, no session) and kept until `Config.EventRetention` (90 days by
+default; a negative value keeps them), then `Prune` removes them.
 
-Sign-in log rows are not deleted: they are unlinked (no principal, no session)
-and kept until `Config.EventRetention`, then pruned. A negative retention
-deletes them at once.
+Run it in one transaction:
 
 1. Lock your principal row `FOR UPDATE`.
 2. Call `kit.Forget`.
