@@ -10,6 +10,14 @@
 // VerifyPassword's bad_password write what the caller's transaction must
 // commit, CompleteReset keeps the spend of a link whose owner is gone, and
 // every other refusal comes before the method's first write.
+//
+// RequireRecent asks for a sign-in or re-verify within Config.Recent before a
+// sensitive change. A re-verify (password, TOTP, passkey or OIDC) stamps the
+// session's authenticated time in place: the session token is not rotated.
+// ASVS 7.2.4 asks for a new token on re-authentication; authkit deviates
+// because a rotation would make the app swap its cookie in the middle of a
+// flow, while the refresh token already rotates on every refresh. ASVS 7.1.1
+// asks for such a deviation to be documented; this paragraph is that record.
 package authkit
 
 import (

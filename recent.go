@@ -9,6 +9,7 @@ import (
 )
 
 // RequireRecent refuses with ErrReauthRequired unless the caller's session authenticated within window; zero window means Config.Recent.
+// A re-verify stamps the session in place and keeps its token; the package doc says why.
 func (s *Service) RequireRecent(ctx context.Context, q db.Querier, cl *Claims, window time.Duration) (Result, error) {
 	if window == 0 {
 		window = s.cfg.Recent
