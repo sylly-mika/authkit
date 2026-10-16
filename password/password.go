@@ -1,5 +1,6 @@
 // Package password hashes and verifies passwords with argon2id in PHC string
-// format, behind a ceiling on concurrent hashes.
+// format, behind a ceiling on concurrent hashes. A Config.Legacy verifier
+// checks a hash from an older system once; Login rewrites it as argon2id.
 package password
 
 import (
@@ -98,6 +99,7 @@ type Hasher struct {
 	wait   time.Duration
 	rand   io.Reader
 	dummy  string
+	legacy []Legacy
 }
 
 // NewHasher computes the dummy hash up front, under the same parameters, so
@@ -170,10 +172,20 @@ func (h *Hasher) Hash(ctx context.Context, pw string) (string, error) {
 
 // Verify reports whether pw matches the stored PHC string, under the
 // string's own parameters, comparing in constant time.
+// A hash that is not argon2id goes to the first Legacy verifier that owns it.
 func (h *Hasher) Verify(ctx context.Context, encoded, pw string) (bool, error) {
 	stored, err := decode(encoded)
 	if err != nil {
-		return false, err
+		l := h.owner(encoded)
+		if l == nil {
+			return false, err
+		}
+		release, err := h.Acquire(ctx)
+		if err != nil {
+			return false, err
+		}
+		defer release()
+		return l.Verify(encoded, pw)
 	}
 	release, err := h.Acquire(ctx)
 	if err != nil {
@@ -191,12 +203,21 @@ func (h *Hasher) VerifyDummy(ctx context.Context, pw string) error {
 	return err
 }
 
-// NeedsRehash reports a stored hash made under weaker parameters.
+// NeedsRehash reports a stored hash made under weaker parameters, or one a Legacy verifier owns.
 func (h *Hasher) NeedsRehash(encoded string) bool {
 	stored, err := decode(encoded)
 	if err != nil {
-		return false
+		return h.owner(encoded) != nil
 	}
 	p, want := stored.params, h.params
 	return p.Memory < want.Memory || p.Time < want.Time || p.Threads < want.Threads || p.KeyLen < want.KeyLen || p.SaltLen < want.SaltLen
+}
+
+func (h *Hasher) owner(encoded string) Legacy {
+	for _, l := range h.legacy {
+		if l.Owns(encoded) {
+			return l
+		}
+	}
+	return nil
 }

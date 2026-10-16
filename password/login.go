@@ -15,7 +15,7 @@ import (
 // first (from ctx, or taken here), so a Busy refusal counts nothing; then the
 // login's throttle row, locked until the caller commits, is counted, and an
 // attempt past the limit is refused ErrLocked without a verification. Then
-// the lookup, exactly one argon2id verification, Admit, the session, the
+// the lookup, exactly one verification, Admit, the session, the
 // counter cleared and signed_in. Throttle.CountAfterVerify is v0.1's order:
 // check the lock, verify, count a failure. Its refusals return normally after
 // writing their throttle count and event. A principal holding a confirmed
