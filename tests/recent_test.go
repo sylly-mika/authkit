@@ -45,6 +45,98 @@ func TestRecentDefault(t *testing.T) {
 			t.Fatalf("BeginPasskeyRegistration at 5m1s = %v; want ErrReauthRequired", res.Refusal)
 		}
 	})
+
+	t.Run("passkey", func(t *testing.T) {
+		w := newWorld(t, withRecent(2*time.Minute), withPasskeys)
+		w.User("ada@example.invalid", "the right password")
+		c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
+		w.Clock.Advance(2*time.Minute + time.Second)
+		res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+			return w.Svc.Passkeys.BeginPasskeyRegistration(w.Ctx, q, c, authkit.Meta{})
+		})
+		if !errors.Is(res.Refusal, authkit.ErrReauthRequired) {
+			t.Fatalf("BeginPasskeyRegistration at 2m1s with Recent 2m = %v; want ErrReauthRequired", res.Refusal)
+		}
+		if n := w.Count("SELECT count(*) FROM auth_passkey_ceremonies"); n != 0 {
+			t.Fatalf("passkey ceremonies = %d, want 0", n)
+		}
+	})
+
+	t.Run("secondfactor", func(t *testing.T) {
+		w := newWorld(t, withRecent(2*time.Minute), withSecondFactors)
+		ada := w.User("ada@example.invalid", "the right password")
+		c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
+		w.Clock.Advance(2*time.Minute + time.Second)
+		res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+			return w.Svc.Factors.BeginTOTPSetup(w.Ctx, q, c, authkit.Meta{})
+		})
+		if !errors.Is(res.Refusal, authkit.ErrReauthRequired) {
+			t.Fatalf("BeginTOTPSetup at 2m1s with Recent 2m = %v; want ErrReauthRequired", res.Refusal)
+		}
+		if n := w.Count("SELECT count(*) FROM auth_second_factors WHERE principal_id = $1", ada); n != 0 {
+			t.Fatalf("second factors = %d, want 0", n)
+		}
+	})
+
+	t.Run("oidc", func(t *testing.T) {
+		w := newWorld(t, withRecent(2*time.Minute))
+		w.withOIDC(false)
+		w.User("ada@example.invalid", "the right password")
+		c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
+		w.Clock.Advance(2*time.Minute + time.Second)
+		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+			_, err := w.Svc.OIDC.Link(w.Ctx, q, c, "google", authkit.Meta{})
+			return err
+		})
+		if !errors.Is(err, authkit.ErrReauthRequired) {
+			t.Fatalf("OIDC.Link at 2m1s with Recent 2m = %v; want ErrReauthRequired", err)
+		}
+		if n := w.Count("SELECT count(*) FROM auth_ceremonies"); n != 0 {
+			t.Fatalf("OIDC ceremonies = %d, want 0", n)
+		}
+	})
+}
+
+func TestRecentWideWindow(t *testing.T) {
+	w := newWorld(t)
+	r := w.Cfg
+	r.Recent = 20 * time.Minute
+	if kit, err := kittest.NewKit(r, w.P); kit != nil || err == nil {
+		t.Fatalf("NewKit with Recent 20m = %v, %v; want an error and no Service", kit, err)
+	}
+
+	w = newWorld(t, withRecent(10*time.Minute), withPasskeys)
+	w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
+	w.Clock.Advance(9 * time.Minute)
+	res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Passkeys.BeginPasskeyRegistration(w.Ctx, q, c, authkit.Meta{})
+	})
+	if res.Refusal != nil {
+		t.Fatalf("BeginPasskeyRegistration at 9m with Recent 10m = %v; want nil", res.Refusal)
+	}
+}
+
+func TestRecentSetReauthWins(t *testing.T) {
+	w := newWorld(t, withRecent(2*time.Minute), func(c *kittest.Rules) {
+		withPasskeys(c)
+		c.Passkeys.Reauth = 4 * time.Minute
+	})
+	w.User("ada@example.invalid", "the right password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "the right password"))
+	begin := func() authkit.Result {
+		return w.InAuth(func(q db.Querier) (authkit.Result, error) {
+			return w.Svc.Passkeys.BeginPasskeyRegistration(w.Ctx, q, c, authkit.Meta{})
+		})
+	}
+	w.Clock.Advance(3 * time.Minute)
+	if res := begin(); res.Refusal != nil {
+		t.Fatalf("BeginPasskeyRegistration at 3m with Reauth 4m = %v; want nil", res.Refusal)
+	}
+	w.Clock.Advance(time.Minute + time.Second)
+	if res := begin(); !errors.Is(res.Refusal, authkit.ErrReauthRequired) {
+		t.Fatalf("BeginPasskeyRegistration at 4m1s with Reauth 4m = %v; want ErrReauthRequired", res.Refusal)
+	}
 }
 
 func TestRecentNegativeRefused(t *testing.T) {
