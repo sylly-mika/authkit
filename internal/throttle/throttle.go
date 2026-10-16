@@ -94,6 +94,39 @@ func Clear(ctx context.Context, q db.Querier, login, aud string) error {
 	return err
 }
 
+// Move carries the counter of login from under aud over to login to, keeping the higher failure count, the later window start and the later lock, and deletes the row of from. Without a row for from it does nothing.
+func Move(ctx context.Context, q db.Querier, from, to, aud string) error {
+	if err := db.RequireTx(q); err != nil {
+		return err
+	}
+	if from == to {
+		return nil
+	}
+	var failures int
+	var windowStart time.Time
+	var lockedUntil *time.Time
+	err := q.QueryRow(ctx, `SELECT failures, window_start, locked_until FROM auth_throttle WHERE login = $1 AND audience = $2 FOR UPDATE`,
+		from, aud).Scan(&failures, &windowStart, &lockedUntil)
+	switch {
+	case errors.Is(err, db.ErrNoRows):
+		return nil
+	case err != nil:
+		return err
+	}
+	if _, err := q.Exec(ctx, `
+		INSERT INTO auth_throttle AS t (login, audience, failures, window_start, locked_until)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (login, audience) DO UPDATE SET
+		    failures     = GREATEST(t.failures, EXCLUDED.failures),
+		    window_start = GREATEST(t.window_start, EXCLUDED.window_start),
+		    locked_until = GREATEST(t.locked_until, EXCLUDED.locked_until)`,
+		to, aud, failures, windowStart, lockedUntil); err != nil {
+		return err
+	}
+	_, err = q.Exec(ctx, `DELETE FROM auth_throttle WHERE login = $1 AND audience = $2`, from, aud)
+	return err
+}
+
 // Prune deletes counters whose window and lock have both passed at now.
 func Prune(ctx context.Context, q db.Querier, now time.Time, r Rules) (int64, error) {
 	return q.Exec(ctx, `DELETE FROM auth_throttle WHERE window_start <= $1 AND (locked_until IS NULL OR locked_until <= $2)`,
