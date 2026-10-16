@@ -751,8 +751,9 @@ the same transaction.
    `State` (`pending`, `expired`, `accepted`, `revoked`) and the total.
 2. Mail worker, own transaction: `mail, err := kit.Invite.Mint(ctx, q,
    tokenID)`. `invite.ErrNothingToSend` means the invite or link is gone, or
-   `Rules.Check` voided it: drop the job. `mail.Held` says the address has an
-   account: word the mail "sign in to accept".
+   `Rules.Check` voided it. On that error, commit the transaction (the void is
+   in it), then drop the job. `mail.Held` says the address has an account:
+   word the mail "sign in to accept".
 3. Invite page: `op, err := kit.Invite.Open(ctx, q, raw)` shows the invite and
    spends nothing; it returns `authkit.ErrTokenUnknown` or
    `authkit.ErrTokenGone`. Send `Referrer-Policy: no-referrer` on this page,
@@ -792,9 +793,10 @@ the same transaction.
 `f, err := kit.Forget(ctx, q, p)` deletes every authkit row of `p` in every
 audience: sessions, password, passkeys, second factors, OIDC identities, reset
 links, invites to its address, its pending registration and email change, and
-its throttle counters. Sign-in log rows are not deleted: they are unlinked (no
-principal, no session) and kept until `Config.EventRetention` (90 days by
-default; a negative value keeps them), then `Prune` removes them.
+its throttle counters. Its sign-in log rows are unlinked (no principal, no
+session) and kept until `Config.EventRetention` has passed (90 days by
+default), then `Prune` removes them. With a negative `EventRetention`, which
+otherwise keeps the log forever, `Forget` deletes the person's rows at once.
 
 Run it in one transaction:
 

@@ -78,7 +78,7 @@ type Config struct {
 	Throttle      Throttle
 	Events        EventRules
 	// EventRetention is how long Prune keeps auth_events rows. Zero is 90
-	// days; negative keeps them forever.
+	// days; negative keeps them forever, and Forget then deletes a person's rows instead of unlinking them.
 	EventRetention time.Duration
 	// Recent is how long after a sign-in or re-verify a session may make sensitive changes, at most 10 minutes; zero means 5 minutes, and a negative value is refused.
 	Recent time.Duration
