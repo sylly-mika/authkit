@@ -122,3 +122,63 @@ func TestCheckSchemaRefusesVersionOne(t *testing.T) {
 		t.Fatalf("a v0.1 schema = %v, want ErrSchemaBehind: v0.2 needs 0002's absolute_expires_at", err)
 	}
 }
+
+func TestAbsoluteTTLForSetsTheCapAtSignIn(t *testing.T) {
+	w := newWorld(t, kittest.DefaultRules, pestSessions, func(c *kittest.Rules) {
+		c.Session.AbsoluteTTLFor["kiosk"] = time.Hour
+		c.RefreshTTLFor["kiosk"] = 30 * time.Minute
+	})
+	w.User("ada@example.invalid", "the right password")
+	signed := map[authkit.Audience]authkit.Result{}
+	for _, aud := range []authkit.Audience{"office", "field", "kiosk"} {
+		res := w.Login(aud, "ada@example.invalid", "the right password")
+		if res.Refusal != nil {
+			t.Fatalf("%s sign-in refused: %v", aud, res.Refusal)
+		}
+		signed[aud] = res
+	}
+	t0 := w.Clock.Now()
+	office := signed["office"]
+	if exp, abs := w.expiries(office.Session.ID); !exp.Equal(t0.Add(2*time.Hour)) || abs == nil || !abs.Equal(t0.Add(12*time.Hour)) ||
+		office.Session.AbsoluteExpiresAt == nil || !office.Session.AbsoluteExpiresAt.Equal(t0.Add(12*time.Hour)) {
+		t.Fatalf("office: stored expiry %v, cap %v, result cap %v; want t0+2h and cap t0+12h", exp, abs, office.Session.AbsoluteExpiresAt)
+	}
+	field := signed["field"]
+	if exp, abs := w.expiries(field.Session.ID); !exp.Equal(t0.Add(90*24*time.Hour)) || abs != nil || field.Session.AbsoluteExpiresAt != nil {
+		t.Fatalf("field: stored expiry %v, cap %v, result cap %v; want t0+90d and no cap", exp, abs, field.Session.AbsoluteExpiresAt)
+	}
+	kiosk := signed["kiosk"]
+	if exp, abs := w.expiries(kiosk.Session.ID); !exp.Equal(t0.Add(30*time.Minute)) || abs == nil || !abs.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("kiosk: stored expiry %v, cap %v; want t0+30m and cap t0+1h", exp, abs)
+	}
+}
+
+func TestAFieldSessionRefreshesPastTheOfficeCap(t *testing.T) {
+	w := newWorld(t, kittest.DefaultRules, pestSessions)
+	w.User("ada@example.invalid", "the right password")
+	office := w.Login("office", "ada@example.invalid", "the right password")
+	field := w.Login("field", "ada@example.invalid", "the right password")
+	officeID := office.Session.ID
+	t0 := w.Clock.Now()
+	for i := 0; i < 6; i++ {
+		w.Clock.Advance(110 * time.Minute)
+		next := w.refresh("office", office.Tokens.RefreshToken)
+		if next.Refusal != nil {
+			t.Fatalf("office refresh %d (at t0+%v) = %v, want nil", i+1, w.Clock.Now().Sub(t0), next.Refusal)
+		}
+		office = next
+	}
+	w.Clock.Advance(61 * time.Minute)
+	if res := w.refresh("office", office.Tokens.RefreshToken); !errors.Is(res.Refusal, authkit.ErrSessionEnded) {
+		t.Fatalf("office refresh at t0+12h1m = %v, want ErrSessionEnded", res.Refusal)
+	}
+	if exp, _ := w.expiries(officeID); !exp.Equal(t0.Add(12 * time.Hour)) {
+		t.Fatalf("office stored expiry %v, want its cap t0+12h", exp)
+	}
+	if res := w.refresh("field", field.Tokens.RefreshToken); res.Refusal != nil {
+		t.Fatalf("field refresh at t0+12h1m = %v, want nil: a field session has no cap", res.Refusal)
+	}
+	if exp, abs := w.expiries(field.Session.ID); !exp.Equal(w.Clock.Now().Add(90*24*time.Hour)) || abs != nil {
+		t.Fatalf("field stored expiry %v, cap %v; want now+90d and no cap", exp, abs)
+	}
+}

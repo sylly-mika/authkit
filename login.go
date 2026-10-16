@@ -100,7 +100,7 @@ func (s *Service) openSessionAt(ctx context.Context, q db.Querier, p Principal, 
 		return Result{}, err
 	}
 	sess := Session{ID: id, PrincipalID: p.ID, Audience: string(aud), ScopeID: adm.ScopeID, IP: m.IP, UserAgent: m.UserAgent,
-		AuthenticatedAt: authAt, SecondFactor: string(factor), CreatedAt: now, AbsoluteExpiresAt: s.absoluteFrom(now)}
+		AuthenticatedAt: authAt, SecondFactor: string(factor), CreatedAt: now, AbsoluteExpiresAt: s.absoluteFrom(now, aud)}
 	sess.ExpiresAt = s.expiry(now, aud, sess.AbsoluteExpiresAt)
 	if err := session.Create(ctx, q, sess, hash); err != nil {
 		return Result{}, err
