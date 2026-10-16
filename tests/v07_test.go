@@ -1,11 +1,17 @@
 package tests
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"log/slog"
+	"net/url"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -323,5 +329,222 @@ func TestEmailChangeThenInvite(t *testing.T) {
 	}
 	if n := w.sessions(bob); n != 1 {
 		t.Errorf("sessions for bob = %d, want 1", n)
+	}
+}
+
+// WHY: the app's goroutines may log while the test reads the buffer.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+func TestNoSecretInOutput(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	w := newWorld(t, func(c *kittest.Rules) {
+		c.OnEvent = func(_ context.Context, _ db.Querier, e authkit.Event) error {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, fmt.Sprintf("%+v", e))
+			return nil
+		}
+	})
+	logs := &syncBuf{}
+	prevLog, prevSlog := log.Writer(), slog.Default()
+	log.SetOutput(logs)
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
+	t.Cleanup(func() {
+		log.SetOutput(prevLog)
+		slog.SetDefault(prevSlog)
+	})
+	fake := w.withOIDC(true)
+	w.withInvite(false)
+	w.withEmailChange()
+
+	secrets := map[string]string{}
+	var out []string
+	see := func(vs ...any) {
+		for _, v := range vs {
+			out = append(out, fmt.Sprintf("%+v", v))
+		}
+	}
+	call := func(name string, fn func(q db.Querier) error) {
+		t.Helper()
+		if err := w.D.InAuthTx(w.Ctx, fn); err != nil {
+			t.Fatalf("%s: unexpected error", name)
+		}
+	}
+	meta := authkit.Meta{IP: "192.0.2.1", UserAgent: "authkit-test"}
+
+	ada := w.User("ada@example.invalid", "ada's first password")
+	c := w.Claims(w.SignIn("ada@example.invalid", "ada's first password"))
+	secrets["password"] = "ada's first password"
+
+	raw := w.inviteLink("carol@example.invalid")
+	secrets["invite link"] = raw
+	call("Invite.Open", func(q db.Querier) error {
+		opened, err := w.Svc.Invite.Open(w.Ctx, q, raw)
+		see(opened, err)
+		return err
+	})
+	secrets["invite password"] = "carol's new password"
+	call("Invite.Accept", func(q db.Querier) error {
+		res, err := w.Svc.Invite.Accept(w.Ctx, q, raw, "carol's new password", nil, meta)
+		see(res, err)
+		return err
+	})
+	call("Invite.Accept again", func(q db.Querier) error {
+		res, err := w.Svc.Invite.Accept(w.Ctx, q, raw, "carol's new password", nil, meta)
+		see(res, err)
+		return nil
+	})
+
+	_, su := w.googleSignIn(fake, oidcfake.User{Subject: "g-erin", Email: "erin@example.invalid", EmailVerified: true})
+	if su == nil {
+		t.Fatal("the erin sign-up opened no ticket")
+	}
+	raw2 := w.inviteLink("dan@example.invalid")
+	secrets["invite link 2"] = raw2
+	secrets["ticket"] = su.Ticket
+	call("Invite.AcceptOIDC mismatch", func(q db.Querier) error {
+		_, refused := w.Svc.Invite.AcceptOIDC(w.Ctx, q, raw2, su.Ticket, nil, meta)
+		see(refused)
+		return nil
+	})
+	_, su2 := w.googleSignIn(fake, oidcfake.User{Subject: "g-dan", Email: "dan@example.invalid", EmailVerified: true})
+	if su2 == nil {
+		t.Fatal("the dan sign-up opened no ticket")
+	}
+	secrets["ticket 2"] = su2.Ticket
+	call("Invite.AcceptOIDC", func(q db.Querier) error {
+		res, err := w.Svc.Invite.AcceptOIDC(w.Ctx, q, raw2, su2.Ticket, nil, meta)
+		see(res, err)
+		return err
+	})
+	call("OIDC.TicketEmail", func(q db.Querier) error {
+		email, private, err := w.Svc.OIDC.TicketEmail(w.Ctx, q, su2.Ticket)
+		see(email, private, err)
+		return nil
+	})
+
+	raw3 := w.inviteLink("ada@example.invalid")
+	secrets["invite link 3"] = raw3
+	call("Invite.AcceptSignedIn", func(q db.Querier) error {
+		res, err := w.Svc.Invite.AcceptSignedIn(w.Ctx, q, c, raw3, meta)
+		see(res, err)
+		return err
+	})
+
+	secrets["wrong password"] = "a wrong password 1"
+	call("Password.Reverify wrong", func(q db.Querier) error {
+		res, err := w.Svc.Password.Reverify(w.Ctx, q, c, "a wrong password 1", meta)
+		see(res, err)
+		return nil
+	})
+	call("Password.Reverify", func(q db.Querier) error {
+		res, err := w.Svc.Password.Reverify(w.Ctx, q, c, "ada's first password", meta)
+		see(res, err)
+		return err
+	})
+
+	w.seedIdentity(ada, "google", "g-ada")
+	var r oidc.Redirect
+	call("OIDC.BeginReverify", func(q db.Querier) error {
+		var err error
+		r, err = w.Svc.OIDC.BeginReverify(w.Ctx, q, c, "google")
+		return err
+	})
+	u, err := url.Parse(r.URL)
+	if err != nil {
+		t.Fatal("the reverify redirect is not a URL")
+	}
+	secrets["binding"] = r.Binding
+	secrets["nonce"] = u.Query().Get("nonce")
+	cb := fake.Authorize(t, r, oidcfake.User{Subject: "g-ada", Email: "ada@example.invalid", EmailVerified: true})
+	secrets["state"] = cb.State
+	secrets["code"] = cb.Code
+	call("OIDC.FinishReverify", func(q db.Querier) error {
+		res, err := w.Svc.OIDC.FinishReverify(w.Ctx, q, c, cb, r.Binding, meta)
+		see(res, err)
+		return err
+	})
+
+	var st emailchange.Started
+	call("EmailChange.Start", func(q db.Querier) error {
+		var err error
+		st, err = w.Svc.EmailChange.Start(w.Ctx, q, c, "ada.new@example.invalid")
+		return err
+	})
+	if st.TokenID == nil {
+		t.Fatal("the email change opened no link")
+	}
+	var ecRaw string
+	call("EmailChange.Mint", func(q db.Querier) error {
+		mail, err := w.Svc.EmailChange.Mint(w.Ctx, q, *st.TokenID)
+		ecRaw = mail.Raw
+		return err
+	})
+	secrets["email change link"] = ecRaw
+	call("EmailChange.Confirm", func(q db.Querier) error {
+		ch, err := w.Svc.EmailChange.Confirm(w.Ctx, q, ecRaw, meta)
+		see(ch, err)
+		return err
+	})
+	call("EmailChange.Confirm again", func(q db.Querier) error {
+		ch, err := w.Svc.EmailChange.Confirm(w.Ctx, q, ecRaw, meta)
+		see(ch, err)
+		return nil
+	})
+	p := authkit.Principal{ID: ada, Login: "ada.new@example.invalid"}
+	call("EmailChange.Pending", func(q db.Querier) error {
+		pend, err := w.Svc.EmailChange.Pending(w.Ctx, q, p)
+		see(pend, err)
+		return err
+	})
+	call("EmailChange.Cancel", func(q db.Querier) error {
+		err := w.Svc.EmailChange.Cancel(w.Ctx, q, p)
+		see(err)
+		return err
+	})
+
+	for name, v := range secrets {
+		if v == "" {
+			t.Fatalf("the %s is empty", name)
+		}
+	}
+	mu.Lock()
+	evs, n := strings.Join(events, "\n"), len(events)
+	mu.Unlock()
+	if n == 0 {
+		t.Fatal("OnEvent never ran")
+	}
+	var dump string
+	if err := w.D.Row(t, `SELECT coalesce(string_agg(row_to_json(e)::text, ' '), '') FROM auth_events e`).Scan(&dump); err != nil {
+		t.Fatalf("auth_events: %v", err)
+	}
+	outputs := []struct{ where, text string }{
+		{"a result or error", strings.Join(out, "\n")},
+		{"an OnEvent event", evs},
+		{"the log", logs.String()},
+		{"auth_events", dump},
+	}
+	for name, v := range secrets {
+		for _, o := range outputs {
+			if strings.Contains(o.text, v) {
+				t.Errorf("the %s appears in %s", name, o.where)
+			}
+		}
 	}
 }
