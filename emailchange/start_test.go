@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/emailchange"
 	"github.com/sylly-mika/authkit/internal/kittest"
+	"github.com/sylly-mika/authkit/onetime"
 )
 
 func TestNewRefuses(t *testing.T) {
@@ -271,4 +273,138 @@ func TestPending(t *testing.T) {
 	if p := f.pending(); p != nil {
 		t.Fatalf("pending after expiry = %+v; want nil", p)
 	}
+}
+
+func TestStartReplaces(t *testing.T) {
+	f := newFixture(t)
+	cl := f.session()
+	s1 := f.start(cl, "a1@example.invalid")
+	s2 := f.start(cl, addr)
+	if f.rows() != 1 || f.Count("SELECT count(*) FROM auth_email_changes WHERE principal_id = $1 AND new_email = $2", f.ID, addr) != 1 {
+		t.Fatalf("rows = %d; want one row for %q", f.rows(), addr)
+	}
+	if _, err := f.mint(*s1.TokenID); err != emailchange.ErrNothingToSend {
+		t.Fatalf("mint the replaced link = %v; want ErrNothingToSend", err)
+	}
+	mail, err := f.mint(*s2.TokenID)
+	if err != nil || mail.To != addr {
+		t.Fatalf("mint the current link = %+v, %v; want To %q", mail, err, addr)
+	}
+}
+
+func TestMintCaps(t *testing.T) {
+	f := newFixture(t)
+	t0 := f.Clock.Now()
+	st := f.start(f.session(), addr)
+	f.Clock.Advance(2 * time.Hour)
+	mail, err := f.mint(*st.TokenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mail.To != addr || mail.Old != ada || mail.Raw == "" {
+		t.Fatalf("mail = to %q, old %q, raw empty %v; want %q, %q", mail.To, mail.Old, mail.Raw == "", addr, ada)
+	}
+	if !mail.ExpiresAt.Equal(t0.Add(24 * time.Hour)) {
+		t.Fatalf("mail expires %v; want the change's expiry %v", mail.ExpiresAt, t0.Add(24*time.Hour))
+	}
+	if tok := f.peek(mail.Raw); tok.Purpose != "email_change" || tok.State != onetime.StateLive {
+		t.Fatalf("minted token = purpose %q, state %q; want email_change, live", tok.Purpose, tok.State)
+	}
+}
+
+func TestMintNothing(t *testing.T) {
+	t.Run("unknown", func(t *testing.T) {
+		f := newFixture(t)
+		id := uuid.New()
+		_, err := f.mint(id)
+		requireNothingToSend(t, err, id)
+	})
+	t.Run("other purpose", func(t *testing.T) {
+		f := newFixture(t)
+		f.start(f.session(), addr)
+		var id uuid.UUID
+		if err := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+			var err error
+			id, err = f.Svc.OneTime().Create(f.Ctx, q, "reset", f.ID, time.Hour)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_, err := f.mint(id)
+		requireNothingToSend(t, err, id)
+		if n := f.Count("SELECT count(*) FROM auth_tokens WHERE id = $1 AND token_hash IS NULL", id); n != 1 {
+			t.Fatal("the reset link was minted by the email change")
+		}
+	})
+	t.Run("superseded", func(t *testing.T) {
+		f := newFixture(t)
+		cl := f.session()
+		first := f.start(cl, "a1@example.invalid")
+		f.start(cl, addr)
+		_, err := f.mint(*first.TokenID)
+		requireNothingToSend(t, err, *first.TokenID)
+	})
+	t.Run("spent", func(t *testing.T) {
+		f := newFixture(t)
+		st := f.start(f.session(), addr)
+		mail, err := f.mint(*st.TokenID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+			_, err := f.Svc.OneTime().Spend(f.Ctx, q, mail.Raw, "email_change")
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.mint(*st.TokenID)
+		requireNothingToSend(t, err, *st.TokenID)
+	})
+	t.Run("expired", func(t *testing.T) {
+		f := newFixture(t)
+		st := f.start(f.session(), addr)
+		f.Clock.Advance(24*time.Hour + time.Second)
+		_, err := f.mint(*st.TokenID)
+		requireNothingToSend(t, err, *st.TokenID)
+		if n := f.Count("SELECT count(*) FROM auth_tokens WHERE id = $1 AND token_hash IS NULL", *st.TokenID); n != 1 {
+			t.Fatal("the expired change's link was minted")
+		}
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		f := newFixture(t)
+		st := f.start(f.session(), addr)
+		f.cancel()
+		_, err := f.mint(*st.TokenID)
+		requireNothingToSend(t, err, *st.TokenID)
+	})
+}
+
+func requireNothingToSend(t *testing.T, err error, id uuid.UUID) {
+	t.Helper()
+	if err != emailchange.ErrNothingToSend {
+		t.Fatalf("mint = %v; want the bare ErrNothingToSend", err)
+	}
+	if strings.Contains(err.Error(), id.String()) {
+		t.Fatalf("error text %q carries the token id", err.Error())
+	}
+}
+
+func TestCancel(t *testing.T) {
+	f := newFixture(t)
+	st := f.start(f.session(), addr)
+	mail, err := f.mint(*st.TokenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.cancel()
+	if p := f.pending(); p != nil {
+		t.Fatalf("pending after cancel = %+v; want nil", p)
+	}
+	if n := f.rows(); n != 0 {
+		t.Fatalf("change rows after cancel = %d; want 0", n)
+	}
+	if tok := f.peek(mail.Raw); tok.State != onetime.StateRevoked {
+		t.Fatalf("link state after cancel = %q; want revoked", tok.State)
+	}
+	f.cancel()
 }

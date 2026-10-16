@@ -9,6 +9,7 @@ import (
 
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
+	"github.com/sylly-mika/authkit/internal/pending"
 	"github.com/sylly-mika/authkit/onetime"
 )
 
@@ -168,12 +169,53 @@ func (m *Module) start(ctx context.Context, q db.Querier, p authkit.Principal, a
 
 // Mint makes the raw confirmation link for a started change.
 func (m *Module) Mint(ctx context.Context, q db.Querier, tokenID uuid.UUID) (Mail, error) {
-	return Mail{}, errors.ErrUnsupported
+	q = m.core.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return Mail{}, err
+	}
+	now := m.core.Now()
+	var owner uuid.UUID
+	err := q.QueryRow(ctx, `SELECT owner_id FROM auth_tokens WHERE id = $1 AND purpose = $2`,
+		tokenID, authkit.PurposeEmailChange).Scan(&owner)
+	switch {
+	case errors.Is(err, db.ErrNoRows):
+		return Mail{}, ErrNothingToSend
+	case err != nil:
+		return Mail{}, err
+	}
+	var oldEmail, newEmail string
+	var expires time.Time
+	err = q.QueryRow(ctx, `SELECT old_email, new_email, expires_at FROM auth_email_changes WHERE principal_id = $1 AND expires_at > $2 FOR UPDATE`,
+		owner, now).Scan(&oldEmail, &newEmail, &expires)
+	switch {
+	case errors.Is(err, db.ErrNoRows):
+		return Mail{}, ErrNothingToSend
+	case err != nil:
+		return Mail{}, err
+	}
+	mt, ok, err := pending.Mint(ctx, q, m.links, tokenID, expires)
+	switch {
+	case err != nil:
+		return Mail{}, err
+	case !ok:
+		return Mail{}, ErrNothingToSend
+	}
+	return Mail{To: newEmail, Raw: mt.Raw, Old: oldEmail, ExpiresAt: mt.ExpiresAt}, nil
 }
 
 // Cancel drops a principal's pending change and its link.
 func (m *Module) Cancel(ctx context.Context, q db.Querier, p authkit.Principal) error {
-	return errors.ErrUnsupported
+	q = m.core.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return err
+	}
+	if err := m.links.Lock(ctx, q, authkit.PurposeEmailChange, p.ID); err != nil {
+		return err
+	}
+	if _, err := q.Exec(ctx, `DELETE FROM auth_email_changes WHERE principal_id = $1`, p.ID); err != nil {
+		return err
+	}
+	return m.links.Revoke(ctx, q, authkit.PurposeEmailChange, p.ID)
 }
 
 // Pending returns the principal's unconfirmed change, or nil.
