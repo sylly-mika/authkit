@@ -1,6 +1,9 @@
 package tests
 
 import (
+	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -8,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/kittest"
@@ -297,5 +301,31 @@ func TestRefreshOfAnEndedSession(t *testing.T) {
 		if res := w.refresh("staff", raw); !errors.Is(res.Refusal, authkit.ErrSessionEnded) {
 			t.Errorf("%s: refresh = %v, want ErrSessionEnded", name, res.Refusal)
 		}
+	}
+}
+
+func TestACopiedHexHashedSessionRefreshesWithItsOldToken(t *testing.T) {
+	w := newWorld(t)
+	id := w.User("ada@example.invalid", "the right password")
+	secret := make([]byte, 32)
+	if _, err := crand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
+	raw := hex.EncodeToString(secret)
+	sum := sha256.Sum256([]byte(raw))
+	sid := uuid.New()
+	now := w.Clock.Now()
+	w.D.Exec(t, `INSERT INTO auth_sessions (id, principal_id, audience, scope_id, token_hash, authenticated_at, ip, user_agent, created_at, last_seen_at, expires_at, absolute_expires_at) VALUES ($1, $2, 'staff', $3, decode($4, 'hex'), $5, '', '', $5, $5, $6, $7)`,
+		sid, id, w.P.Scope, hex.EncodeToString(sum[:]), now, now.Add(time.Hour), now.Add(12*time.Hour))
+	next := w.refresh("staff", raw)
+	if next.Refusal != nil || next.Tokens.RefreshToken == raw {
+		t.Fatalf("refresh of a copied session = %+v, want a rotated token", next)
+	}
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND token_hash = $2 AND prev_token_hash = $3`,
+		sid, authkit.HashToken(next.Tokens.RefreshToken), sum[:]) != 1 {
+		t.Fatal("the rotation did not keep the copied hash as prev_token_hash")
+	}
+	if c := w.Claims(next); c.Subject != id {
+		t.Fatalf("refreshed claims subject = %v, want %v", c.Subject, id)
 	}
 }

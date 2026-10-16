@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -324,5 +325,98 @@ func TestChangePasswordStampsOneTime(t *testing.T) {
 				t.Fatal("the other session's revoked_at is not the credential's changed_at")
 			}
 		})
+	}
+}
+
+func TestSetPasswordReplacesAPasswordAndLogsPasswordReset(t *testing.T) {
+	w := newWorld(t)
+	const login = "ada@example.invalid"
+	id := w.User(login, "the old password")
+	before := w.StoredHash(id)
+	w.Clock.Advance(time.Second)
+	p := authkit.Principal{ID: id, Login: login}
+	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Password.SetPassword(w.Ctx, q, p, "staff", "the new password", authkit.Meta{IP: "192.0.2.7"})
+	}); res.Refusal != nil {
+		t.Fatalf("SetPassword = %v", res.Refusal)
+	}
+	if after := w.StoredHash(id); after == before || !strings.HasPrefix(after, "$argon2id$") {
+		t.Fatal("SetPassword did not store a new argon2id hash in place of the old one")
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_credentials WHERE principal_id = $1 AND changed_at = $2`, id, w.Clock.Now()); n != 1 {
+		t.Fatal("the replacement did not stamp changed_at with the module's now")
+	}
+	if got := w.Results(id); !slices.Equal(got, []string{"password_reset"}) {
+		t.Fatalf("log = %v, want password_reset", got)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'password_reset' AND audience = 'staff' AND ip = '192.0.2.7'`, id); n != 1 {
+		t.Fatal("the password_reset event does not carry the call's audience and IP")
+	}
+	if res := w.Login("staff", login, "the old password"); !errors.Is(res.Refusal, authkit.ErrInvalidCredentials) {
+		t.Fatalf("Login with the replaced password = %v, want ErrInvalidCredentials", res.Refusal)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1`, id); n != 0 {
+		t.Fatal("a refused sign-in opened a session")
+	}
+	w.SignIn(login, "the new password")
+}
+
+func TestSetPasswordLeavesSessionsOpenUntilRevokeAllSessions(t *testing.T) {
+	w := newWorld(t)
+	const login = "ada@example.invalid"
+	id := w.User(login, "the old password")
+	a := w.SignIn(login, "the old password")
+	b := w.SignIn(login, "the old password")
+	w.Clock.Advance(time.Minute)
+	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Password.SetPassword(w.Ctx, q, authkit.Principal{ID: id, Login: login}, "staff", "the new password", authkit.Meta{})
+	}); res.Refusal != nil {
+		t.Fatalf("SetPassword = %v", res.Refusal)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoked_at IS NULL`, id); n != 2 {
+		t.Fatalf("open sessions after SetPassword = %d, want 2", n)
+	}
+	next := w.refresh("staff", a.Tokens.RefreshToken)
+	if next.Refusal != nil {
+		t.Fatalf("refresh after SetPassword = %v", next.Refusal)
+	}
+	if res := w.authenticate(w.Pinned(id), w.Claims(b)); res.Refusal != nil {
+		t.Fatalf("Authenticate after SetPassword = %v", res.Refusal)
+	}
+	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.RevokeAllSessions(w.Ctx, q, id, authkit.ReasonAdmin, authkit.Meta{})
+	}); res.Refusal != nil {
+		t.Fatalf("RevokeAllSessions = %v", res.Refusal)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoked_at IS NULL`, id); n != 0 {
+		t.Fatalf("open sessions after RevokeAllSessions = %d, want 0", n)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoke_reason = 'admin'`, id); n != 2 {
+		t.Fatalf("sessions revoked with reason admin = %d, want 2", n)
+	}
+	if res := w.refresh("staff", next.Tokens.RefreshToken); !errors.Is(res.Refusal, authkit.ErrSessionEnded) {
+		t.Fatalf("refresh after RevokeAllSessions = %v, want ErrSessionEnded", res.Refusal)
+	}
+	if res := w.authenticate(w.Pinned(id), w.Claims(b)); !errors.Is(res.Refusal, authkit.ErrSessionEnded) {
+		t.Fatalf("Authenticate after RevokeAllSessions = %v, want ErrSessionEnded", res.Refusal)
+	}
+}
+
+func TestLoginAcceptsAStoredPasswordShorterThanThePolicy(t *testing.T) {
+	w := newWorld(t)
+	const login = "ada@example.invalid"
+	w.User(login, "short pw")
+	w.SignIn(login, "short pw")
+	const other = "bob@example.invalid"
+	id2 := w.User(other, "")
+	res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Password.SetPassword(w.Ctx, q, authkit.Principal{ID: id2, Login: other}, "staff", "short pw", authkit.Meta{})
+	})
+	var pe password.PolicyError
+	if !errors.As(res.Refusal, &pe) || pe != (password.PolicyError{MinRunes: 10, MaxRunes: 256}) {
+		t.Fatalf("SetPassword with a short password = %v, want a PolicyError for 10 to 256 runes", res.Refusal)
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_credentials WHERE principal_id = $1`, id2); n != 0 {
+		t.Fatal("a refused SetPassword stored a credential")
 	}
 }
