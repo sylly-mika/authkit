@@ -2,6 +2,8 @@ package tests
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +100,147 @@ func TestRevokeSessionLogsRevokedAndReachesOnlyOwnSessions(t *testing.T) {
 	}
 	if w.Count(`SELECT count(*) FROM auth_sessions WHERE principal_id = $1 AND revoked_at IS NULL`, bob) != 1 {
 		t.Fatal("ada revoked bob's session")
+	}
+}
+
+func TestRevokeSessionOfEndsAnotherPrincipalsSession(t *testing.T) {
+	w := newWorld(t)
+	w.User("ada@example.invalid", "the right password")
+	bob := w.User("bob@example.invalid", "bob's password")
+	w.SignIn("ada@example.invalid", "the right password")
+	device := w.SignIn("bob@example.invalid", "bob's password")
+	other := w.SignIn("bob@example.invalid", "bob's password")
+	res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.RevokeSessionOf(w.Ctx, q, bob, device.Session.ID, authkit.ReasonAdmin, authkit.Meta{IP: "192.0.2.9", UserAgent: "office desk"})
+	})
+	if res.Refusal != nil {
+		t.Fatalf("RevokeSessionOf = %v", res.Refusal)
+	}
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoke_reason = 'admin' AND revoked_at IS NOT NULL`, device.Session.ID) != 1 {
+		t.Fatal("the device's session was not revoked with reason admin")
+	}
+	if w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND session_id = $2 AND scope_id = $3 AND audience = 'staff' AND result = 'revoked' AND source = 'revoke_session' AND ip = '192.0.2.9' AND user_agent = 'office desk'`, bob, device.Session.ID, w.P.Scope) != 1 {
+		t.Fatal("no revoked event for the device's session")
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE result = 'revoked'`); n != 1 {
+		t.Errorf("%d revoked events, want 1", n)
+	}
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL`, other.Session.ID) != 1 {
+		t.Fatal("the principal's other session was revoked")
+	}
+	after := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.Authenticate(w.Ctx, q, w.Claims(device))
+	})
+	if !errors.Is(after.Refusal, authkit.ErrSessionEnded) {
+		t.Errorf("Authenticate after the revoke = %v, want ErrSessionEnded", after.Refusal)
+	}
+}
+
+func TestRevokeSessionOfCleansMeta(t *testing.T) {
+	w := newWorld(t)
+	bob := w.User("bob@example.invalid", "bob's password")
+	device := w.SignIn("bob@example.invalid", "bob's password")
+	if res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+		return w.Svc.RevokeSessionOf(w.Ctx, q, bob, device.Session.ID, authkit.ReasonAdmin, authkit.Meta{IP: "192.0.2.9\x00", UserAgent: "office-\xffdesk\x00"})
+	}); res.Refusal != nil {
+		t.Fatalf("RevokeSessionOf with a NUL in its metadata = %v", res.Refusal)
+	}
+	if w.Count(`SELECT count(*) FROM auth_events WHERE principal_id = $1 AND result = 'revoked' AND ip = '192.0.2.9' AND user_agent = 'office-desk'`, bob) != 1 {
+		t.Fatal("the revoked event does not carry the cleaned IP and user agent")
+	}
+}
+
+func TestRevokeSessionOfRefusesASessionThatIsNotThePrincipals(t *testing.T) {
+	w := newWorld(t)
+	w.User("ada@example.invalid", "the right password")
+	bob := w.User("bob@example.invalid", "bob's password")
+	w.User("carol@example.invalid", "carol's password")
+	w.SignIn("ada@example.invalid", "the right password")
+	carols := w.SignIn("carol@example.invalid", "carol's password")
+	ended := w.SignIn("bob@example.invalid", "bob's password")
+	old := w.SignIn("bob@example.invalid", "bob's password")
+	live := w.SignIn("bob@example.invalid", "bob's password")
+	w.D.Exec(t, `UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'logout' WHERE id = $1`, ended.Session.ID, w.Clock.Now())
+	w.D.Exec(t, `UPDATE auth_sessions SET expires_at = $2 WHERE id = $1`, old.Session.ID, w.Clock.Now().Add(-time.Second))
+	for name, target := range map[string]uuid.UUID{
+		"a third principal's": carols.Session.ID,
+		"unknown":             uuid.New(),
+		"ended":               ended.Session.ID,
+		"expired":             old.Session.ID,
+	} {
+		res := w.InAuth(func(q db.Querier) (authkit.Result, error) {
+			return w.Svc.RevokeSessionOf(w.Ctx, q, bob, target, authkit.ReasonAdmin, authkit.Meta{})
+		})
+		if !errors.Is(res.Refusal, authkit.ErrSessionEnded) {
+			t.Errorf("%s: %v, want ErrSessionEnded", name, res.Refusal)
+		}
+	}
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL`, carols.Session.ID) != 1 ||
+		w.Count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL`, live.Session.ID) != 1 {
+		t.Fatal("a refused revoke ended a session")
+	}
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE revoke_reason = 'admin'`) != 0 || w.Count(`SELECT count(*) FROM auth_events WHERE result = 'revoked'`) != 0 {
+		t.Fatal("a refused revoke wrote a revoke reason or a revoked event")
+	}
+}
+
+func TestRevokeSessionOfRefusesAnUnknownReason(t *testing.T) {
+	w := newWorld(t)
+	bob := w.User("bob@example.invalid", "bob's password")
+	device := w.SignIn("bob@example.invalid", "bob's password")
+	for _, reason := range []string{"office", ""} {
+		err := w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+			_, err := w.Svc.RevokeSessionOf(w.Ctx, q, bob, device.Session.ID, reason, authkit.Meta{})
+			return err
+		})
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q is not a revoke reason", reason)) {
+			t.Errorf("reason %q: %v, want the not-a-revoke-reason error", reason, err)
+		}
+	}
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoked_at IS NULL`, device.Session.ID) != 1 {
+		t.Fatal("a refused reason revoked the session")
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE result = 'revoked'`); n != 0 {
+		t.Errorf("%d revoked events, want 0", n)
+	}
+}
+
+func TestRevokeSessionOfLosesToAConcurrentEnd(t *testing.T) {
+	w := newWorld(t)
+	bob := w.User("bob@example.invalid", "bob's password")
+	device := w.SignIn("bob@example.invalid", "bob's password")
+	holder, err := w.D.Owner.BeginTx(w.Ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err := holder.ExecContext(w.Ctx, w.D.SQL(`UPDATE auth_sessions SET revoked_at = $2, revoke_reason = 'logout' WHERE id = $1`), device.Session.ID, w.Clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var got authkit.Result
+	errc := make(chan error, 1)
+	go func() {
+		errc <- w.D.InAuthTx(w.Ctx, func(q db.Querier) error {
+			var err error
+			got, err = w.Svc.RevokeSessionOf(w.Ctx, q, bob, device.Session.ID, authkit.ReasonAdmin, authkit.Meta{})
+			return err
+		})
+	}()
+	w.D.WaitForLockWaiters(t, 1)
+	if err := holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errc; err != nil {
+		t.Fatalf("RevokeSessionOf = %v", err)
+	}
+	if !errors.Is(got.Refusal, authkit.ErrSessionEnded) {
+		t.Errorf("RevokeSessionOf after the concurrent end = %v, want ErrSessionEnded", got.Refusal)
+	}
+	if w.Count(`SELECT count(*) FROM auth_sessions WHERE id = $1 AND revoke_reason = 'logout'`, device.Session.ID) != 1 {
+		t.Fatal("the concurrent end was overwritten")
+	}
+	if n := w.Count(`SELECT count(*) FROM auth_events WHERE result = 'revoked'`); n != 0 {
+		t.Errorf("%d revoked events, want 0", n)
 	}
 }
 

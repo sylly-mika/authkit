@@ -53,6 +53,32 @@ func (s *Service) RevokeSession(ctx context.Context, q db.Querier, c *Claims, id
 		Audience: c.Audience, Result: ResultRevoked, IP: m.IP, UserAgent: m.UserAgent})
 }
 
+// RevokeSessionOf ends one open session of the principal for reason, one of the revoke reasons, and logs revoked; ErrSessionEnded when the principal has no such open session; the app authorises the caller.
+func (s *Service) RevokeSessionOf(ctx context.Context, q db.Querier, principal, id uuid.UUID, reason string, m Meta) (Result, error) {
+	q = s.names.Q(q)
+	if err := db.RequireTx(q); err != nil {
+		return Result{}, err
+	}
+	if !slices.Contains(revokeReasons, reason) {
+		return Result{}, fmt.Errorf("authkit: %q is not a revoke reason", reason)
+	}
+	m = m.clean()
+	now := s.now()
+	revoked, err := session.RevokeOpen(ctx, q, id, principal, reason, now)
+	if err != nil {
+		return Result{}, err
+	}
+	if !revoked {
+		return Result{Refusal: ErrSessionEnded}, nil
+	}
+	ended, err := session.Load(ctx, q, id, principal)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{}, s.record(ctx, q, now, SourceRevokeSession, events.Event{PrincipalID: &principal, SessionID: &id, ScopeID: ended.ScopeID,
+		Audience: ended.Audience, Result: ResultRevoked, IP: m.IP, UserAgent: m.UserAgent})
+}
+
 // ListEvents is the principal's sign-in log, newest first, without the
 // excluded results, and its count. A bare pinned connection is fine.
 func (s *Service) ListEvents(ctx context.Context, q db.Querier, principal uuid.UUID, exclude []string, limit, offset int) ([]Event, int, error) {

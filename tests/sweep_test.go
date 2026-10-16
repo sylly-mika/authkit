@@ -82,7 +82,11 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			_, err := w.Svc.Password.ChangePassword(ctx, q, c, "the right password", "another password", authkit.Meta{})
 			return err
 		},
-		"RevokeSession":         func() error { _, err := w.Svc.RevokeSession(ctx, q, c, res.Session.ID, authkit.Meta{}); return err },
+		"RevokeSession": func() error { _, err := w.Svc.RevokeSession(ctx, q, c, res.Session.ID, authkit.Meta{}); return err },
+		"RevokeSessionOf": func() error {
+			_, err := w.Svc.RevokeSessionOf(ctx, q, id, res.Session.ID, authkit.ReasonAdmin, authkit.Meta{})
+			return err
+		},
 		"Password.RequestReset": func() error { _, err := w.Svc.Password.RequestReset(ctx, q, "staff", p.Login); return err },
 		"Password.CompleteReset": func() error {
 			_, err := w.Svc.Password.CompleteReset(ctx, q, "staff", "x", "another password", authkit.Meta{})
