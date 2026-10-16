@@ -49,6 +49,14 @@ func TestRewriteLeavesNames(t *testing.T) {
 			"ALTER TABLE auth_identities ADD CONSTRAINT auth_identities_subject UNIQUE (provider, subject)",
 			"ALTER TABLE kit_ns.auth_identities ADD CONSTRAINT auth_identities_subject UNIQUE (provider, subject)",
 		},
+		{
+			"CREATE UNIQUE INDEX auth_invites_open ON auth_invites (audience, email) WHERE accepted_at IS NULL",
+			"CREATE UNIQUE INDEX auth_invites_open ON kit_ns.auth_invites (audience, email) WHERE accepted_at IS NULL",
+		},
+		{
+			"CREATE INDEX idx_auth_email_changes_session_id ON auth_email_changes (session_id);",
+			"CREATE INDEX idx_auth_email_changes_session_id ON kit_ns.auth_email_changes (session_id);",
+		},
 	}
 	for _, c := range cases {
 		if got := Rewrite(K, c.in); got != c.want {
@@ -62,6 +70,7 @@ func TestRewriteQualifiesEveryTable(t *testing.T) {
 		"schema", "sessions", "tokens", "events", "throttle", "credentials", "passkeys",
 		"passkey_ceremonies", "second_factors", "recovery_codes", "second_step_challenges",
 		"email_codes", "ceremonies", "identities", "registrations", "mail_counts",
+		"invites", "email_changes",
 	}
 	for _, n := range names {
 		in := "DELETE FROM auth_" + n + " WHERE true"
