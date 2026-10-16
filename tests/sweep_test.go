@@ -104,7 +104,11 @@ func TestWriteMethodsRefuseABareConnection(t *testing.T) {
 			return err
 		},
 		"Passkeys.BeginPasskeyLogin": func() error { _, err := w.Svc.Passkeys.BeginPasskeyLogin(ctx, q, "staff", authkit.Meta{}); return err },
-		"Passkeys.BeginReverify":     func() error { _, err := w.Svc.Passkeys.BeginReverify(ctx, q, c); return err },
+		"Passkeys.FinishReverify": func() error {
+			_, err := w.Svc.Passkeys.FinishReverify(ctx, q, c, "x", []byte("{}"), authkit.Meta{})
+			return err
+		},
+		"Passkeys.BeginReverify": func() error { _, err := w.Svc.Passkeys.BeginReverify(ctx, q, c); return err },
 		"Passkeys.FinishPasskeyLogin": func() error {
 			_, err := w.Svc.Passkeys.FinishPasskeyLogin(ctx, q, "staff", "x", []byte("{}"), authkit.Meta{})
 			return err
