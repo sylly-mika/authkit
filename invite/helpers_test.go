@@ -13,6 +13,7 @@ import (
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/internal/kittest"
 	"github.com/sylly-mika/authkit/invite"
+	"github.com/sylly-mika/authkit/onetime"
 )
 
 const aud authkit.Audience = "staff"
@@ -124,6 +125,54 @@ func (f *fixture) list(aud authkit.Audience, scope *uuid.UUID, limit, offset int
 func (f *fixture) accepted(id, by uuid.UUID) {
 	f.T.Helper()
 	f.D.Exec(f.T, "UPDATE auth_invites SET accepted_at = $2, accepted_by = $3 WHERE id = $1", id, f.Clock.Now(), by)
+}
+
+func (f *fixture) mint(id uuid.UUID) (invite.Mail, error) {
+	f.T.Helper()
+	var mail invite.Mail
+	var err error
+	if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		mail, err = f.Inv.Mint(f.Ctx, q, id)
+		return nil
+	}); e != nil {
+		f.T.Fatal(e)
+	}
+	return mail, err
+}
+
+func (f *fixture) minted(id uuid.UUID) string {
+	f.T.Helper()
+	mail, err := f.mint(id)
+	if err != nil {
+		f.T.Fatal(err)
+	}
+	return mail.Raw
+}
+
+func (f *fixture) open(raw string) (invite.Opened, error) {
+	f.T.Helper()
+	var o invite.Opened
+	var err error
+	if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		o, err = f.Inv.Open(f.Ctx, q, raw)
+		return nil
+	}); e != nil {
+		f.T.Fatal(e)
+	}
+	return o, err
+}
+
+func (f *fixture) spend(raw string) (onetime.Token, error) {
+	f.T.Helper()
+	var tok onetime.Token
+	var err error
+	if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+		tok, err = f.Svc.OneTime().Spend(f.Ctx, q, raw, authkit.PurposeInvite)
+		return nil
+	}); e != nil {
+		f.T.Fatal(e)
+	}
+	return tok, err
 }
 
 func (f *fixture) clean(raw string, errs ...error) {

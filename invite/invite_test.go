@@ -1,16 +1,20 @@
 package invite_test
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/sylly-mika/authkit"
 	"github.com/sylly-mika/authkit/db"
 	"github.com/sylly-mika/authkit/db/sqldb"
 	"github.com/sylly-mika/authkit/internal/kittest"
 	"github.com/sylly-mika/authkit/invite"
+	"github.com/sylly-mika/authkit/onetime"
 	"github.com/sylly-mika/authkit/password"
 )
 
@@ -378,4 +382,326 @@ func TestInviteNeedsTx(t *testing.T) {
 			t.Errorf("List error = %v, want no ErrTxRequired", err)
 		}
 	})
+	t.Run("Mint", func(t *testing.T) {
+		var n int
+		_, err := f.Inv.Mint(f.Ctx, counted{c, &n}, inv.TokenID)
+		if !errors.Is(err, db.ErrTxRequired) || n != 0 {
+			t.Errorf("Mint error = %v after %d statements, want ErrTxRequired and none", err, n)
+		}
+	})
+	t.Run("Open", func(t *testing.T) {
+		var n int
+		_, err := f.Inv.Open(f.Ctx, counted{c, &n}, "nope")
+		if errors.Is(err, db.ErrTxRequired) {
+			t.Errorf("Open error = %v, want no ErrTxRequired", err)
+		}
+	})
+}
+
+func TestResendRetiresLink(t *testing.T) {
+	f := newFixture(t)
+	T0 := f.Clock.Now()
+	inv, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw1 := f.minted(inv.TokenID)
+	f.Clock.Advance(time.Hour)
+	r, err := f.resend(inv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.TokenID == inv.TokenID {
+		t.Error("Resend kept the old token")
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE id = $1 AND expires_at = $2`, inv.ID, T0.Add(73*time.Hour)); n != 1 {
+		t.Errorf("invite rows with the resent expiry = %d, want 1", n)
+	}
+	_, oerr := f.open(raw1)
+	if !errors.Is(oerr, authkit.ErrTokenUnknown) {
+		t.Errorf("open of the retired link error = %v, want ErrTokenUnknown", oerr)
+	}
+	_, merr := f.mint(inv.TokenID)
+	if !errors.Is(merr, invite.ErrNothingToSend) {
+		t.Errorf("mint of the retired token error = %v, want ErrNothingToSend", merr)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE id = $1 AND revoked_at IS NOT NULL`, inv.TokenID); n != 1 {
+		t.Errorf("retired token revoked rows = %d, want 1", n)
+	}
+	mail, err := f.mint(r.TokenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mail.Invite.ExpiresAt.Equal(T0.Add(73 * time.Hour)) {
+		t.Errorf("mail invite expiry = %v, want %v", mail.Invite.ExpiresAt, T0.Add(73*time.Hour))
+	}
+	f.Clock.Advance(80 * time.Hour)
+	r2, err := f.resend(inv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE id = $1 AND expires_at = $2`, inv.ID, T0.Add(153*time.Hour)); n != 1 {
+		t.Errorf("invite rows with the expiry after the late resend = %d, want 1", n)
+	}
+	if _, err := f.open(f.minted(r2.TokenID)); err != nil {
+		t.Errorf("open of the link resent after expiry: %v", err)
+	}
+	f.clean(raw1, oerr, merr)
+}
+
+func TestRevokeLinkRevoked(t *testing.T) {
+	f := newFixture(t)
+	T0 := f.Clock.Now()
+	inv, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := f.minted(inv.TokenID)
+	if err := f.revoke(inv.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE id = $1 AND revoked_at = $2`, inv.ID, T0); n != 1 {
+		t.Errorf("invite rows revoked at T0 = %d, want 1", n)
+	}
+	_, oerr := f.open(raw)
+	var gone authkit.ErrTokenGone
+	if !errors.As(oerr, &gone) || gone.State != onetime.StateRevoked {
+		t.Errorf("open of a revoked invite's link error = %v, want revoked", oerr)
+	}
+	_, serr := f.spend(raw)
+	var spent onetime.ErrGone
+	if !errors.As(serr, &spent) || spent.State != onetime.StateRevoked {
+		t.Errorf("spend of a revoked invite's link error = %v, want revoked", serr)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE owner_id = $1 AND used_at IS NULL AND revoked_at IS NOT NULL`, inv.ID); n != 1 {
+		t.Errorf("revoked unspent invite tokens = %d, want 1", n)
+	}
+	f.clean(raw, oerr, serr)
+}
+
+func TestMintCheckVoids(t *testing.T) {
+	cerr := errors.New("inviter lost authority")
+	var seen invite.Pending
+	f := newFixture(t, func(r *invite.Rules) {
+		r.Check = func(_ context.Context, _ db.Querier, p invite.Pending) error {
+			seen = p
+			return cerr
+		}
+	})
+	inv, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mail, err := f.mint(inv.TokenID)
+	if !errors.Is(err, invite.ErrNothingToSend) || !errors.Is(err, cerr) {
+		t.Errorf("mint error = %v, want ErrNothingToSend wrapping the check's error", err)
+	}
+	if mail.Raw != "" {
+		t.Error("mint returned a link after the check failed")
+	}
+	if seen.ID != inv.ID || seen.Email != addr {
+		t.Errorf("Check got invite %v for %q, want %v for %q", seen.ID, seen.Email, inv.ID, addr)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_invites WHERE id = $1 AND revoked_at IS NOT NULL`, inv.ID); n != 1 {
+		t.Errorf("invite rows revoked = %d, want 1", n)
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE id = $1 AND revoked_at IS NOT NULL AND token_hash IS NULL`, inv.TokenID); n != 1 {
+		t.Errorf("invite tokens revoked without a hash = %d, want 1", n)
+	}
+	f.clean("", err)
+}
+
+func TestMintHeld(t *testing.T) {
+	f := newFixture(t, func(r *invite.Rules) { r.Join = joinOK })
+	f.User(addr, "")
+	a, err := f.invite(req(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := f.invite(req(bob))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ma, err := f.mint(a.TokenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ma.Held || ma.To != addr || ma.Raw == "" || ma.Invite.ID != a.ID {
+		t.Errorf("mint for a held address: held %v, to %q, invite %v; want held, to %q, invite %v", ma.Held, ma.To, ma.Invite.ID, addr, a.ID)
+	}
+	mb, err := f.mint(b.TokenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mb.Held {
+		t.Error("mint for an unheld address reports Held")
+	}
+	f.clean(ma.Raw)
+	f.clean(mb.Raw)
+}
+
+func TestMintNothingToSend(t *testing.T) {
+	check := func(t *testing.T, f *fixture, tokenID, owner uuid.UUID) {
+		t.Helper()
+		_, err := f.mint(tokenID)
+		if !errors.Is(err, invite.ErrNothingToSend) {
+			t.Errorf("mint error = %v, want ErrNothingToSend", err)
+		}
+		if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE owner_id = $1 AND token_hash IS NOT NULL AND used_at IS NULL AND revoked_at IS NULL`, owner); n != 0 {
+			t.Errorf("live minted links = %d, want 0", n)
+		}
+		f.clean("", err)
+	}
+	t.Run("unknown", func(t *testing.T) {
+		f := newFixture(t)
+		check(t, f, uuid.New(), uuid.Nil)
+	})
+	t.Run("register", func(t *testing.T) {
+		f := newFixture(t)
+		inv, err := f.invite(req(addr))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rid uuid.UUID
+		if e := f.D.InAuthTx(f.Ctx, func(q db.Querier) error {
+			var err error
+			rid, err = f.Svc.OneTime().Create(f.Ctx, q, authkit.PurposeRegister, inv.ID, time.Hour)
+			return err
+		}); e != nil {
+			t.Fatal(e)
+		}
+		check(t, f, rid, inv.ID)
+	})
+	t.Run("superseded", func(t *testing.T) {
+		f := newFixture(t)
+		inv, err := f.invite(req(addr))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.minted(inv.TokenID)
+		if _, err := f.resend(inv.ID); err != nil {
+			t.Fatal(err)
+		}
+		check(t, f, inv.TokenID, inv.ID)
+	})
+	t.Run("spent", func(t *testing.T) {
+		f := newFixture(t)
+		inv, err := f.invite(req(addr))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.spend(f.minted(inv.TokenID)); err != nil {
+			t.Fatal(err)
+		}
+		check(t, f, inv.TokenID, inv.ID)
+	})
+	t.Run("revoked", func(t *testing.T) {
+		f := newFixture(t)
+		inv, err := f.invite(req(addr))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.revoke(inv.ID); err != nil {
+			t.Fatal(err)
+		}
+		check(t, f, inv.TokenID, inv.ID)
+	})
+	t.Run("accepted", func(t *testing.T) {
+		f := newFixture(t)
+		inv, err := f.invite(req(addr))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.accepted(inv.ID, f.User("x@example.invalid", ""))
+		check(t, f, inv.TokenID, inv.ID)
+	})
+	t.Run("expired", func(t *testing.T) {
+		f := newFixture(t)
+		inv, err := f.invite(req(addr))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Clock.Advance(72 * time.Hour)
+		check(t, f, inv.TokenID, inv.ID)
+	})
+}
+
+func TestOpenSpendsNothing(t *testing.T) {
+	f := newFixture(t)
+	s := uuid.New()
+	inv, err := f.invite(invite.Request{Audience: aud, Email: addr, ScopeID: &s, Payload: json.RawMessage(`{"role":"admin"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := f.minted(inv.TokenID)
+	var errs []error
+	for i := 0; i < 2; i++ {
+		o, err := f.open(raw)
+		errs = append(errs, err)
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(o.Payload, &payload); err != nil || payload["role"] != "admin" {
+			t.Errorf("open %d payload = %s, want role admin", i, o.Payload)
+		}
+		if o.ID != inv.ID || o.Email != addr || o.ScopeID == nil || *o.ScopeID != s || o.Held {
+			t.Errorf("open %d = invite %v for %q, held %v; want invite %v for %q, not held", i, o.ID, o.Email, o.Held, inv.ID, addr)
+		}
+	}
+	if n := f.Count(`SELECT count(*) FROM auth_tokens WHERE id = $1 AND used_at IS NULL`, inv.TokenID); n != 1 {
+		t.Errorf("unspent link tokens after open = %d, want 1", n)
+	}
+	f.User(addr, "")
+	o, err := f.open(raw)
+	errs = append(errs, err)
+	if err != nil || !o.Held {
+		t.Errorf("open after the address has an account: held %v, error %v; want held", o.Held, err)
+	}
+	_, err = f.spend(raw)
+	errs = append(errs, err)
+	if err != nil {
+		t.Errorf("spend after open: %v", err)
+	}
+	_, err = f.open("nope")
+	errs = append(errs, err)
+	if !errors.Is(err, authkit.ErrTokenUnknown) {
+		t.Errorf("open of an unknown link error = %v, want ErrTokenUnknown", err)
+	}
+	b, err := f.invite(req(bob))
+	if err != nil {
+		t.Fatal(err)
+	}
+	braw := f.minted(b.TokenID)
+	f.accepted(b.ID, f.User("x@example.invalid", ""))
+	_, err = f.open(braw)
+	errs = append(errs, err)
+	var used authkit.ErrTokenGone
+	if !errors.As(err, &used) || used.State != onetime.StateUsed {
+		t.Errorf("open of an accepted invite's link error = %v, want used", err)
+	}
+	c, err := f.invite(req("carl@example.invalid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	craw := f.minted(c.TokenID)
+	f.Clock.Advance(73 * time.Hour)
+	_, err = f.open(craw)
+	errs = append(errs, err)
+	var expired authkit.ErrTokenGone
+	if !errors.As(err, &expired) || expired.State != onetime.StateExpired {
+		t.Errorf("open of an expired invite's link error = %v, want expired", err)
+	}
+	d, err := f.invite(req("dan@example.invalid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	draw := f.minted(d.TokenID)
+	bare := sqldb.Conn(f.Pinned(f.User("pin@example.invalid", "")))
+	_, err = f.Inv.Open(f.Ctx, bare, draw)
+	errs = append(errs, err)
+	if errors.Is(err, db.ErrTxRequired) {
+		t.Errorf("Open on a bare pinned connection error = %v, want no ErrTxRequired", err)
+	}
+	f.clean(raw, errs...)
 }
