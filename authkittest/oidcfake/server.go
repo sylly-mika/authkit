@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"crypto/subtle"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -53,14 +54,15 @@ type Server struct {
 	teamID   string
 	keyID    string
 
-	mu        sync.Mutex
-	redirects map[string]bool
-	users     map[string]User
-	codes     map[string]*grant
-	exchanges int
-	tamper    func(header, claims map[string]any)
-	signKey   crypto.Signer
-	signAlg   string
+	mu            sync.Mutex
+	redirects     map[string]bool
+	users         map[string]User
+	codes         map[string]*grant
+	exchanges     int
+	lastAuthorize url.Values
+	tamper        func(header, claims map[string]any)
+	signKey       crypto.Signer
+	signAlg       string
 }
 
 type grant struct {
@@ -79,6 +81,8 @@ type User struct {
 	FamilyName    string
 	// FormUser is Apple's unsigned user field, returned in Callback.User when not empty.
 	FormUser string
+	// AuthTime is the auth_time claim; nil omits it.
+	AuthTime *time.Time
 }
 
 type oauthError struct {
@@ -205,6 +209,13 @@ func (s *Server) Exchanges() int {
 	return s.exchanges
 }
 
+// LastAuthorize returns the query of the last request to the authorize endpoint, or nil before the first.
+func (s *Server) LastAuthorize() url.Values {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.lastAuthorize)
+}
+
 // Tamper changes the header and claims of the next ID token before it is signed.
 func (s *Server) Tamper(fn func(header, claims map[string]any)) {
 	s.mu.Lock()
@@ -280,6 +291,9 @@ func (s *Server) serveJWKS(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	s.lastAuthorize = r.URL.Query()
+	s.mu.Unlock()
 	name, location := s.issue(r.URL.Query())
 	if name != "" {
 		s.refuse(w, http.StatusBadRequest, "invalid_request", name)
@@ -401,6 +415,9 @@ func (s *Server) idToken(g *grant) (string, error) {
 		"iat":   now.Unix(),
 		"exp":   now.Unix() + 3600,
 		"nonce": g.nonce,
+	}
+	if u.AuthTime != nil {
+		claims["auth_time"] = u.AuthTime.Unix()
 	}
 	if u.Email != "" {
 		claims["email"] = u.Email
