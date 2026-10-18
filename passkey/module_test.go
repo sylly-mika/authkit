@@ -164,6 +164,7 @@ func TestNewRefusesAMalformedAppOrigin(t *testing.T) {
 		short + "/",
 		short + "+",
 		short + "\n",
+		short + "B",
 		"android:apk-key-hash-sha256:" + strings.Repeat("A", 43),
 		"android:apk-key-hash:",
 		"android:" + strings.Repeat("A", 43),
