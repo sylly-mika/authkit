@@ -1,6 +1,7 @@
 package passkey
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
@@ -59,6 +60,39 @@ func withDefaults(r Rules) Rules {
 	return r
 }
 
+const appOriginPrefix = "android:apk-key-hash:"
+
+func isAppOrigin(o string) bool {
+	h, ok := strings.CutPrefix(o, appOriginPrefix)
+	if !ok || len(h) != 43 {
+		return false
+	}
+	b, err := base64.RawURLEncoding.Strict().DecodeString(h)
+	return err == nil && len(b) == 32
+}
+
+func splitOrigins(rpID string, origins []string) (web, app []string) {
+	for _, o := range origins {
+		if isAppOrigin(o) {
+			app = append(app, o)
+		} else {
+			web = append(web, o)
+		}
+	}
+	if len(web) == 0 {
+		// WHY: go-webauthn refuses an empty RPOrigins; no page is served on the app's RP ID.
+		web = []string{"https://" + rpID}
+	}
+	return web, app
+}
+
+func (p Rules) rpID(aud authkit.Audience) string {
+	if id := p.RPIDs[aud]; id != "" {
+		return id
+	}
+	return p.RPID
+}
+
 func relyingParties(r Rules) (map[authkit.Audience]*webauthn.WebAuthn, error) {
 	if r.RPID == "" {
 		return nil, nil
@@ -69,10 +103,13 @@ func relyingParties(r Rules) (map[authkit.Audience]*webauthn.WebAuthn, error) {
 		if len(origins) == 0 {
 			continue
 		}
+		rpID := r.rpID(aud)
+		web, app := splitOrigins(rpID, origins)
 		rp, err := webauthn.New(&webauthn.Config{
-			RPID:                  r.RPID,
+			RPID:                  rpID,
 			RPDisplayName:         r.RPName,
-			RPOrigins:             slices.Clone(origins),
+			RPOrigins:             web,
+			RPOpaqueOrigins:       app,
 			AttestationPreference: protocol.PreferNoAttestation,
 			AuthenticatorSelection: protocol.AuthenticatorSelection{
 				ResidentKey:        protocol.ResidentKeyRequirementRequired,
@@ -120,9 +157,11 @@ func (u passkeyUser) WebAuthnCredentials() []webauthn.Credential { return u.cred
 type Rules struct {
 	// RPID is the relying party's domain, such as "example.com": no scheme, port or path.
 	RPID string
+	// RPIDs gives an audience its own relying party domain in place of RPID; each key must also be a key of Origins.
+	RPIDs map[authkit.Audience]string
 	// RPName is the name the browser shows. Zero is "authkit".
 	RPName string
-	// Origins lists, per audience, the pages allowed to run a ceremony, as scheme://host[:port].
+	// Origins lists, per audience, the pages allowed to run a ceremony, as scheme://host[:port], and the Android apps, as android:apk-key-hash: and the base64url SHA-256 of the signing certificate.
 	Origins map[authkit.Audience][]string
 	// CeremonyTTL is how long a begun ceremony may be finished. Zero is 2 minutes.
 	CeremonyTTL time.Duration
@@ -137,6 +176,9 @@ func (p Rules) check() error {
 		if len(p.Origins) > 0 {
 			return errors.New("authkit: passkey.Rules.Origins needs passkey.Rules.RPID")
 		}
+		if len(p.RPIDs) > 0 {
+			return errors.New("authkit: passkey.Rules.RPIDs needs passkey.Rules.RPID")
+		}
 		return nil
 	}
 	if err := protocol.ValidateRPID(p.RPID); err != nil {
@@ -148,22 +190,41 @@ func (p Rules) check() error {
 	if len(p.Origins) == 0 {
 		return errors.New("authkit: passkey.Rules.Origins is empty")
 	}
+	for _, aud := range slices.Sorted(maps.Keys(p.RPIDs)) {
+		id := p.RPIDs[aud]
+		if err := protocol.ValidateRPID(id); err != nil {
+			return fmt.Errorf("authkit: passkey.Rules.RPIDs[%q] %q is not a domain: %v", aud, id, err)
+		}
+		if id != strings.ToLower(id) {
+			return fmt.Errorf("authkit: passkey.Rules.RPIDs[%q] %q must be lower case", aud, id)
+		}
+		if _, ok := p.Origins[aud]; !ok {
+			return fmt.Errorf("authkit: passkey.Rules.RPIDs[%q] has no passkey.Rules.Origins", aud)
+		}
+	}
 	seen := map[string]authkit.Audience{}
 	for _, aud := range slices.Sorted(maps.Keys(p.Origins)) {
 		if len(p.Origins[aud]) == 0 {
 			return fmt.Errorf("authkit: passkey.Rules.Origins[%q] is empty", aud)
 		}
+		rp := p.rpID(aud)
 		for _, o := range p.Origins[aud] {
+			if isAppOrigin(o) {
+				continue
+			}
 			u, err := url.Parse(o)
 			if err != nil || u.Host == "" || o != u.Scheme+"://"+u.Host {
 				return fmt.Errorf("authkit: passkey.Rules.Origins[%q] %q is not an origin (scheme://host[:port])", aud, o)
 			}
-			if u.Scheme != "https" && !(u.Scheme == "http" && p.RPID == "localhost") {
+			if u.Scheme != "https" && !(u.Scheme == "http" && rp == "localhost") {
 				return fmt.Errorf("authkit: passkey.Rules.Origins[%q] %q must use https", aud, o)
 			}
-			if host := u.Hostname(); host != p.RPID && !strings.HasSuffix(host, "."+p.RPID) {
-				return fmt.Errorf("authkit: passkey.Rules.Origins[%q] %q is outside RPID %q", aud, o, p.RPID)
+			if host := u.Hostname(); host != rp && !strings.HasSuffix(host, "."+rp) {
+				return fmt.Errorf("authkit: passkey.Rules.Origins[%q] %q is outside RPID %q", aud, o, rp)
 			}
+		}
+		web, app := splitOrigins(rp, p.Origins[aud])
+		for _, o := range slices.Concat(web, app) {
 			// WHY: a surface must not accept the other surface's page.
 			if prev, ok := seen[o]; ok && prev != aud {
 				return fmt.Errorf("authkit: passkey.Rules.Origins %q is listed for both %q and %q", o, prev, aud)
