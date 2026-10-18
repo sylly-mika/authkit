@@ -535,6 +535,8 @@ per audience: `https`, or `http` only when `RPID` is `localhost`, each host
 equal to `RPID` or ending in `.` + `RPID`. A ceremony begun on one audience
 cannot be finished on another.
 
+An Android app's origin is `android:apk-key-hash:` and the base64url SHA-256 of its signing certificate; list it under the app's own audience. `Rules.RPIDs` gives one audience its own RP ID, such as your API host, which must serve the app's `/.well-known/assetlinks.json`.
+
 ```go
 kit.Passkeys, err = passkey.New(kit.Service, passkey.Rules{
 	RPID:    "example.com",
@@ -1005,6 +1007,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `RPID` | empty (off) | relying party domain; set to turn passkeys on |
 | `RPName` | `authkit` | relying party name |
 | `Origins` | none | `map[Audience][]string` of allowed origins |
+| `RPIDs` | none | `map[Audience]string`: an audience's own RP ID in place of `RPID` |
 | `CeremonyTTL` | 2 min | ceremony lifetime, at most 10 min |
 | `Reauth` | `Config.Recent` | how recent a sign-in must be to add or delete a passkey |
 | `Max` | 10 | passkeys per principal |
@@ -1164,6 +1167,8 @@ Each release may add migrations. After every upgrade, rerun `authkit-gen`
 with the same flags and lock file, and apply the new migrations before
 deploying; otherwise `CheckSchema` refuses to start with `ErrSchemaBehind`.
 See `CHANGELOG.md` for the full list of changes.
+
+**v0.8.0.** No migration and no signature or default change. Run `go get github.com/sylly-mika/authkit@v0.8.0`. New and opt-in: Android app origins in `passkey.Rules.Origins` and `passkey.Rules.RPIDs`.
 
 **v0.7.1.** No migration and no signature or default change: `CheckSchema`
 still wants version 7 and `authkit-gen` writes the same files. Run
