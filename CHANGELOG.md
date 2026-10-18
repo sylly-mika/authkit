@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.0
+
+Android app passkeys and a relying party ID per audience. No existing signature, default or error text changes, and there is no new migration: `CheckSchema` still wants version 7.
+
+`passkey`: `passkey.Rules.Origins` also takes an Android app's origin, `android:apk-key-hash:` and the unpadded base64url SHA-256 of its signing certificate; it is matched byte for byte and only for the audience that lists it. An audience with only app origins also accepts `https://` and its RP ID, which go-webauthn needs. `passkey.Rules.RPIDs` (`map[authkit.Audience]string`) gives an audience its own RP ID in place of `RPID`; each key must be in `Origins`, and that audience's web origins must sit under it. `RPID` still switches passkeys on.
+
 ## v0.7.1
 
 Moving an app with its own sign-in onto authkit: a legacy password verifier, sessions of another principal, and an absolute lifetime per audience. No existing signature or default changes, and there is no new migration: `CheckSchema` still wants version 7.

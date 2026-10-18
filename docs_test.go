@@ -110,6 +110,18 @@ func TestChangelogNamesTheV071API(t *testing.T) {
 	}
 }
 
+func TestChangelogNamesTheV080API(t *testing.T) {
+	sec := changelogSection(t, "v0.8.0")
+	for _, n := range []string{"RPIDs", "Origins"} {
+		if !regexp.MustCompile("[`.]" + regexp.QuoteMeta(n) + `\b`).MatchString(sec) {
+			t.Errorf("the v0.8.0 changelog does not name %s", n)
+		}
+	}
+	if !strings.Contains(sec, "android:apk-key-hash:") {
+		t.Errorf("the v0.8.0 changelog does not name the Android app origin form")
+	}
+}
+
 func TestPackageDocs(t *testing.T) {
 	for _, c := range []struct {
 		dir, file, pkg string
