@@ -122,9 +122,9 @@ func TestPruneKeepsInvitesForTheRetention(t *testing.T) {
 		tweak func(*kittest.Rules)
 		kept  map[int]bool
 	}{
-		"the default": {func(*kittest.Rules) {}, map[int]bool{31: false, 29: true, 6: true}},
+		"the default": {func(*kittest.Rules) {}, map[int]bool{31: false, 30: true, 29: true, 6: true}},
 		"negative":    {func(c *kittest.Rules) { c.InviteRetention = -1 }, map[int]bool{31: true, 29: true, 6: true}},
-		"7 days, set": {func(c *kittest.Rules) { c.InviteRetention = 7 * day }, map[int]bool{31: false, 29: false, 6: true}},
+		"7 days, set": {func(c *kittest.Rules) { c.InviteRetention = 7 * day }, map[int]bool{31: false, 30: false, 29: false, 6: true}},
 	} {
 		w := newWorld(t, tc.tweak)
 		now := w.Clock.Now()

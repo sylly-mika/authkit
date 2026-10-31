@@ -1170,6 +1170,8 @@ with the same flags and lock file, and apply the new migrations before
 deploying; otherwise `CheckSchema` refuses to start with `ErrSchemaBehind`.
 See `CHANGELOG.md` for the full list of changes.
 
+**v0.8.1.** No migration and no signature or default change. Run `go get github.com/sylly-mika/authkit@v0.8.1`. New and opt-in: `Config.InviteRetention`, where zero is 30 days and a negative value keeps closed invites forever.
+
 **v0.8.0.** No migration and no signature or default change. Run `go get github.com/sylly-mika/authkit@v0.8.0`. New and opt-in: Android app origins in `passkey.Rules.Origins` and `passkey.Rules.RPIDs`.
 
 **v0.7.1.** No migration and no signature or default change: `CheckSchema`
