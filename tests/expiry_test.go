@@ -2,6 +2,7 @@ package tests
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -112,6 +113,52 @@ func TestPruneKeepsEventsForTheRetention(t *testing.T) {
 				t.Errorf("%s: an event %v old kept = %v, want %v", name, age, kept, want)
 			}
 		}
+	}
+}
+
+func TestPruneKeepsInvitesForTheRetention(t *testing.T) {
+	day := 24 * time.Hour
+	for name, tc := range map[string]struct {
+		tweak func(*kittest.Rules)
+		kept  map[int]bool
+	}{
+		"the default": {func(*kittest.Rules) {}, map[int]bool{31: false, 30: true, 29: true, 6: true}},
+		"negative":    {func(c *kittest.Rules) { c.InviteRetention = -1 }, map[int]bool{31: true, 29: true, 6: true}},
+		"7 days, set": {func(c *kittest.Rules) { c.InviteRetention = 7 * day }, map[int]bool{31: false, 30: false, 29: false, 6: true}},
+	} {
+		w := newWorld(t, tc.tweak)
+		now := w.Clock.Now()
+		for _, kind := range []string{"expired", "accepted", "revoked"} {
+			for days := range tc.kept {
+				stamp := now.Add(-time.Duration(days) * day)
+				expires := now.Add(time.Hour)
+				var accepted, revoked *time.Time
+				switch kind {
+				case "expired":
+					expires = stamp
+				case "accepted":
+					accepted = &stamp
+				case "revoked":
+					revoked = &stamp
+				}
+				w.D.Exec(t, `INSERT INTO auth_invites (id, audience, email, created_at, expires_at, accepted_at, revoked_at) VALUES (gen_random_uuid(), 'staff', $1, $2, $3, $4, $5)`,
+					fmt.Sprintf("%s-%d@example.invalid", kind, days), now.Add(-40*day), expires, accepted, revoked)
+			}
+		}
+		w.D.Exec(t, `INSERT INTO auth_invites (id, audience, email, created_at, expires_at) VALUES (gen_random_uuid(), 'staff', 'open@example.invalid', $1, $2)`, now.Add(-40*day), now.Add(time.Hour))
+		w.prune()
+		check := func(email string, want bool) {
+			t.Helper()
+			if kept := w.Count(`SELECT count(*) FROM auth_invites WHERE email = $1`, email) == 1; kept != want {
+				t.Errorf("%s: invite %s kept = %v, want %v", name, email, kept, want)
+			}
+		}
+		for days, want := range tc.kept {
+			for _, kind := range []string{"expired", "accepted", "revoked"} {
+				check(fmt.Sprintf("%s-%d@example.invalid", kind, days), want)
+			}
+		}
+		check("open@example.invalid", true)
 	}
 }
 

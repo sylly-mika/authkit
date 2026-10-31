@@ -305,12 +305,13 @@ const mailCountRetention = 48 * time.Hour
 
 // Prune deletes what no flow reads any more: throttle counters
 // whose window and lock have passed, sessions and one-time links dead for 30
-// days, invites 30 days after they expired, were accepted or were revoked,
-// passkey and OIDC ceremonies and second-step challenges an hour past
-// their expiry (OIDC ceremonies also an hour after their use), registrations
-// and email changes past their expiry, mail counts 48 hours after their
-// window began, and sign-in events older than EventRetention unless it is
-// negative. The app's worker runs it with no workspace bound.
+// days, invites InviteRetention after they expired, were accepted or were
+// revoked (none when it is negative), passkey and OIDC ceremonies and
+// second-step challenges an hour past their expiry (OIDC ceremonies also an
+// hour after their use), registrations and email changes past their expiry,
+// mail counts 48 hours after their window began, and sign-in events older
+// than EventRetention unless it is negative. The app's worker runs it with no
+// workspace bound.
 func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 	q = s.names.Q(q)
 	if err := db.RequireTx(q); err != nil {
@@ -338,8 +339,10 @@ func (s *Service) Prune(ctx context.Context, q db.Querier) error {
 	if _, err := q.Exec(ctx, `DELETE FROM auth_registrations WHERE expires_at < $1`, now); err != nil {
 		return err
 	}
-	if _, err := q.Exec(ctx, `DELETE FROM auth_invites WHERE expires_at < $1 OR accepted_at < $1 OR revoked_at < $1`, now.Add(-retention)); err != nil {
-		return err
+	if s.cfg.InviteRetention > 0 {
+		if _, err := q.Exec(ctx, `DELETE FROM auth_invites WHERE expires_at < $1 OR accepted_at < $1 OR revoked_at < $1`, now.Add(-s.cfg.InviteRetention)); err != nil {
+			return err
+		}
 	}
 	if _, err := q.Exec(ctx, `DELETE FROM auth_email_changes WHERE expires_at < $1`, now); err != nil {
 		return err

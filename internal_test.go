@@ -12,7 +12,7 @@ func TestWithDefaultsAreTheSpecs(t *testing.T) {
 		c.ReuseGrace != 30*time.Second ||
 		c.Throttle != (Throttle{Failures: 5, Window: 15 * time.Minute, Lockout: 15 * time.Minute}) ||
 		c.Events != (EventRules{}) ||
-		c.EventRetention != 90*24*time.Hour || c.OnEvent != nil || c.Clock == nil || c.Rand == nil {
+		c.EventRetention != 90*24*time.Hour || c.InviteRetention != 30*24*time.Hour || c.OnEvent != nil || c.Clock == nil || c.Rand == nil {
 		t.Errorf("withDefaults(Config{}) = %+v, want spec §3.1's values", c)
 	}
 	if got, want := withDefaults(Config{Throttle: Throttle{Failures: 10}}).Throttle, (Throttle{Failures: 10, Window: 15 * time.Minute, Lockout: 15 * time.Minute}); got != want {
