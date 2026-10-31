@@ -82,6 +82,8 @@ type Config struct {
 	// EventRetention is how long Prune keeps auth_events rows. Zero is 90
 	// days; negative keeps them forever, and Forget then deletes a person's rows instead of unlinking them.
 	EventRetention time.Duration
+	// InviteRetention is how long Prune keeps an invite after it expired, was accepted or was revoked. Zero is 30 days; negative keeps them forever.
+	InviteRetention time.Duration
 	// Recent is how long after a sign-in or re-verify a session may make sensitive changes, at most 10 minutes; zero means 5 minutes, and a negative value is refused.
 	Recent time.Duration
 	// OnEvent runs straight after authkit records an event, on the same
@@ -108,6 +110,7 @@ func withDefaults(c Config) Config {
 	def(&c.Session.AbsoluteTTL, 12*time.Hour)
 	def(&c.Session.RotateEvery, 15*time.Minute)
 	def(&c.EventRetention, 90*24*time.Hour)
+	def(&c.InviteRetention, 30*24*time.Hour)
 	def(&c.Recent, 5*time.Minute)
 	def(&c.ReuseGrace, 30*time.Second)
 	if c.Throttle.Failures == 0 {
