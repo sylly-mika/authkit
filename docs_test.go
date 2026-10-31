@@ -122,6 +122,15 @@ func TestChangelogNamesTheV080API(t *testing.T) {
 	}
 }
 
+func TestChangelogNamesTheV081API(t *testing.T) {
+	sec := changelogSection(t, "v0.8.1")
+	for _, n := range []string{"InviteRetention"} {
+		if !regexp.MustCompile("[`.]" + regexp.QuoteMeta(n) + `\b`).MatchString(sec) {
+			t.Errorf("the v0.8.1 changelog does not name %s", n)
+		}
+	}
+}
+
 func TestPackageDocs(t *testing.T) {
 	for _, c := range []struct {
 		dir, file, pkg string

@@ -522,9 +522,10 @@ window has passed and that are not locked, sessions and one-time links dead
 for 30 days, passkey ceremonies and second-step challenges an hour past
 expiry, OIDC ceremonies and sign-up tickets an hour after they expire or are
 used, registrations past their expiry, mail counts 48 hours after their window
-began, invites 30 days after they expired, were accepted or were revoked,
-email changes past their expiry, and events older than `EventRetention`
-(none when it is negative).
+began, invites `InviteRetention` (30 days by default; none when it is
+negative) after they expired, were accepted or were revoked, email changes
+past their expiry, and events older than `EventRetention` (none when it is
+negative).
 
 ### Add passkeys
 
@@ -980,6 +981,7 @@ own rules. A zero field takes its default. A negative `Session.AbsoluteTTL`,
 | `Throttle.PlainLoginKey` | false | false: key `auth_throttle` on hex(sha256(normalised login)); true: the plain login |
 | `Events.ChangeLogsReset` | false | true: `ChangePassword` logs `password_reset` instead of `password_changed` |
 | `EventRetention` | 90 days | `Prune` deletes older events; negative: keep forever |
+| `InviteRetention` | 30 days | `Prune` deletes invites this long after they expired, were accepted or were revoked; negative: keep forever |
 | `Recent` | 5 min | how recent a sign-in or re-verify must be for a sensitive change; at most 10 min |
 | `OnEvent` | nil | `func(ctx, q db.Querier, e Event) error`, run after each event |
 | `Clock` | system clock | source of every timestamp |

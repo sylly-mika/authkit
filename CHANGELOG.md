@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.1
+
+Keeping closed invites. No existing signature, default or error text changes, and there is no new migration: `CheckSchema` still wants version 7. No new dependency.
+
+Core: `Config.InviteRetention` is how long `Prune` keeps an invite after it expired, was accepted or was revoked. Zero is 30 days, as before; a negative value keeps closed invites forever, as with `EventRetention`, while `Prune` still clears sessions, one-time links and events. `New` refuses no value. `Forget` still deletes a person's invites.
+
 ## v0.8.0
 
 Android app passkeys and a relying party ID per audience. No existing signature, default or error text changes, and there is no new migration: `CheckSchema` still wants version 7.
